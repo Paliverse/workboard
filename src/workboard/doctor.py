@@ -218,7 +218,6 @@ def _validate_document(raw, path, board, report, budget, blob_cache, *, archive=
         if type(next_num) is not int or next_num <= max(numbers, default=0):
             raise ValueError("nextNum must be an integer greater than every card number")
     for card in cards:
-        budget.take()
         label = f"{path}#{card['id']}"
         if not isinstance(card.get("title", ""), str) or card.get("column") not in wb.CORE_COLUMN_ID_SET:
             raise ValueError(f"{label}: invalid title or column")
