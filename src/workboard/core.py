@@ -41,7 +41,25 @@ PROTECTED_CARD_FIELDS = frozenset({
     "verification", "reviews",
     "id", "num", "createdAt", "updatedAt", "history", "changedRev",
 })
-REGISTRY_PATH = Path.home() / ".workboard" / "boards.json"
+
+
+def home() -> Path:
+    """Per-user WorkBoard state directory: $WORKBOARD_HOME, else ~/.workboard (resolved per call)."""
+    configured = os.environ.get("WORKBOARD_HOME")
+    return Path(configured).expanduser().absolute() if configured else Path.home() / ".workboard"
+
+
+def registry_path() -> Path:
+    return home() / "boards.json"
+
+
+def server_state_path() -> Path:
+    return home() / "server.json"
+
+
+def logs_dir() -> Path:
+    return home() / "logs"
+
 
 DEFAULT_COLUMNS = [
     {"id": "backlog", "name": "Backlog", "kind": "todo"},
@@ -1279,7 +1297,7 @@ def require_export_destination(destination, board_path: Path) -> Path:
     if path.exists() or path.is_symlink():
         raise WorkflowError(f"export destination already exists: {path}", 409)
     runtime = Path(__file__).resolve().parent
-    managed = [Path(board_path).absolute().parent, REGISTRY_PATH.parent, VIEWER_REGISTRY.parent]
+    managed = [Path(board_path).absolute().parent, home(), VIEWER_REGISTRY.parent]
     managed.extend(Path(value).absolute().parent for value in registry_load()["boards"].values())
     if any(path.is_relative_to(root.resolve(strict=False)) for root in managed):
         raise WorkflowError("exports cannot target managed board or registry storage", 403)
@@ -1552,7 +1570,7 @@ def _registry_json(path: Path, max_bytes=None):
 
 
 def registry_load(path=None, *, max_bytes=None) -> dict:
-    path = Path(path) if path is not None else REGISTRY_PATH
+    path = Path(path) if path is not None else registry_path()
     try:
         reg = _registry_json(path, max_bytes)
     except FileNotFoundError:
@@ -1570,11 +1588,11 @@ def registry_load(path=None, *, max_bytes=None) -> dict:
 
 
 def registry_save(reg: dict) -> None:
-    require_write_scope(REGISTRY_PATH)
+    require_write_scope(registry_path())
     registry_load()
-    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with board_lock(REGISTRY_PATH):
-        _atomic_write_json(REGISTRY_PATH, reg)
+    registry_path().parent.mkdir(parents=True, exist_ok=True)
+    with board_lock(registry_path()):
+        _atomic_write_json(registry_path(), reg)
 
 
 def _has_reparse_point(path: Path) -> bool:
@@ -1632,11 +1650,11 @@ def _without_board_aliases(reg: dict, target: Path) -> dict:
 def register_board(name: str, board_path: Path) -> None:
     """Register an existing board under the lifecycle lock, never a stale path."""
     require_write_scope(board_path)
-    require_write_scope(REGISTRY_PATH)
+    require_write_scope(registry_path())
     registry_load()
     load(board_path)
-    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with board_lock(REGISTRY_PATH):
+    registry_path().parent.mkdir(parents=True, exist_ok=True)
+    with board_lock(registry_path()):
         target = canonical_registered_board(board_path)
         with board_lock(target):
             target = canonical_registered_board(target)
@@ -1644,24 +1662,24 @@ def register_board(name: str, board_path: Path) -> None:
                 raise FileNotFoundError(target)
             reg = registry_load()
             reg.setdefault("boards", {})[name] = str(target)
-            _atomic_write_json(REGISTRY_PATH, reg)
+            _atomic_write_json(registry_path(), reg)
 
 
 def delete_registered_board(name: str, expected_board: str,
                             base_rev: int | None) -> dict:
     """Recoverably remove one registered board under global -> board locks."""
-    require_write_scope(REGISTRY_PATH)
+    require_write_scope(registry_path())
     target = require_write_scope(_registered_target(registry_load(), name, expected_board))
     if target.exists():
         load(target)
-    with board_lock(REGISTRY_PATH):
+    with board_lock(registry_path()):
         reg = registry_load()
         target = _registered_target(reg, name, expected_board)
 
         if not target.parent.exists():
             if base_rev is not None:
                 raise RegistryConflict("registered board is missing")
-            _atomic_write_json(REGISTRY_PATH, _without_board_aliases(reg, target))
+            _atomic_write_json(registry_path(), _without_board_aliases(reg, target))
             return {"recoveryPath": None, "board": str(target)}
 
         with board_lock(target):
@@ -1670,7 +1688,7 @@ def delete_registered_board(name: str, expected_board: str,
             if not target.exists():
                 if base_rev is not None:
                     raise RegistryConflict("registered board is missing")
-                _atomic_write_json(REGISTRY_PATH, _without_board_aliases(reg, target))
+                _atomic_write_json(registry_path(), _without_board_aliases(reg, target))
                 return {"recoveryPath": None, "board": str(target)}
             if base_rev is None:
                 raise RegistryConflict("registered board exists")
@@ -1690,7 +1708,7 @@ def delete_registered_board(name: str, expected_board: str,
                     raise
                 raise OSError(f"board recovered at {recovery}, but rename finalization failed") from e
             try:
-                _atomic_write_json(REGISTRY_PATH, _without_board_aliases(reg, target))
+                _atomic_write_json(registry_path(), _without_board_aliases(reg, target))
             except Exception as e:
                 raise OSError(
                     f"board recovered at {recovery}, but registry update failed") from e
@@ -1871,12 +1889,12 @@ def ensure_registered_viewer(name: str) -> dict | None:
     """Resolve and start a board while holding the shared lifecycle lock."""
     target = _registered_target(registry_load(), name)
     require_write_scope(target)
-    require_write_scope(REGISTRY_PATH)
+    require_write_scope(registry_path())
     require_write_scope(VIEWER_REGISTRY)
     load(target)
     _viewers_load()
-    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with board_lock(REGISTRY_PATH):
+    registry_path().parent.mkdir(parents=True, exist_ok=True)
+    with board_lock(registry_path()):
         target = _registered_target(registry_load(), name)
         require_write_scope(target)
         load(target)

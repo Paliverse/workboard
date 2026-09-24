@@ -371,26 +371,6 @@ def cmd_attachment(args):
         print(f"#{result['num']} attachment exported → {result['out']} (SHA256 {result['sha256']})")
 
 
-def cmd_doctor(args):
-    from . import doctor as release_check
-    selected = args.board or wb.os.environ.get("WORKBOARD_DEFAULT_BOARD")
-    if selected:
-        p = Path(selected).absolute()
-        if p.name != "board.json":
-            p = p / "board" / "board.json"
-    else:
-        p = wb.find_board()
-    if args.rehearse:
-        destination = wb.require_write_scope(args.out)
-        result = release_check.rehearse(p, destination)
-    else:
-        result = release_check.inspect_board(p, registry_home=args.registry_home,
-                                            all_registered=args.all)
-    print(json.dumps(result, ensure_ascii=False, indent=None if args.json else 2))
-    if not result.get("ok"):
-        raise SystemExit(1)
-
-
 def cmd_next(args):
     if args.limit < 0:
         raise wb.WorkflowError("--limit must be nonnegative")
@@ -631,7 +611,7 @@ def cmd_new(args):
     root = wb.require_write_scope(args.dir or Path.cwd())
     bdir = root / "board"
     p = wb.require_write_scope(bdir / "board.json")
-    wb.require_write_scope(wb.REGISTRY_PATH)
+    wb.require_write_scope(wb.registry_path())
     wb.registry_load()
     if p.exists():
         raise wb.WorkflowError(f"board already exists at {p}", 409)
@@ -639,8 +619,8 @@ def cmd_new(args):
            "nextNum": 1, "columns": [dict(c) for c in wb.DEFAULT_COLUMNS],
            "cards": []}
     bdir.mkdir(parents=True, exist_ok=True)
-    wb.REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with wb.board_lock(wb.REGISTRY_PATH):
+    wb.registry_path().parent.mkdir(parents=True, exist_ok=True)
+    with wb.board_lock(wb.registry_path()):
         p = wb.canonical_registered_board(p)
         with wb.board_lock(p):
             p = wb.canonical_registered_board(p)
@@ -657,7 +637,12 @@ def cmd_new(args):
 
 def cmd_serve(args):
     from . import server
-    server.main(args)
+    server.serve(args)
+
+
+def cmd_open(args):
+    from . import server
+    server.open_board(args)
 
 
 def cmd_recover(args):
@@ -972,12 +957,6 @@ def build_parser() -> argparse.ArgumentParser:
         if operation == "get":
             operation_parser.add_argument("--out", required=True)
 
-    p = add("doctor", cmd_doctor, "read-only readiness report or explicit isolated rehearsal")
-    p.add_argument("--registry-home")
-    p.add_argument("--all", action="store_true")
-    p.add_argument("--rehearse", action="store_true")
-    p.add_argument("--out")
-
     p = add("show", cmd_show, "print one card as JSON")
     p.add_argument("ref")
     p.add_argument("--full", action="store_true")
@@ -1009,9 +988,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name", nargs="?")
     p.add_argument("--dir")
 
-    p = add("serve", cmd_serve, "serve the animated board UI locally (on demand)")
-    p.add_argument("--port", type=int)
-    p.add_argument("--open", action="store_true")
+    p = add("serve", cmd_serve, "run the local board server for every registered board (foreground)")
+    p.add_argument("--port", type=int, help="TCP port on 127.0.0.1 (default: $WORKBOARD_PORT or 7891)")
+    p.add_argument("--open", action="store_true", help="open this project's board in the browser")
+    p.add_argument("--service", action="store_true", help="background-service mode: log to file, never open a browser")
+
+    add("open", cmd_open, "open this project's board in the browser, starting the server if needed")
+
+    from . import doctor, install, update
+    for module in (install, update, doctor):
+        module.register(add)
 
     p = add("recover", cmd_recover, "list/restore .backups snapshots")
     p.add_argument("rev", nargs="?", type=int)
@@ -1039,11 +1025,6 @@ def main(argv=None):
         ap.error("new uses --dir as its destination; --board is not accepted")
     if args.cmd in ("recover", "columns-core", "sweep") and args.expected_rev is not None and not args.apply:
         ap.error("--expected-rev on maintenance requires --apply")
-    if args.cmd == "doctor":
-        if args.rehearse != bool(args.out):
-            ap.error("doctor --rehearse requires --out; --out requires --rehearse")
-        if args.rehearse and (args.registry_home or args.all):
-            ap.error("rehearsal cannot be combined with --registry-home or --all")
     if args.cmd == "comment":
         if args.op == "add" and (args.text is not None or (args.what is not None) == args.stdin):
             ap.error("comment add requires text or --stdin, not both")

@@ -839,3 +839,7 @@ def rehearse(board_path, output_dir):
                 report["ok"] = False
                 _finding(report, "report-write-failed", exc, output / "report.json")
     return report
+
+
+def register(add) -> None:
+    """Register `doctor`; implemented by the setup slice."""
