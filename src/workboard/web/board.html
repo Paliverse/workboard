@@ -590,6 +590,7 @@ html[data-theme="dark"] .toast .btn { background: rgb(0 0 0 / .1); }
 .setup-card { width: min(520px, 100%); text-align: center; }
 .setup-card h1 { margin: 16px 0 8px; font: 600 var(--t-2xl)/1.25 var(--font-display); letter-spacing: -.02em; }
 .setup-card p { color: var(--fg-2); margin: 0 0 20px; }
+.app[data-mode="hub"] :is(#new-card, .side-scroll, #live, #search-open, #filter-btn, #board-menu) { display: none; }
 
 /* ── Responsive ───────────────────────────────────────────────────── */
 @media (max-width: 1100px) { :root { --side-w: 232px; } .search-trigger { width: 180px; } }
@@ -730,7 +731,7 @@ html[data-theme="dark"] .toast .btn { background: rgb(0 0 0 / .1); }
       <div class="side-head">
         <button class="board-pick" id="board-pick" aria-haspopup="menu" title="Switch board">
           <span class="mark" id="board-mark">W</span>
-          <span class="name"><span id="board-pick-name">WorkBoard</span><span class="sub" id="board-pick-sub">Preview</span></span>
+          <span class="name"><span id="board-pick-name">WorkBoard</span><span class="sub" id="board-pick-sub">WorkBoard</span></span>
           <svg class="i sm faint"><use href="#i-down"/></svg>
         </button>
         <button class="btn icon sm" id="side-toggle" title="Hide sidebar" aria-label="Hide sidebar"><svg class="i"><use href="#i-sidebar"/></svg></button>
@@ -797,6 +798,12 @@ const WB = window.WB = {};
     set(key, value) { try { value === null ? localStorage.removeItem(key) : localStorage.setItem(key, value); } catch { /* storage unavailable */ } },
     json(key, fallback) { try { return JSON.parse(store.get(key)) ?? fallback; } catch { return fallback; } },
   };
+  // Board pages live at <root>b/<name>/ and address their board page-relative
+  // (api/..., events, board.json). The hub (<root>) has no board.
+  const ROUTE = location.pathname.match(/^(.*?\/)b\/([^/]+)\/$/);
+  const ROOT = ROUTE ? ROUTE[1] : location.pathname.replace(/[^/]*$/, '');
+  const BOARD = ROUTE ? decodeURIComponent(ROUTE[2]) : null;
+  const boardUrl = name => `${ROOT}b/${encodeURIComponent(name)}/`;
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
   // ── State ──────────────────────────────────────────────────────────
@@ -824,7 +831,7 @@ const WB = window.WB = {};
   WB.cards = () => (S.doc ? S.doc.cards : []);
   WB.columns = () => (S.doc ? S.doc.columns : []);
   WB.colName = id => (WB.columns().find(c => c.id === id)?.name) || ({ backlog: 'Backlog', task: 'Task', inprogress: 'In Progress', done: 'Done', blocked: 'Blocked' })[id] || id;
-  const boardKey = suffix => `workboard.ui.${suffix}::${S.doc?.name || location.port}`;
+  const boardKey = suffix => `workboard.ui.${suffix}::${BOARD}`;
 
   function setDoc(doc, meta = {}) {
     const prev = S.doc;
@@ -1106,7 +1113,7 @@ const WB = window.WB = {};
     });
   }
   function reportWriteError(err, quiet) {
-    if (err.status === 410) { enterMissing(); return; }
+    if (err.status === 410 || isUnregistered(err)) { enterMissing(isUnregistered(err)); return; }
     if (err.status === 409 && err.data?.conflict && err.data?.rev != null) {
       toast('The board changed while you were working, so this change was not saved. Latest state loaded — try again.', { error: true, ms: 7000 });
       refresh();
@@ -1116,31 +1123,33 @@ const WB = window.WB = {};
     if (err.status === 409 || err.status === 422) refresh();
   }
   const enc = s => encodeURIComponent(s);
+  const isUnregistered = err => err.status === 404 && err.data?.error === 'unknown_board';
   WB.api = {
     get: path => request('GET', path),
-    patchCard: (id, fields, { position } = {}) => write('PATCH', `/api/card/${enc(id)}`, () => ({ card: fields, ...(position ? { position } : {}) })),
-    lifecycle: (id, action, details = {}) => write('PATCH', `/api/card/${enc(id)}/lifecycle`, () => ({ action, details })),
-    structure: operation => write('PATCH', '/api/structure', () => ({ operation })),
-    comment: (id, operation) => write('PATCH', `/api/card/${enc(id)}/comments`, () => ({ operation })),
+    patchCard: (id, fields, { position } = {}) => write('PATCH', `api/card/${enc(id)}`, () => ({ card: fields, ...(position ? { position } : {}) })),
+    lifecycle: (id, action, details = {}) => write('PATCH', `api/card/${enc(id)}/lifecycle`, () => ({ action, details })),
+    structure: operation => write('PATCH', 'api/structure', () => ({ operation })),
+    comment: (id, operation) => write('PATCH', `api/card/${enc(id)}/comments`, () => ({ operation })),
     upload: (id, file) => {
       if (file.size > 10 * 1024 * 1024) { toast(`${file.name} is larger than 10 MiB`, { error: true }); return Promise.resolve({ ok: false, status: 413 }); }
       const mime = /^[\w.+-]+\/[\w.+-]+$/.test(file.type) ? file.type : 'application/octet-stream';
-      return write('POST', `/api/card/${enc(id)}/attachments?name=${enc(file.name)}`, null, { raw: file, headers: { 'Content-Type': mime } });
+      return write('POST', `api/card/${enc(id)}/attachments?name=${enc(file.name)}`, null, { raw: file, headers: { 'Content-Type': mime } });
     },
-    detach: (id, attId) => write('DELETE', `/api/card/${enc(id)}/attachments/${enc(attId)}`, () => ({})),
-    attachmentUrl: (id, attId) => `/api/card/${enc(id)}/attachments/${enc(attId)}`,
+    detach: (id, attId) => write('DELETE', `api/card/${enc(id)}/attachments/${enc(attId)}`, () => ({})),
+    attachmentUrl: (id, attId) => `api/card/${enc(id)}/attachments/${enc(attId)}`,
   };
 
   // ── Live sync ──────────────────────────────────────────────────────
-  let refreshing = null, refreshAgain = false;
+  let refreshing = null, refreshAgain = false, unregistered = false;
   async function refresh() {
+    if (!BOARD || unregistered) return;
     if (refreshing) { refreshAgain = true; return refreshing; }
     refreshing = (async () => {
       try {
-        const doc = await request('GET', '/board.json');
+        const doc = await request('GET', 'board.json');
         if (!S.doc || doc.rev !== S.rev || S.missing) setDoc(doc, { source: 'remote' });
       } catch (err) {
-        if (err.status === 410) enterMissing(); else setLive('down');
+        if (err.status === 410 || isUnregistered(err)) enterMissing(isUnregistered(err)); else setLive('down');
       } finally {
         refreshing = null;
         if (refreshAgain) { refreshAgain = false; refresh(); }
@@ -1152,7 +1161,8 @@ const WB = window.WB = {};
   let events = null;
   function connect() {
     events?.close();
-    events = new EventSource('/events');
+    if (unregistered) return;
+    events = new EventSource('events');
     events.onopen = () => { setLive('live'); refresh(); };
     events.addEventListener('resync-required', () => refresh());
     events.addEventListener('board-missing', () => enterMissing());
@@ -1878,15 +1888,16 @@ const WB = window.WB = {};
   function renderChrome() {
     const doc = S.doc;
     if (titleEl.contentEditable !== 'true') titleEl.textContent = doc.name || 'WorkBoard';
-    document.title = `${doc.name || 'WorkBoard'} · WorkBoard`;
-    $('#board-pick-name').textContent = doc.name || 'WorkBoard';
-    $('#board-mark').textContent = initials(doc.name || 'W').slice(0, 1);
+    document.title = `${BOARD} · WorkBoard`;
+    $('#board-pick-name').textContent = BOARD;
+    $('#board-mark').textContent = initials(BOARD).slice(0, 1);
     const cards = doc.cards;
     const counts = { total: cards.length, ready: cards.filter(isReady).length, rework: cards.filter(inRework).length, canceled: cards.filter(c => c.outcome === 'canceled').length };
     for (const el of document.querySelectorAll('[data-count]')) el.textContent = counts[el.dataset.count] || '';
     renderFilterbar();
   }
   titleEl.addEventListener('dblclick', () => {
+    if (!S.doc) return;
     titleEl.contentEditable = 'true'; titleEl.focus();
     getSelection().selectAllChildren(titleEl);
   });
@@ -2066,20 +2077,21 @@ const WB = window.WB = {};
     m.el.style.width = '360px';
     setTimeout(() => search.focus());
     let boards = [];
-    try { boards = (await WB.api.get('/viewers')).boards || []; } catch (err) { list.replaceChildren(h('div', { class: 'side-empty', text: `Could not list boards: ${err.message}` })); return; }
+    try { boards = (await WB.api.get(`${ROOT}api/boards`)).boards || []; } catch (err) { list.replaceChildren(h('div', { class: 'side-empty', text: `Could not list boards: ${err.message}` })); return; }
     const draw = () => {
       const q = search.value.trim().toLowerCase();
       const rows = boards.filter(b => !q || b.name.toLowerCase().includes(q) || String(b.board).toLowerCase().includes(q));
-      if (!rows.length) { list.replaceChildren(h('div', { class: 'side-empty', text: boards.length ? 'No boards match.' : 'No boards are registered yet. Create one with the new command.' })); return; }
+      if (!rows.length) { list.replaceChildren(h('div', { class: 'side-empty', text: boards.length ? 'No boards match.' : 'No boards are registered yet. Run workboard init in a project folder.' })); return; }
       list.replaceChildren(...rows.map(b => {
-        const row = h('button', { class: 'menu-item', type: 'button', attrs: { 'aria-current': b.current ? 'true' : null }, style: { alignItems: 'flex-start' } },
-          h('span', { class: 'mark', style: { display: 'grid', placeItems: 'center', width: '22px', height: '22px', borderRadius: '6px', background: b.current ? 'var(--primary)' : 'var(--fill-2)', color: b.current ? 'var(--on-primary)' : 'var(--fg-2)', fontSize: '11px', fontWeight: 700, flex: 'none', marginTop: '1px' }, text: initials(b.name).slice(0, 1) }),
+        const current = b.name === BOARD;
+        const row = h('button', { class: 'menu-item', type: 'button', attrs: { 'aria-current': current ? 'true' : null }, style: { alignItems: 'flex-start' } },
+          h('span', { class: 'mark', style: { display: 'grid', placeItems: 'center', width: '22px', height: '22px', borderRadius: '6px', background: current ? 'var(--primary)' : 'var(--fill-2)', color: current ? 'var(--on-primary)' : 'var(--fg-2)', fontSize: '11px', fontWeight: 700, flex: 'none', marginTop: '1px' }, text: initials(b.name).slice(0, 1) }),
           h('span', { style: { minWidth: 0, flex: 1 } },
             h('span', { style: { display: 'flex', alignItems: 'center', gap: '6px' } }, h('b', { text: b.name, style: { fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }),
-              b.current ? h('span', { class: 'badge', text: 'Current' }) : b.live ? h('span', { class: 'badge', style: { '--tone': 'var(--green)' }, text: 'Live' }) : null),
+              current ? h('span', { class: 'badge', text: 'Current' }) : !b.exists ? h('span', { class: 'badge', style: { '--tone': 'var(--red)' }, text: 'Missing' }) : null),
             h('span', { class: 'faint', style: { display: 'block', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, text: b.board })),
           h('span', { class: 'btn icon xs', attrs: { role: 'button', 'aria-label': `Delete board ${b.name}` }, title: 'Delete board…', on: { click: ev => { ev.stopPropagation(); m.close(); deleteBoard(b); } } }, icon('trash', 'sm')));
-        row.addEventListener('click', () => { m.close(); if (!b.current) switchBoard(b); });
+        row.addEventListener('click', () => { m.close(); if (!current) switchBoard(b); });
         return row;
       }));
     };
@@ -2087,43 +2099,49 @@ const WB = window.WB = {};
     search.addEventListener('keydown', e => { if (e.key === 'Enter') list.querySelector('.menu-item:not([aria-current])')?.click(); });
     draw();
   }
-  async function switchBoard(b) {
-    const close = toast(`Opening ${b.name}…`, { ms: 20000 });
-    try {
-      const res = await request('POST', '/viewers/start', { body: { name: b.name } });
-      location.assign(res.url);
-    } catch (err) { close(); toast(`Could not open ${b.name}: ${err.message}`, { error: true }); }
-  }
+  const switchBoard = b => location.assign(boardUrl(b.name));
   async function deleteBoard(b) {
-    const yes = await confirm({ title: `Delete “${b.name}”?`, body: 'Its board.json is renamed to a recoverable board.deleted-*.json file and the board is removed from the list. Cards, attachments and backups stay on disk.', ok: 'Delete board', danger: true });
+    const current = b.name === BOARD;
+    const yes = await confirm(b.exists
+      ? { title: `Delete “${b.name}”?`, body: `${b.board} is renamed to a recoverable board.deleted-*.json file beside it and the board is removed from the list. Cards, attachments and backups stay on disk.`, ok: 'Delete board', danger: true }
+      : { title: `Remove “${b.name}”?`, body: `${b.board} no longer exists, so only the registration is removed. No file is moved.`, ok: 'Remove registration', danger: true });
     if (!yes) return;
     try {
-      const res = await request('POST', '/viewers/delete', { body: { name: b.name, board: b.board, baseRev: b.current ? (S.missing ? null : S.rev) : (b.rev ?? null) } });
+      const res = await request('POST', `${ROOT}api/boards/delete`, { body: { name: b.name, board: b.board, baseRev: current && S.doc && !S.missing ? S.rev : (b.rev ?? null) } });
+      if (current) { location.assign(ROOT); return; }
       toast(`Deleted ${b.name}${res.recoveryPath ? ' — recoverable' : ''}`);
-      if (res.current) enterMissing();
+      redrawChooser?.();
     } catch (err) { toast(`Could not delete ${b.name}: ${err.message}`, { error: true }); }
   }
   $('#board-pick').addEventListener('click', e => openBoardPicker(e.currentTarget));
 
-  // ── Missing board → chooser ────────────────────────────────────────
-  function enterMissing() {
-    S.missing = true; setLive('down');
-    WB.closeCard();
+  // ── Board chooser: the hub page, or a missing / unregistered board ──
+  let redrawChooser = null;
+  function showChooser(title, text) {
     board.hidden = true;
     const list = h('div', { class: 'list', style: { textAlign: 'left', marginTop: '8px' } }, h('div', { class: 'list-row faint', text: 'Loading boards…' }));
     viewHost.replaceChildren(h('div', { class: 'setup' }, h('div', { class: 'setup-card' },
       h('div', { class: 'empty', style: { padding: '0' } }, icon('board')),
-      h('h1', { text: 'This board isn’t available' }),
-      h('p', { text: 'It was deleted, moved, or its file cannot be read. Choose another board or retry.' }),
+      h('h1', { text: title }),
+      h('p', { text }),
       list,
-      h('div', { style: { marginTop: '16px' } }, h('button', { class: 'btn outline', type: 'button', text: 'Retry', on: { click: () => location.reload() } })))));
+      h('div', { style: { marginTop: '16px' } }, h('button', { class: 'btn outline', type: 'button', text: BOARD ? 'Retry' : 'Refresh', on: { click: () => location.reload() } })))));
     viewInner = null;
-    WB.api.get('/viewers').then(res => {
-      const boards = (res.boards || []).filter(b => !b.current);
+    redrawChooser = () => WB.api.get(`${ROOT}api/boards`).then(res => {
+      const boards = (res.boards || []).filter(b => b.name !== BOARD);
       list.replaceChildren(...(boards.length ? boards.map(b => h('button', { class: 'list-row menu-item', type: 'button', style: { borderRadius: 0 }, on: { click: () => switchBoard(b) } },
-        h('b', { text: b.name, style: { fontWeight: 500 } }), h('span', { class: 'faint', text: b.board, style: { marginLeft: 'auto', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' } })))
-        : [h('div', { class: 'list-row faint', text: 'No other registered boards.' })]));
+        h('b', { text: b.name, style: { fontWeight: 500 } }), h('span', { class: 'faint', text: b.exists ? b.board : `Missing · ${b.board}`, style: { marginLeft: 'auto', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' } })))
+        : [h('div', { class: 'list-row faint', text: BOARD ? 'No other registered boards.' : 'No boards are registered yet. Run workboard init in a project folder.' })]));
     }).catch(() => list.replaceChildren(h('div', { class: 'list-row faint', text: 'Could not list boards.' })));
+    redrawChooser();
+  }
+  function enterMissing(notRegistered = false) {
+    S.missing = true; setLive('down');
+    if (notRegistered) { unregistered = true; events?.close(); events = null; app.dataset.mode = 'hub'; }
+    WB.closeCard();
+    showChooser('This board isn’t available', notRegistered
+      ? `“${BOARD}” is not a registered board. Choose another board.`
+      : 'It was deleted, moved, or its file cannot be read. Choose another board or retry.');
   }
 
   // ── Command palette ────────────────────────────────────────────────
@@ -2210,6 +2228,7 @@ const WB = window.WB = {};
   // ── Keyboard ───────────────────────────────────────────────────────
   const typing = t => t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
   document.addEventListener('keydown', e => {
+    if (!S.doc && e.key !== 'Escape') return;
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
     if (e.key === 'Escape') {
@@ -2235,18 +2254,26 @@ const WB = window.WB = {};
     const side = store.get('workboard.ui.side');
     // No saved choice: hide the sidebar where five lanes would not otherwise fit.
     setSide(side ? side === 'collapsed' : innerWidth < 1400, false);
+    if (!BOARD) {
+      app.dataset.mode = 'hub';
+      showChooser('Choose a board', 'Every registered board is served here. Pick one to open it.');
+      return;
+    }
+    document.title = `${BOARD} · WorkBoard`;
+    $('#board-pick-name').textContent = BOARD;
+    $('#board-mark').textContent = initials(BOARD).slice(0, 1);
     setLive('connecting');
     try {
-      const doc = await request('GET', '/board.json');
-      loadFilters(store.json(`workboard.ui.filters::${doc.name}`, null));
-      for (const k of store.json(`workboard.ui.collapsed::${doc.name}`, [])) groupCollapsed.add(k);
+      const doc = await request('GET', 'board.json');
+      loadFilters(store.json(boardKey('filters'), null));
+      for (const k of store.json(boardKey('collapsed'), [])) groupCollapsed.add(k);
       setDoc(doc, { source: 'boot' });
       renderSavedViews();
-      WB.setView(store.get(`workboard.ui.view::${doc.name}`, 'board'));
+      WB.setView(store.get(boardKey('view'), 'board'));
       const m = location.hash.match(/^#(\d+)$/);
       if (m) requestAnimationFrame(() => WB.openCard(Number(m[1])));
     } catch (err) {
-      if (err.status === 410) enterMissing();
+      if (err.status === 410 || isUnregistered(err)) enterMissing(isUnregistered(err));
       else { setLive('down'); toast(`Could not load the board: ${err.message}`, { error: true, ms: 10000 }); }
     }
     connect();
@@ -2897,7 +2924,7 @@ const WB = window.WB = {};
   const icon = (name, cls) => WB.ui.icon(name, cls);
 
   // Server-backed data survives view switches; `cur` is the one mounted view.
-  const PATHS = {ready: '/api/ready', insights: '/api/stats', git: '/api/git'};
+  const PATHS = {ready: 'api/ready', insights: 'api/stats', git: 'api/git'};
   const VALID = {
     ready: d => Array.isArray(d && d.cards),
     insights: d => !!d && !!d.stats && typeof d.stats === 'object',

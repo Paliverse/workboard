@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""WorkBoard CLI — the concise agent/human interface for the project kanban.
+"""WorkBoard: the concise agent/human interface for the project kanban.
 
 Every mutation prints one line and supports --json for a machine postcondition.
 Run from anywhere inside the project (walks up to board/board.json), or pass
---board <project-root-or-board.json>.
+--board <project-root-or-board.json>. `workboard open` shows the board in the
+browser; ordinary board commands never start a server or open a browser.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import core as wb
+from . import __version__, core as wb
 
 wb.configure_utf8()
 
@@ -603,11 +604,11 @@ def cmd_digest(args):
         print(f"  sweep: {len(pending)} done cards older than 14d (operator task)")
 
 
-def cmd_new(args):
+def cmd_init(args):
     if args.board:
-        raise wb.WorkflowError("new uses --dir, never --board")
+        raise wb.WorkflowError("init uses --dir, never --board")
     if wb.os.environ.get("WORKBOARD_SCOPE_ROOT") and not args.dir:
-        raise wb.WorkflowError("scoped new requires an explicit --dir under WORKBOARD_SCOPE_ROOT")
+        raise wb.WorkflowError("scoped init requires an explicit --dir under WORKBOARD_SCOPE_ROOT")
     root = wb.require_write_scope(args.dir or Path.cwd())
     bdir = root / "board"
     p = wb.require_write_scope(bdir / "board.json")
@@ -632,7 +633,7 @@ def cmd_new(args):
         print(json.dumps({"ok": True, "board": str(p), "rev": doc["rev"],
                           "actor": wb.actor(), "name": doc["name"]}))
     else:
-        print(f"board created: {p} — open with: card.py serve --open")
+        print(f"board created: {p} — view it with: workboard open")
 
 
 def cmd_serve(args):
@@ -770,19 +771,22 @@ def cmd_columns_core(args):
 
 
 def cmd_boards(args):
-    reg = wb.registry_load()
-    boards = reg.get("boards", {})
+    from urllib.parse import quote
+    port = int(wb.os.environ.get("WORKBOARD_PORT") or 7891)
+    boards = wb.registry_load().get("boards", {})
+    rows = [(name, path, f"http://127.0.0.1:{port}/b/{quote(name, safe='')}/")
+            for name, path in sorted(boards.items())]
     if args.json:
         print(json.dumps({"ok": True, "boards": [
-            {"name": name, "board": path, "exists": Path(path).is_file()}
-            for name, path in sorted(boards.items())]}, ensure_ascii=False))
+            {"name": name, "board": path, "url": url, "exists": Path(path).is_file()}
+            for name, path, url in rows]}, ensure_ascii=False))
         return
-    if not boards:
-        print("(no registered boards — create one with: card.py new <name>)")
+    if not rows:
+        print("(no registered boards — create one with: workboard init <name>)")
         return
-    for name, path in sorted(boards.items()):
+    for name, path, url in rows:
         exists = "✓" if Path(path).exists() else "✗ missing"
-        print(f"  {name:<20} {path} {exists}")
+        print(f"  {name:<20} {url}  {path} {exists}")
 
 
 def cmd_which(args):
@@ -822,8 +826,9 @@ def _revision(value):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="card.py", description=__doc__, allow_abbrev=False,
+    ap = argparse.ArgumentParser(prog="workboard", description=__doc__, allow_abbrev=False,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--version", action="version", version=f"workboard {__version__}")
     _global_arguments(ap, root=True)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -984,7 +989,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("boards", cmd_boards, "list registered boards")
     add("which", cmd_which, "print resolved board path + counts")
 
-    p = add("new", cmd_new, "create a new board in cwd (or --dir)")
+    p = add("init", cmd_init, "create and register a board in cwd (or --dir)")
     p.add_argument("name", nargs="?")
     p.add_argument("--dir")
 
@@ -1021,8 +1026,8 @@ def main(argv=None):
     if sum(token == "--board" or token.startswith("--board=") for token in options) > 1:
         ap.error("--board may be specified only once")
     args = ap.parse_args(argv)
-    if args.cmd == "new" and args.board is not None:
-        ap.error("new uses --dir as its destination; --board is not accepted")
+    if args.cmd == "init" and args.board is not None:
+        ap.error("init uses --dir as its destination; --board is not accepted")
     if args.cmd in ("recover", "columns-core", "sweep") and args.expected_rev is not None and not args.apply:
         ap.error("--expected-rev on maintenance requires --apply")
     if args.cmd == "comment":

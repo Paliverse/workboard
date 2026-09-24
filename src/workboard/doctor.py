@@ -1,31 +1,28 @@
-#!/usr/bin/env python3
-"""Read-only release evidence and an explicit, copy-only data recovery rehearsal."""
+"""`workboard doctor`: installation health plus read-only board data integrity.
+
+Data checks never create files, locks, or directories. They validate the board
+document, recovery snapshots, attachment blobs, and the board registry within
+fixed file/byte/time budgets. Blockers exit 1; warnings are advice.
+"""
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
-import shlex
+import shutil
 import stat
-import subprocess
 import sys
 import time
 
+from . import __version__
 from . import core as wb
 
 MAX_JSON_BYTES = 32 * 1024 * 1024
 MAX_FILES = 10000
 MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
-MAX_VIEWERS = 128
 MAX_SECONDS = 60
-OPERATOR_GATES = [
-    "Inventory and quiesce all old CLI sessions/viewers and other writers together; unknown old binaries cannot be fenced retroactively.",
-    "Obtain coordinated live-cutover approval, checkpoint runtime/data/blobs/recovery/registries/instructions/task definition, then refresh active sessions.",
-    "Preserve post-cutover work in any rollback; data rehearsal is not live deployment or universal rollback proof.",
-]
 
 
 class _LimitError(ValueError):
@@ -103,7 +100,7 @@ def _json_read(path, budget):
     return json.loads(data.decode("utf-8-sig"), object_pairs_hook=_pairs, parse_constant=_invalid_constant)
 
 
-def _files(root, budget, depth=0, *, include_dirs=False):
+def _files(root, budget, depth=0):
     _safe_path(root)
     if depth > 64:
         raise ValueError(f"directory nesting exceeds inspection limit: {root}")
@@ -113,9 +110,7 @@ def _files(root, budget, depth=0, *, include_dirs=False):
             path = Path(entry.path)
             _safe_path(path)
             if entry.is_dir(follow_symlinks=False):
-                if include_dirs:
-                    yield path
-                yield from _files(path, budget, depth + 1, include_dirs=include_dirs)
+                yield from _files(path, budget, depth + 1)
             else:
                 yield path
 
@@ -324,522 +319,195 @@ def _inspect_data(value, report, budget, blob_cache):
     return result
 
 
-def _registry(path, kind, report, budget):
+def _registry(path, report, budget):
     result = {"path": str(path), "exists": False, "ok": False}
     try:
         _safe_path(path)
         result["exists"] = Path(path).exists()
         if not result["exists"]:
             result["ok"] = True
-            return result, {"boards": {}} if kind == "boards" else {}
+            return result, {"boards": {}}
         raw = _json_read(path, budget)
-        strict = (wb.registry_load(path, max_bytes=MAX_JSON_BYTES) if kind == "boards"
-                  else wb._viewers_load(path, max_bytes=MAX_JSON_BYTES))
-        if not isinstance(raw, dict) or strict != raw:
-            raise ValueError("registry is malformed or changed during inspection")
-        if kind == "boards" and not isinstance(raw.get("boards"), dict):
-            raise ValueError("board registry must contain a boards object")
+        if not isinstance(raw, dict) or wb.registry_load(path, max_bytes=MAX_JSON_BYTES) != raw:
+            raise ValueError("board registry is malformed or changed during inspection")
         result["ok"] = True
         return result, raw
     except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
-        _finding(report, "registry-invalid", exc, path, category="runtime")
+        _finding(report, "registry-invalid", exc, path, category="registry")
         result["error"] = str(exc)
         return result, None
 
 
-def _windows_census():
-    """Bounded read-only CIM inventory; inability to inspect Python is missing evidence."""
-    if os.name != "nt":
-        return {"available": False, "complete": False, "processes": [], "error": "Windows CIM census is unavailable on this platform"}
-    script = r'''$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $rows=@(Get-CimInstance Win32_Process -Filter "Name LIKE 'python%' OR Name='py.exe'" | Select-Object -First 513 | ForEach-Object { $line=$_.CommandLine; [pscustomobject]@{pid=[int]$_.ProcessId;name=$_.Name;commandLine=if($line.Length -gt 8192){$line.Substring(0,8192)}else{$line};truncated=($line.Length -gt 8192)} }); ConvertTo-Json -InputObject $rows -Compress -Depth 3'''
-    try:
-        completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                                   stdin=subprocess.DEVNULL, capture_output=True, timeout=8,
-                                   creationflags=0x08000000)
-        if completed.returncode or len(completed.stdout) > 8 * 1024 * 1024:
-            raise ValueError(f"CIM failed or exceeded output limit: {completed.stderr[:1000].decode(errors='replace')}")
-        rows = json.loads(completed.stdout.decode("utf-8-sig"))
-        if not isinstance(rows, list) or len(rows) > 512:
-            raise ValueError("CIM process list is malformed or incomplete")
-        complete = all(isinstance(row, dict) and type(row.get("pid")) is int and row["pid"] > 0
-                       and isinstance(row.get("commandLine"), str) and row["commandLine"].strip()
-                       and not row.get("truncated") for row in rows)
-        return {"available": True, "complete": complete, "processes": rows,
-                "error": None if complete else "One or more Python command lines are inaccessible/truncated"}
-    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        return {"available": False, "complete": False, "processes": [], "error": str(exc)}
+def _check_data(report, board, all_registered):
+    """The current board (or every registered board with --all), the registry, and legacy files."""
+    budget, cache, seen, directories = _Budget(), {}, set(), {}
 
+    def inspect(value):
+        result = _inspect_data(value, report, budget, cache)
+        report["boards"].append(result)
+        if result.get("path"):
+            seen.add(os.path.normcase(result["path"]))
+            directories[os.path.normcase(result["path"])] = Path(result["path"]).parent
 
-def _command_args(line):
-    if os.name != "nt":
-        return [part.strip('"') for part in shlex.split(line, posix=False)]
-    import ctypes
-    from ctypes import wintypes
-    shell = ctypes.WinDLL("shell32", use_last_error=True)
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    shell.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
-    shell.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
-    kernel.LocalFree.argtypes = [wintypes.HLOCAL]
-    kernel.LocalFree.restype = wintypes.HLOCAL
-    count = ctypes.c_int()
-    argv = shell.CommandLineToArgvW(line, ctypes.byref(count))
-    if not argv:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        return [argv[index] for index in range(count.value)]
-    finally:
-        kernel.LocalFree(argv)
-
-
-def _viewer_command(row):
-    if not isinstance(row, dict):
-        raise ValueError("CIM process entry is not an object")
-    line = row.get("commandLine")
-    if not isinstance(line, str) or not line:
-        return None
-    args = _command_args(line)
-    names = [arg.replace("\\", "/").rsplit("/", 1)[-1].lower() for arg in args]
-    if "serve.py" not in names and not ("card.py" in names and "serve" in args):
-        return None
-    def option(name):
-        for index, arg in enumerate(args):
-            if arg.startswith(name + "="):
-                return arg.split("=", 1)[1]
-            if arg == name:
-                return args[index + 1] if index + 1 < len(args) else None
-        return None
-    return {**row, "boardArgument": option("--board"), "announce": option("--announce"),
-            "portArgument": option("--port"),
-            "runtimeScript": next(arg for arg, name in zip(args, names) if name in ("serve.py", "card.py"))}
-
-
-def _inventory(report, boards, viewers, budget):
-    candidates, seen = [], set()
-    def add(board, entry, source):
-        if len(candidates) >= MAX_VIEWERS:
-            raise ValueError("viewer inventory limit reached; evidence is incomplete")
-        if not isinstance(entry, dict):
-            raise ValueError(f"malformed viewer entry: {source}")
-        pid, port = entry.get("pid"), entry.get("port")
-        if type(pid) is not int or pid <= 0 or type(port) is not int or not 1 <= port <= 65535:
-            raise ValueError(f"invalid viewer PID/port: {source}")
-        key = (os.path.normcase(str(board)), pid, port)
-        if key in seen:
-            for candidate in candidates:
-                if candidate["key"] == key:
-                    candidate["sources"].append(source)
-                    return
-        seen.add(key)
-        candidates.append({"key": key, "board": str(board), "entry": entry, "sources": [source]})
-
-    if viewers is not None:
-        for directory, entry in viewers.items():
-            try:
-                budget.take()
-                lexical = Path(directory) / "board.json"
-                if not Path(directory).is_absolute():
-                    raise ValueError("viewer registry board directory must be absolute")
-                board = wb.canonical_registered_board(lexical)
-                _safe_path(lexical)
-                boards.setdefault(os.path.normcase(str(board)), board)
-                add(board, entry, "registry")
-            except (OSError, ValueError, TypeError, RuntimeError, wb.UnsafeBoardPath) as exc:
-                _finding(report, "viewer-entry-invalid", exc, directory, category="runtime")
-                if isinstance(exc, _LimitError):
-                    raise
-    census = _windows_census()
-    report["census"] = census
-    if not census.get("available") or not census.get("complete"):
-        _finding(report, "census-incomplete", census.get("error") or "Process census is unavailable/incomplete", "Windows CIM", category="runtime")
-    known = []
-    runtime_root = Path(wb.runtime_info()["runtimeRoot"]).resolve(strict=False)
-    census["runtimeRoot"] = str(runtime_root)
-    census["scope"] = "selected/registered boards or the runtime under inspection"
-    for row in census.get("processes", []):
+    explicit = board or os.environ.get("WORKBOARD_DEFAULT_BOARD")
+    if explicit:
+        inspect(explicit)
+    else:
+        try:
+            found = wb.find_board()
+        except FileNotFoundError:
+            found = None
+        if found is not None:
+            inspect(found)
+    report["registry"], registry = _registry(wb.registry_path(), report, budget)
+    entries = report["registry"]["entries"] = []
+    for name, value in (registry or {}).get("boards", {}).items():
+        entry = {"name": name, "board": value, "ok": False}
+        entries.append(entry)
         try:
             budget.take()
-            command = _viewer_command(row)
-            if command:
-                known.append(command)
-                argument = command["boardArgument"]
-                script = Path(command["runtimeScript"])
-                runtime_known = script.is_absolute()
-                same_runtime = runtime_known and script.resolve(strict=False).parent == runtime_root
-                board_known = bool(argument) and Path(argument).is_absolute()
-                same_board = False
-                if board_known:
-                    candidate = Path(argument)
-                    if candidate.name != "board.json":
-                        candidate = candidate / "board" / "board.json"
-                    same_board = os.path.normcase(str(candidate.resolve(strict=False))) in boards
-                command["inScope"] = same_runtime or same_board or not (runtime_known and board_known)
-                command["scopeReason"] = ("runtime-under-inspection" if same_runtime else
-                                          "selected-or-registered-board" if same_board else
-                                          "unrelated-runtime-and-board" if not command["inScope"] else
-                                          "indeterminate-command-scope")
-                if not command["inScope"]:
-                    continue
-                if argument and Path(argument).is_absolute():
-                    _, board = _board_path(argument)
-                    boards.setdefault(os.path.normcase(str(board)), board)
-                    if command["announce"]:
-                        announce = Path(command["announce"])
-                        if not announce.is_absolute():
-                            raise ValueError("CIM announcement is relative; process working directory is unknown")
-                        _safe_path(announce)
-                        if announce != board.parent / ".viewer.port":
-                            add(board, _json_read(announce, budget), f"CIM announcement: {announce}")
-                else:
-                    _finding(report, "census-viewer-unresolved", "Known runtime viewer lacks an absolute, inspectable --board; cannot establish writer identity", command["runtimeScript"], category="runtime")
-        except (OSError, ValueError, TypeError, KeyError, RuntimeError, wb.UnsafeBoardPath) as exc:
-            _finding(report, "census-viewer-invalid", exc, row.get("pid") if isinstance(row, dict) else "CIM", category="runtime")
-            if isinstance(exc, _LimitError):
-                raise
-    census["knownViewers"] = known
-    for board in boards.values():
-        announce = board.parent / ".viewer.port"
-        try:
-            budget.take()
-            _safe_path(announce)
-            if announce.exists():
-                add(board, _json_read(announce, budget), str(announce))
-        except (OSError, ValueError, TypeError, RuntimeError) as exc:
-            _finding(report, "announcement-invalid", exc, announce, category="runtime")
-            if isinstance(exc, _LimitError):
-                raise
-    for command in known:
-        if not command["inScope"]:
-            continue
-        matches = [candidate for candidate in candidates if candidate["entry"].get("pid") == command.get("pid")]
-        if not matches:
-            _finding(report, "unannounced-viewer", "Live known runtime viewer is absent from registry/local announcement; quiesce or establish its identity", command["runtimeScript"], category="runtime")
-        else:
-            for candidate in matches:
-                if "registry" not in candidate["sources"]:
-                    _finding(report, "unregistered-viewer", "Live runtime is announced but absent from the viewer registry", candidate["board"], category="runtime", warning=True)
-                candidate.setdefault("processes", []).append(command)
-                if command.get("boardArgument"):
-                    try:
-                        _, actual = _board_path(command["boardArgument"])
-                        if os.path.normcase(str(actual)) != os.path.normcase(candidate["board"]):
-                            raise ValueError("CIM command line disagrees with viewer board identity")
-                        if command.get("portArgument") and int(command["portArgument"]) != candidate["entry"].get("port"):
-                            raise ValueError("CIM command line disagrees with viewer port")
-                    except (OSError, ValueError, TypeError, RuntimeError, wb.UnsafeBoardPath) as exc:
-                        _finding(report, "census-identity-mismatch", exc, command["pid"], category="runtime")
-    for candidate in candidates:
-        candidate.pop("key")
-        entry = candidate.pop("entry")
-        candidate.update(pid=entry.get("pid"), port=entry.get("port"), registryEntry=entry)
-        try:
-            budget.take()
-            status = wb.viewer_status(entry, Path(candidate["board"]))
-            candidate.update(status)
-            compatibility = status.get("compatibility")
-            if compatibility not in ("compatible", "confirmed-dead"):
-                _finding(report, "viewer-" + str(compatibility or "indeterminate"), status.get("reason") or "Viewer compatibility cannot be established", candidate["board"], category="runtime")
-            elif compatibility == "confirmed-dead":
-                if candidate.get("processes"):
-                    candidate["compatibility"] = "indeterminate"
-                    _finding(report, "census-liveness-conflict", "CIM saw this runtime process but its PID probe says dead; repeat inventory after quiescence", candidate["board"], category="runtime")
-                else:
-                    _finding(report, "stale-viewer", "Confirmed-dead viewer evidence retained; doctor never prunes it", candidate["board"], category="runtime", warning=True)
-            health = status.get("health")
-            if isinstance(health, dict) and (health.get("boardAvailable") is False or health.get("boardError") is not None):
-                _finding(report, "viewer-board-unavailable", health.get("boardError") or "Viewer reports its board unavailable", candidate["board"])
-            candidate["runtime"] = {key: health.get(key) for key in wb.runtime_info()} if isinstance(health, dict) else None
-        except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
-            candidate.update(compatibility="indeterminate", reason=str(exc))
-            _finding(report, "viewer-indeterminate", exc, candidate["board"], category="runtime")
-        report["viewers"].append(candidate)
-    by_board = {}
-    for candidate in candidates:
-        if candidate.get("compatibility") != "confirmed-dead":
-            by_board.setdefault(candidate["board"], set()).add((candidate.get("pid"), candidate.get("port")))
-    for board, identities in by_board.items():
-        if len(identities) > 1:
-            _finding(report, "viewer-conflict", "Registry/announcement expose multiple potentially-live identities for one board", board, category="runtime")
-
-
-def inspect_board(board_path, *, registry_home=None, all_registered=False):
-    """Inspect explicit data and all known runtime evidence without creating even a lock."""
-    report = {"ok": False, "ready": False, "dataReady": False, "runtimeReady": False,
-              "blockers": [], "warnings": [], "boards": [], "registry": {}, "viewers": [],
-              "allRegistered": bool(all_registered), "operatorGates": list(OPERATOR_GATES),
-              "readOnly": True, "liveCutoverAuthorized": False}
-    budget, cache = _Budget(), {}
-    report["board"] = _inspect_data(board_path, report, budget, cache)
-    report["boards"].append(report["board"])
-    boards = {}
-    if report["board"].get("path"):
-        path = Path(report["board"]["path"])
-        boards[os.path.normcase(str(path))] = path
-    home = Path(registry_home).absolute() if registry_home is not None else None
-    registry_path = home / ".workboard" / "boards.json" if home is not None else wb.REGISTRY_PATH
-    viewers_path = home / ".workboard" / "viewers.json" if home is not None else wb.VIEWER_REGISTRY
-    report["registry"]["boards"], registry = _registry(registry_path, "boards", report, budget)
-    report["registry"]["viewers"], viewers = _registry(viewers_path, "viewers", report, budget)
-    report["registry"]["entries"] = []
-    if registry is not None:
-        for name, value in registry.get("boards", {}).items():
-            entry = {"name": name, "registeredPath": value, "ok": False}
-            report["registry"]["entries"].append(entry)
-            try:
-                budget.take()
-                if not isinstance(name, str) or not name.strip() or not isinstance(value, str):
-                    raise ValueError("registry names and board paths must be nonempty strings")
-                canonical = wb.canonical_registered_board(value)
-                _safe_path(value)
-                if not canonical.is_file():
-                    raise FileNotFoundError("registered board is missing")
-                key = os.path.normcase(str(canonical))
-                unseen = key not in boards
-                boards[key] = canonical
-                entry.update(ok=True, path=str(canonical))
-                if all_registered and unseen:
-                    report["boards"].append(_inspect_data(value, report, budget, cache))
-            except (OSError, ValueError, TypeError, RuntimeError, wb.UnsafeBoardPath) as exc:
-                entry["error"] = str(exc)
-                _finding(report, "registered-board-invalid", exc, value, category="runtime")
-                if isinstance(exc, _LimitError):
-                    break
-    try:
-        _inventory(report, boards, viewers, budget)
-    except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
-        _finding(report, "inventory-incomplete", exc, viewers_path, category="runtime")
-    if all_registered:
-        validated = {os.path.normcase(item["path"]) for item in report["boards"] if item.get("path")}
-        for key, discovered in boards.items():
-            if key in validated:
+            canonical = wb.canonical_registered_board(value)
+            _safe_path(value)
+            if not canonical.is_file():
+                entry["error"] = "registered board is missing"
+                _finding(report, "registered-board-missing",
+                         f"board '{name}' is registered but its board.json is gone", value,
+                         category="registry", warning=True)
                 continue
-            try:
-                budget.take()
-            except _LimitError as exc:
-                _finding(report, "board-inventory-incomplete", exc, discovered)
+            entry.update(ok=True, path=str(canonical))
+            directories.setdefault(os.path.normcase(str(canonical)), canonical.parent)
+            if all_registered and os.path.normcase(str(canonical)) not in seen:
+                inspect(value)
+        except (OSError, ValueError, TypeError, RuntimeError, wb.UnsafeBoardPath) as exc:
+            entry["error"] = str(exc)
+            _finding(report, "registered-board-invalid", exc, value, category="registry")
+            if isinstance(exc, _LimitError):
                 break
-            report["boards"].append(_inspect_data(discovered, report, budget, cache))
-            validated.add(key)
-    elif len(boards) > 1:
-        _finding(report, "selected-data-only", "Other in-scope board paths are inventoried, not data-validated; use --all for replacement evidence", registry_path, warning=True)
-    report["dataReady"] = not any(item["category"] == "data" for item in report["blockers"])
-    report["runtimeReady"] = not any(item["category"] == "runtime" for item in report["blockers"])
-    report["ok"] = report["ready"] = not report["blockers"]
-    report["limits"] = {"maxFiles": MAX_FILES, "maxBytes": MAX_TOTAL_BYTES, "maxSeconds": MAX_SECONDS}
-    return report
+    legacy = [wb.home() / "viewers.json", *(directory / ".viewer.port" for directory in directories.values())]
+    for path in legacy:
+        if path.exists():
+            _finding(report, "legacy-viewer-file",
+                     "left over from the retired per-board viewers; the single server ignores it, safe to delete",
+                     path, category="install", warning=True)
 
 
-def _manifest(root):
-    budget, result = _Budget(), {}
-    for path in _files(root, budget, include_dirs=True):
-        if path.is_dir():
-            result[path.relative_to(root).as_posix()] = {"directory": True}
-            continue
-        before = path.stat()
-        budget.take(before.st_size)
-        digest, size = hashlib.sha256(), 0
-        with wb.open_shared(path, "rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                size += len(chunk)
-                if time.monotonic() > budget.deadline:
-                    raise ValueError("source hashing exceeded inspection time limit")
-                digest.update(chunk)
-                if size > before.st_size:
-                    raise ValueError(f"source grew during checkpoint: {path}")
-        after = path.stat()
-        if size != before.st_size or (before.st_size, before.st_mtime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
-            raise ValueError(f"source changed during checkpoint: {path}")
-        result[path.relative_to(root).as_posix()] = {"size": size, "sha256": digest.hexdigest()}
+def _check_path(report, installation) -> dict:
+    """Does `workboard` on PATH run this same installation?"""
+    import subprocess
+    found = shutil.which("workboard")
+    result = {"workboard": found, "sameInstall": False}
+    if found is None:
+        _finding(report, "not-on-path", "`workboard` is not on PATH, so agents cannot run it",
+                 "PATH", category="install", warning=True)
+        return result
+    try:
+        proc = subprocess.run([found, "version", "--json"], stdin=subprocess.DEVNULL, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=30)
+        other = json.loads(proc.stdout.strip().splitlines()[-1])
+        if not isinstance(other, dict):
+            raise ValueError("`version --json` did not print an object")
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired) as exc:
+        _finding(report, "path-unverified", f"cannot run `{found} version --json`: {exc}", found,
+                 category="install", warning=True)
+        return result
+    result.update(version=other.get("version"), channel=other.get("channel"), executable=other.get("executable"))
+    result["sameInstall"] = (
+        other.get("channel") == installation["channel"] and isinstance(other.get("executable"), str)
+        and os.path.normcase(os.path.realpath(other["executable"]))
+        == os.path.normcase(os.path.realpath(sys.executable)))
+    if not result["sameInstall"]:
+        _finding(report, "path-other-install",
+                 f"`workboard` on PATH is v{other.get('version')} ({other.get('channel')}) at "
+                 f"{other.get('executable')}, not this installation", found, category="install", warning=True)
     return result
 
 
-def _copy_tree(source, destination, expected):
-    wb.require_write_scope(destination)
-    destination.mkdir()
-    for relative, metadata in expected.items():
-        original, target = source / relative, destination / relative
-        _safe_path(original)
-        wb.require_write_scope(target)
-        if metadata.get("directory"):
-            target.mkdir(parents=True, exist_ok=True)
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        digest, size = hashlib.sha256(), 0
-        with wb.open_shared(original, "rb") as incoming, target.open("xb") as outgoing:
-            while chunk := incoming.read(1024 * 1024):
-                size += len(chunk)
-                if size > metadata["size"]:
-                    raise ValueError(f"source grew while copying: {original}")
-                digest.update(chunk)
-                outgoing.write(chunk)
-            outgoing.flush()
-            os.fsync(outgoing.fileno())
-        if {"size": size, "sha256": digest.hexdigest()} != metadata:
-            raise ValueError(f"source changed while copying: {original}")
-
-
-_REHEARSAL_SCRIPT = r'''
-import contextlib, hashlib, io, json, sys
-from pathlib import Path
-import wbcore as wb
-import card
-board = Path(sys.argv[1])
-by = "release-rehearsal"
-with wb.board_lock(board):
-    baseline = wb.load(board)
-    wb.save(board, baseline, by=by)
-baseline = wb.load(board)
-checkpoint_rev = baseline["rev"]
-with wb.board_lock(board):
-    doc = wb.load(board)
-    wb.check_revision(doc, checkpoint_rev)
-    if not doc["cards"]:
-        doc["cards"].append(wb.normalize_card({"id": wb.unique_id(doc, "rehearsal"), "num": wb.new_num(doc), "title": "Copy-only rehearsal", "column": "task"}))
-    target = doc["cards"][0]
-    ref = target["id"]
-    comment = wb.comment_action(target, {"type": "add", "text": "Copy-only recovery evidence"}, by)
-    wb.save(board, doc, by=by)
-data = b"WorkBoard copy-only attachment proof\n"
-doc, target, metadata = wb.attachment_add(board, ref, "rehearsal.txt", data, by, mime="text/plain", expected_rev=doc["rev"])
-context = wb.card_context(board, ref)
-assert any(item["id"] == comment["id"] for item in context["card"]["comments"])
-assert any(item["id"] == metadata["id"] for item in context["card"]["attachments"])
-_, _, verified, content = wb.attachment_read(board, ref, metadata["id"])
-assert content == data and verified["sha256"] == hashlib.sha256(data).hexdigest()
-before = board.read_bytes()
-blobs_before = set((board.parent / "attachments").iterdir())
-try:
-    wb.attachment_add(board, ref, "stale.txt", b"must not commit", by, expected_rev=doc["rev"] - 1)
-except wb.WorkflowError as exc:
-    assert exc.status == 409
-else:
-    raise AssertionError("stale revision unexpectedly committed")
-assert board.read_bytes() == before and set((board.parent / "attachments").iterdir()) == blobs_before
-doc, _, _ = wb.attachment_detach(board, ref, metadata["id"], by, expected_rev=doc["rev"])
-assert all(item["id"] != metadata["id"] for item in wb.card_context(board, ref)["card"]["attachments"])
-assert wb.attachment_verified_bytes(board, metadata) == data
-transcript = io.StringIO()
-with contextlib.redirect_stdout(transcript):
-    card.main(["--board", str(board), "recover", str(checkpoint_rev), "--apply", "--expected-rev", str(doc["rev"])])
-restored = wb.load(board)
-def logical(document):
-    cards = [{key: value for key, value in card.items() if key != "changedRev"} for card in document["cards"]]
-    return {**{key: value for key, value in document.items() if key not in ("rev", "savedAt", "savedBy", "nextNum")}, "cards": cards}
-assert logical(restored) == logical(baseline), "recovery did not restore logical board state"
-assert restored["nextNum"] >= baseline["nextNum"] and restored["rev"] > doc["rev"]
-print(json.dumps({"ok": True, "baselineRev": checkpoint_rev, "restoredRev": restored["rev"], "baselineNextNum": baseline["nextNum"], "restoredNextNum": restored["nextNum"], "logicalRecovery": True, "attachmentSha256": verified["sha256"], "commentId": comment["id"], "recoveryOutput": transcript.getvalue(), "operations": ["load", "save/schema-upgrade", "comment", "context", "attachment-add/read/detach", "stale-revision-rejected", "CLI-recover"]}))
-'''
-
-
-def _overlap(first, second):
-    return first == second or first in second.parents or second in first.parents
-
-
-def rehearse(board_path, output_dir):
-    """Checkpoint and mutate ONLY an independent copy. Never perform a live cutover."""
-    report = {"ok": False, "mode": "copy-only-data-rehearsal", "liveCutoverAuthorized": False,
-              "sourceUnchanged": False, "logicalRecovery": False, "blockers": [], "warnings": [],
-              "operatorGates": list(OPERATOR_GATES)}
-    output = None
+def _check_installation(report) -> None:
+    from . import install, update
+    info = report["installation"] = {
+        "version": __version__, "channel": update.detect_channel(), "executable": sys.executable,
+        "frozen": bool(getattr(sys, "frozen", False))}
+    info["path"] = _check_path(report, info)
     try:
-        lexical, source_board = _board_path(board_path)
-        requested = Path(output_dir).absolute()
-        wb.require_write_scope(requested)
-        output_path = _safe_path(requested)
-        if os.path.lexists(requested):
-            raise ValueError("rehearsal output must not already exist")
-        if not output_path.parent.is_dir():
-            raise ValueError("rehearsal output parent must already exist")
-        source = lexical.parent
-        if _overlap(output_path, source_board.parent):
-            raise ValueError("rehearsal output overlaps source board storage")
-        protected = {wb.REGISTRY_PATH.parent.resolve(), wb.VIEWER_REGISTRY.parent.resolve()}
-        if any(_overlap(output_path, path) for path in protected):
-            raise ValueError("rehearsal output overlaps managed registry storage")
-        if any(part.casefold() in ("attachments", wb.BACKUP_DIR, wb.ARCHIVE_DIR, ".workboard", "board") for part in output_path.parts):
-            raise ValueError("rehearsal output is inside managed board/recovery storage")
-        evidence = {"blockers": [], "warnings": []}
-        validation = _inspect_data(lexical, evidence, _Budget(), {})
-        report["warnings"].extend(evidence["warnings"])
-        if not validation["ok"]:
-            report["blockers"].extend(evidence["blockers"])
-            return report
-        before = _manifest(source)
-        report.update(source=str(source_board), output=str(output_path), sourceManifest=before,
-                      sourceValidation=validation)
-        wb.require_write_scope(requested)
-        _safe_path(requested)
-        requested.mkdir()  # Exclusive creation, after every safety gate above.
-        output = output_path
-        checkpoint = output / "checkpoint"
-        copied = output / "copy"
-        checkpoint.mkdir()
-        copied.mkdir()
-        report.update(checkpoint=str(checkpoint / "board"), copiedBoard=str(copied / "board" / source_board.name))
-        _copy_tree(source, checkpoint / "board", before)
-        if _manifest(source) != before:
-            raise ValueError("source changed during checkpoint; stop writers before retrying with a new output")
-        if _manifest(checkpoint / "board") != before:
-            raise ValueError("checkpoint byte verification failed")
-        report["checkpointVerified"] = True
-        checkpoint_evidence = {"blockers": [], "warnings": []}
-        report["checkpointValidation"] = _inspect_data(
-            checkpoint / "board" / source_board.name, checkpoint_evidence, _Budget(), {})
-        report["blockers"].extend(checkpoint_evidence["blockers"])
-        report["warnings"].extend(checkpoint_evidence["warnings"])
-        if not report["checkpointValidation"]["ok"]:
-            raise ValueError("byte-verified checkpoint failed data validation; runtime exercise was not started")
-        _copy_tree(checkpoint / "board", copied / "board", before)
-        home = output / "home"
-        home.mkdir()
-        env = os.environ.copy()
-        env.update(HOME=str(home), USERPROFILE=str(home), WORKBOARD_SCOPE_ROOT=str(output),
-                   WORKBOARD_DEFAULT_BOARD=str(copied), PYTHONDONTWRITEBYTECODE="1",
-                   PYTHONUTF8="1", WORKBOARD_ACTOR="release-rehearsal", WB_VIEWER="0")
-        env.pop("PYTHONOPTIMIZE", None)  # Rehearsal assertions are evidence, never optimized away.
-        runtime = Path(__file__).resolve().parent
-        completed = subprocess.run([sys.executable, "-B", "-c", _REHEARSAL_SCRIPT,
-                                    str(copied / "board" / source_board.name)],
-                                   cwd=runtime, env=env, stdin=subprocess.DEVNULL, capture_output=True,
-                                   timeout=45, creationflags=0x08000000 if os.name == "nt" else 0)
-        report.update(isolatedHome=str(home), exerciseExitCode=completed.returncode,
-                      exerciseStderr=completed.stderr.decode("utf-8", errors="replace")[:16000])
-        if completed.returncode:
-            raise ValueError(f"copy-only runtime exercise failed: {report['exerciseStderr']}")
-        exercise = json.loads(completed.stdout.decode("utf-8"))
-        report["exercise"] = exercise
-        report["logicalRecovery"] = exercise.get("logicalRecovery") is True
-        after_report = {"blockers": [], "warnings": []}
-        report["copyValidation"] = _inspect_data(copied / "board" / source_board.name, after_report, _Budget(), {})
-        report["blockers"].extend(after_report["blockers"])
-        report["warnings"].extend(after_report["warnings"])
-        report["sourceUnchanged"] = _manifest(source) == before
-        report["checkpointVerified"] = _manifest(checkpoint / "board") == before
-        if not report["sourceUnchanged"] or not report["checkpointVerified"] or not report["logicalRecovery"]:
-            raise ValueError("source stability, retained checkpoint, or logical recovery proof failed")
-        report["ok"] = not report["blockers"] and report["copyValidation"]["ok"]
-    except (OSError, ValueError, TypeError, KeyError, RuntimeError, wb.UnsafeBoardPath, subprocess.TimeoutExpired) as exc:
-        _finding(report, "rehearsal-failed", exc, output_dir)
-        if output is not None and report.get("sourceManifest") is not None:
-            try:
-                report["sourceUnchanged"] = _manifest(Path(report["source"]).parent) == report["sourceManifest"]
-            except (OSError, ValueError, RuntimeError) as stability_error:
-                _finding(report, "source-stability-unknown", stability_error, report["source"])
-    finally:
-        if output is not None:
-            report["reportPath"] = str(output / "report.json")
-            try:
-                wb.require_write_scope(output / "report.json")
-                _safe_path(output / "report.json")
-                with (output / "report.json").open("x", encoding="utf-8") as stream:
-                    json.dump(report, stream, indent=2, ensure_ascii=False)
-                    stream.write("\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            except (OSError, ValueError) as exc:
-                report["ok"] = False
-                _finding(report, "report-write-failed", exc, output / "report.json")
+        info["skills"] = install.skills_status()
+    except OSError as exc:
+        info["skills"] = []
+        _finding(report, "skill-bundle-missing", f"the bundled SKILL.md cannot be read: {exc}",
+                 "workboard/skills/workboard/SKILL.md", category="install")
+    for target in info["skills"]:
+        if target["state"] == "stale":
+            _finding(report, "skill-stale", "outdated agent skill; run: workboard skills install --refresh",
+                     target["path"], category="install", warning=True)
+        elif target["state"] == "foreign":
+            _finding(report, "skill-foreign", "another skill occupies the workboard skill directory",
+                     target["path"], category="install", warning=True)
+    if info["skills"] and all(target["state"] == "missing" for target in info["skills"]):
+        _finding(report, "skills-missing", "no agent skill is installed; run: workboard setup",
+                 Path.home(), category="install", warning=True)
+    try:
+        service = info["service"] = install.service_status()
+    except (OSError, wb.WorkflowError) as exc:
+        info["service"] = {"error": str(exc)}
+        _finding(report, "service-unknown", f"cannot read the service state: {exc}", "service",
+                 category="install", warning=True)
+        return
+    if service["installed"] and not service["current"]:
+        _finding(report, "service-stale", "the service starts a different command; run: workboard service install",
+                 service["location"], category="install", warning=True)
+    server = service.get("server")
+    if server and server.get("version") != __version__:
+        _finding(report, "server-version-mismatch",
+                 f"the running server is v{server.get('version')} but this CLI is v{__version__}; "
+                 "run: workboard service restart", server.get("port"), category="install", warning=True)
+
+
+def diagnose(board=None, *, all_registered=False) -> dict:
+    """Full doctor report; `ok` is False exactly when blockers exist."""
+    report = {"ok": False, "version": __version__, "allRegistered": bool(all_registered),
+              "blockers": [], "warnings": [], "installation": {}, "boards": [], "registry": {}}
+    _check_installation(report)
+    _check_data(report, board, all_registered)
+    report["limits"] = {"maxFiles": MAX_FILES, "maxBytes": MAX_TOTAL_BYTES, "maxSeconds": MAX_SECONDS}
+    report["ok"] = not report["blockers"]
     return report
 
 
+def _summary(report) -> str:
+    from . import install
+    info = report["installation"]
+    path = info.get("path") or {}
+    service = info.get("service") or {}
+    lines = [f"workboard {info['version']} ({info['channel']}) · {info['executable']}",
+             "  PATH: " + ("this installation" if path.get("sameInstall")
+                          else path.get("workboard") or "`workboard` not found"),
+             "  skills: " + ", ".join(f"{target['state']} {target['path']}" for target in info.get("skills", []))]
+    if "error" in service:
+        lines.append(f"  service: unknown ({service['error']})")
+    else:
+        lines.append(f"  service: {'installed' if service['installed'] else 'not installed'} "
+                     f"({service['kind']}) · {install._server_text(service.get('server'))}")
+    for board in report["boards"]:
+        facts = f"rev {board['rev']} · {board['cards']} cards · " if "rev" in board else ""
+        lines.append(f"  board: {board.get('path') or board['requestedPath']} · {facts}"
+                     + ("ok" if board["ok"] else "problems"))
+    if not report["boards"]:
+        lines.append("  board: none here (pass --board PATH, or --all for every registered board)")
+    entries = report["registry"].get("entries", [])
+    lines.append(f"  registry: {len(entries)} registered board{'s' if len(entries) != 1 else ''}")
+    for kind in ("blockers", "warnings"):
+        lines += [f"{kind[:-1]} [{item['code']}] {item['path']}: {item['message']}" for item in report[kind]]
+    lines.append(f"doctor: {'ok' if report['ok'] else 'FAILED'} · {len(report['blockers'])} blockers, "
+                 f"{len(report['warnings'])} warnings")
+    return "\n".join(lines)
+
+
+def cmd_doctor(args) -> None:
+    report = diagnose(args.board, all_registered=args.all)
+    print(json.dumps(report, ensure_ascii=False) if args.json else _summary(report))
+    if report["blockers"]:
+        raise SystemExit(1)
+
+
 def register(add) -> None:
-    """Register `doctor`; implemented by the setup slice."""
+    p = add("doctor", cmd_doctor, "check the installation and the board data (read-only)")
+    p.add_argument("--all", action="store_true", help="validate every registered board, not just this one")

@@ -1,167 +1,231 @@
-#!/usr/bin/env python3
-"""WorkBoard viewer server — stdlib-only, on-demand.
+"""WorkBoard local server: one per-user process that serves every registered board.
 
-Serves the animated board UI plus the live SSE stream, and accepts browser
-mutations (board POST, granular card PATCH, lifecycle PATCH, structure PATCH)
-so the web UI can drag, stack, edit, and ship cards. Change detection is a
-500ms stat-poll of board.json while at least one browser is connected (one
-stat() syscall per tick; nothing runs when nobody is watching).
+Stdlib only, bound to 127.0.0.1. Root routes: ``/health``, ``/`` (board chooser),
+``/api/boards``, ``POST /api/boards/delete`` and ``POST /api/shutdown``. Each
+registered board lives under ``/b/<name>/`` with the board UI and its per-board
+API; the board is resolved from the registry on every request, so boards
+registered after start-up are served immediately. Change detection is a 500ms
+stat-poll of each board that has at least one SSE subscriber; boards nobody
+watches are never polled.
 """
 from __future__ import annotations
 
-import argparse
 import datetime
 import json
 import os
 import queue
 import re
-import sys
+import secrets
 import subprocess
+import sys
 import threading
 import time
-import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import resources
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote
 
-
+from . import __version__
 from . import core as wb
 
-ROOT = Path(__file__).resolve().parent
-HTML_PATH = ROOT / "web" / "board.html"
+DEFAULT_PORT = 7891
+LOG_ROTATE_BYTES = 5 * 1024 * 1024
+MAX_BODY_BYTES = 32 * 1024 * 1024
 
-_state_lock = threading.Lock()
-_clients: list = []
-_serve_board: Path | None = None
-_serve_name = ""
-_discovery_health_cache: dict[str, tuple[tuple, dict]] = {}
-
-
-def _require_board_present() -> None:
-    if not _serve_board.is_file():
-        raise FileNotFoundError(_serve_board)
+_BOARD_ROUTE = re.compile(r"/b/([^/]+)(/.*)?\Z")
+_CARD_API = re.compile(r"/api/card/([^/]+)\Z")
+_LIFECYCLE_API = re.compile(r"/api/card/([^/]+)/lifecycle\Z")
+_COMMENTS_API = re.compile(r"/api/card/([^/]+)/comments\Z")
+_CONTEXT_API = re.compile(r"/api/card/([^/]+)/context\Z")
+_ATTACHMENTS_API = re.compile(r"/api/card/([^/]+)/attachments\Z")
+_ATTACHMENT_API = re.compile(r"/api/card/([^/]+)/attachments/([^/]+)\Z")
 
 
-def _doc() -> dict:
-    _require_board_present()
-    return wb.load(_serve_board)
+# ===== ports, URLs and lifecycle helpers =====
 
-
-def _sig() -> tuple:
+def _configured_port() -> int:
+    raw = os.environ.get("WORKBOARD_PORT") or str(DEFAULT_PORT)
     try:
-        st = _serve_board.stat()
+        port = int(raw)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        raise wb.WorkflowError(f"WORKBOARD_PORT must be an integer 1..65535, not {raw!r}")
+    return port
+
+
+def server_url(port: int | None = None) -> str:
+    return f"http://127.0.0.1:{_configured_port() if port is None else port}/"
+
+
+def board_url(name: str, port: int | None = None) -> str:
+    return f"{server_url(port)}b/{quote(name, safe='')}/"
+
+
+def _state() -> dict:
+    try:
+        state = json.loads(wb.server_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _request(port: int, method: str, path: str, timeout: float,
+             headers: dict | None = None) -> tuple[int, bytes] | None:
+    """Loopback HTTP without proxies; None when nothing answers."""
+    import http.client
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        connection.request(method, path, headers=headers or {})
+        response = connection.getresponse()
+        return response.status, response.read()
+    except (OSError, http.client.HTTPException):
+        return None
+    finally:
+        connection.close()
+
+
+def _health_at(port: int, timeout: float = 1.0) -> dict | None:
+    answer = _request(port, "GET", "/health", timeout)
+    if answer is None or answer[0] != 200:
+        return None
+    try:
+        info = json.loads(answer[1])
+    except ValueError:
+        return None
+    return info if isinstance(info, dict) and info.get("app") == "workboard" else None
+
+
+def server_info(timeout: float = 1.0) -> dict | None:
+    """The running server's /health, found through server.json, else the configured port."""
+    port = _state().get("port")
+    if type(port) is not int or not 1 <= port <= 65535:
+        port = _configured_port()
+    return _health_at(port, timeout)
+
+
+def stop(timeout: float = 10.0) -> bool:
+    """Ask the running server to exit with its token; True if it stopped or none ran."""
+    info = server_info()
+    if info is None:
+        return True
+    state = _state()
+    token = state.get("token") if state.get("pid") == info.get("pid") else None
+    if not isinstance(token, str):
+        return False
+    port = info["port"]
+    _request(port, "POST", "/api/shutdown", timeout, {"X-WorkBoard-Token": token})
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _health_at(port, 0.5) is None and _state().get("pid") != info["pid"]:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def start_background(timeout: float = 10.0) -> dict:
+    """Return the running server's info, starting the installed service command if needed."""
+    info = server_info()
+    if info:
+        return info
+    from . import install
+    options = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+               "stderr": subprocess.DEVNULL, "cwd": str(Path.home())}
+    if os.name == "nt":
+        options["creationflags"] = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                                    | subprocess.CREATE_NO_WINDOW)
+    else:
+        options["start_new_session"] = True
+    process = subprocess.Popen(install.server_command(), **options)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        info = server_info()
+        if info:
+            return info
+        # Exit 0 is a hand-off (runtime-copy relaunch or an already-running server).
+        if process.poll() not in (None, 0):
+            break
+        time.sleep(0.1)
+    raise wb.WorkflowError(
+        f"server did not start within {timeout:g}s; see {wb.logs_dir() / 'server.log'}", 503, "state")
+
+
+def _local_board(args) -> Path | None:
+    """The board named by --board (errors surface), else the one at/above cwd, else None."""
+    if getattr(args, "board", None):
+        return wb.find_board(args.board)
+    try:
+        return wb.find_board()
+    except FileNotFoundError:
+        return None
+
+
+def _board_name(board: Path, register: bool) -> str | None:
+    """Registered name for this board file; optionally register it under a free name."""
+    target = os.path.normcase(str(board.resolve()))
+    boards = wb.registry_load()["boards"]
+    for name, value in sorted(boards.items()):
+        if os.path.normcase(str(Path(value).resolve(strict=False))) == target:
+            return name
+    if not register:
+        return None
+    base = wb.load(board).get("name") or board.parent.parent.name
+    name, suffix = base, 2
+    while name in boards:
+        name, suffix = f"{base}-{suffix}", suffix + 1
+    wb.register_board(name, board.resolve())
+    return name
+
+
+def open_board(args) -> None:
+    board = _local_board(args)
+    name = _board_name(board, register=True) if board else None
+    port = start_background()["port"]
+    url = board_url(name, port) if name else server_url(port)
+    import webbrowser
+    webbrowser.open(url)
+    if args.json:
+        print(json.dumps({"ok": True, "url": url, "board": str(board) if board else None,
+                          "name": name}, ensure_ascii=False))
+    else:
+        print(f"opened {url}")
+
+
+# ===== per-board helpers =====
+
+def _require_board_present(board: Path) -> None:
+    if not board.is_file():
+        raise FileNotFoundError(board)
+
+
+def _doc(board: Path) -> dict:
+    _require_board_present(board)
+    return wb.load(board)
+
+
+def _sig(board: Path) -> tuple:
+    try:
+        st = board.stat()
         return (st.st_size, st.st_mtime_ns)
     except OSError:
         return ()
 
 
-def _broadcast(event: str, payload: dict) -> None:
-    with _state_lock:
-        clients = list(_clients)
-    data = f"event: {event}\ndata: {json.dumps(payload)}\n\n"
-    for q in clients:
-        try:
-            q.put_nowait(data)
-        except Exception:
-            pass
+class UnknownBoard(LookupError):
+    pass
 
 
-def _watcher():
-    last = _sig()
-    idle_waited = False
-    while True:
-        with _state_lock:
-            active = bool(_clients)
-        if not active:
-            idle_waited = False
-            time.sleep(1.0)
-            continue
-        if not idle_waited:
-            idle_waited = True
-            last = _sig()
-        time.sleep(0.5)
-        cur = _sig()
-        if cur != last:
-            last = cur
-            if not cur:
-                _broadcast("board-missing", {"board": str(_serve_board)})
-            else:
-                try:
-                    rev = int(_doc().get("rev") or 0)
-                except (SystemExit, OSError, ValueError):
-                    _broadcast("board-missing", {"board": str(_serve_board)})
-                else:
-                    _broadcast("rev-bumped", {"rev": rev})
-            _broadcast("resync-required", {})
-
-
-
-
-def _board_health(board_path: Path) -> dict:
-    try:
-        file_stat = board_path.stat()
-        signature = (file_stat.st_mtime_ns, file_stat.st_size)
-    except OSError as exc:
-        return {"attention": 0, "blocked": 0, "rev": None, "boardError": str(exc)}
-    key = str(board_path.resolve())
-    cached = _discovery_health_cache.get(key)
-    if cached and cached[0] == signature:
-        return cached[1]
-    try:
-        doc = wb.load(board_path)
-        health = {
-            "attention": sum(1 for card in doc["cards"] if wb.stage_attention(card)),
-            "blocked": sum(1 for card in doc["cards"] if card["column"] == "blocked"),
-            "rev": int(doc.get("rev") or 0),
-        }
-    except (SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
-        health = {"attention": 0, "blocked": 0, "rev": None, "boardError": str(exc)}
-    _discovery_health_cache[key] = (signature, health)
-    return health
-
-
-def _discovery() -> list:
-    names = wb.registry_load().get("boards", {})
-    viewers = wb._viewers_load()
-    out = []
-    for name, pathstr in sorted(names.items()):
-        try:
-            bpath = wb.canonical_registered_board(pathstr)
-        except (wb.UnsafeBoardPath, OSError, RuntimeError) as exc:
-            out.append({"name": name, "board": pathstr, "live": False, "url": None,
-                        "dir": str(Path(pathstr).parent), "boardError": str(exc),
-                        "attention": 0, "blocked": 0, "rev": None, "viewerEvidence": []})
-            continue
-        board_dir = str(bpath.parent.resolve())
-        evidence = wb.viewer_evidence(bpath, viewers)
-        compatible = [item for item in evidence if item["compatibility"] == "compatible"]
-        unsafe = [item for item in evidence if item["compatibility"] in ("incompatible", "indeterminate")]
-        entry = compatible[0]["entry"] if compatible else {}
-        identities = {(item["entry"]["pid"], item["entry"]["port"]) for item in compatible}
-        live = bool(compatible) and not unsafe and len(identities) == 1
-        health = _board_health(bpath)
-        out.append({"name": name, "board": str(bpath), "live": live,
-                    "url": f"http://127.0.0.1:{entry['port']}/"
-                           if live and entry.get("port") else None,
-                    "dir": board_dir, "viewerEvidence": evidence, **health})
-    return out
+def _registered_board(name: str) -> Path:
+    value = wb.registry_load()["boards"].get(name)
+    if value is None:
+        raise UnknownBoard(name)
+    return wb.canonical_registered_board(value)
 
 
 # ===== browser mutation endpoints =====
-# Contract mirrors the pre-reset board_server.py (preserved at git d32b6b4) so
-# board.html's fetch layer works unmodified, reimplemented on wbcore's JSON
-# document model: load -> baseRev check -> mutate -> wb.save (lock + atomic
-# swap + backup). Multi-tab sync rides the existing watcher broadcasts.
-
-MAX_BODY_BYTES = 32 * 1024 * 1024
-
-_WRITE_LOCK = threading.Lock()
-
-_CARD_API = re.compile(r"/api/card/([^/]+)\Z")
-_LIFECYCLE_API = re.compile(r"/api/card/([^/]+)/lifecycle\Z")
-_COMMENTS_API = re.compile(r"/api/card/([^/]+)/comments\Z")
-_ATTACHMENTS_API = re.compile(r"/api/card/([^/]+)/attachments\Z")
-_ATTACHMENT_API = re.compile(r"/api/card/([^/]+)/attachments/([^/]+)\Z")
+# Contract mirrors the preview's per-board server so board.html's fetch layer is
+# unchanged: load -> baseRev check -> mutate -> wb.save (lock + atomic swap +
+# backup). Multi-tab sync rides the per-board watcher broadcasts.
 
 
 class BodyError(Exception):
@@ -169,25 +233,23 @@ class BodyError(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
 def _send_board_missing(handler):
-    handler._json({"error": "board_missing", "board": str(_serve_board)}, 410)
+    handler._json({"error": "board_missing", "board": str(handler.board)}, 410)
 
 
 def _require_local(handler) -> None:
     port = int(handler.server.server_port)
-    allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
     host = handler.headers.get("Host", "").lower()
-    if host not in allowed_hosts:
-        raise BodyError(403, "request Host is not this local viewer")
+    if host not in {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}:
+        raise BodyError(403, "request Host is not this local server")
     origin = handler.headers.get("Origin")
-    if origin is not None and origin.lower() != f"http://{host}":
-        raise BodyError(403, "request Origin is not this local viewer")
+    if origin is not None and origin.lower() not in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}:
+        raise BodyError(403, "request Origin is not this local server")
 
 
-
-
-def _require_local_json(handler, *, beacon=False) -> None:
-    _require_local(handler)
+def _require_json(handler, *, beacon=False) -> None:
     content_type = handler.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
     if content_type != "application/json" and not (beacon and content_type == "text/plain"):
         raise BodyError(415, "Content-Type must be application/json")
@@ -249,8 +311,6 @@ def _base_rev(payload: dict, handler) -> int:
     return rev - 1 if "baseRev" not in payload and "rev" in payload else rev
 
 
-
-
 def _saved_meta(doc: dict) -> dict:
     return {"rev": doc["rev"], "savedAt": doc.get("savedAt"),
             "savedBy": doc.get("savedBy")}
@@ -271,7 +331,6 @@ def _apply_position(doc: dict, card: dict, position: dict | None) -> bool:
     after = position.get("after")
     if not before and not after:
         return False
-    ids = [c["id"] for c in doc["cards"]]
     doc["cards"] = [c for c in doc["cards"] if c["id"] != card["id"]]
     idx = None
     if before:
@@ -336,7 +395,6 @@ def _guard_delete(card: dict, by: str) -> None:
         raise BodyError(409, f"card is owned by {card['activeOwner']}; take over before deleting")
 
 
-
 _CARD_EDITABLE = frozenset({
     "code", "title", "column", "priority", "tags", "origin", "notes", "writeup",
     "subtasks", "links", "lastTouchedSubtask", "meta", "agentRuns",
@@ -367,6 +425,7 @@ def _editable_card(raw: dict, current: dict | None = None) -> dict:
 
         edits["subtasks"] = merge(edits["subtasks"])
     return edits
+
 
 def _update_card(doc: dict, current: dict, raw: dict, by: str) -> dict:
     _guard_protected(raw, current)
@@ -489,10 +548,10 @@ def _op_lifecycle(doc: dict, card: dict, action: str, details: dict, by: str) ->
 def _mutate(handler, payload: dict, base_rev: int, apply_fn):
     """Shared mutation shell: rev check under the board lock, apply, save."""
     by = wb.validate_actor(payload.get("actor", "user"))
-    _require_board_present()
-    with wb.board_transaction(_serve_board, base_rev) as doc:
+    _require_board_present(handler.board)
+    with wb.board_transaction(handler.board, base_rev) as doc:
         result = apply_fn(doc)
-        rev = wb.save(_serve_board, doc, by=by)
+        rev = wb.save(handler.board, doc, by=by)
     return doc, rev, result
 
 
@@ -512,7 +571,7 @@ def _send_error(handler, error) -> None:
 
 def _handle_board_post(handler) -> None:
     try:
-        _require_local_json(handler, beacon=True)
+        _require_json(handler, beacon=True)
         payload = _read_body_handler(handler)
         base_rev = _base_rev(payload, handler)
         by = wb.validate_actor(payload.get("actor", "user"))
@@ -552,7 +611,7 @@ def _handle_board_post(handler) -> None:
 
 def _handle_card_patch(handler, reference: str) -> None:
     try:
-        _require_local_json(handler)
+        _require_json(handler)
         payload = _read_body_handler(handler)
         base_rev = _base_rev(payload, handler)
         by = wb.validate_actor(payload.get("actor", "user"))
@@ -583,7 +642,7 @@ def _handle_card_patch(handler, reference: str) -> None:
 
 def _handle_lifecycle_patch(handler, reference: str) -> None:
     try:
-        _require_local_json(handler)
+        _require_json(handler)
         payload = _read_body_handler(handler)
         base_rev = _base_rev(payload, handler)
         by = wb.validate_actor(payload.get("actor", "user"))
@@ -607,7 +666,7 @@ def _handle_lifecycle_patch(handler, reference: str) -> None:
 
 def _handle_structure_patch(handler) -> None:
     try:
-        _require_local_json(handler)
+        _require_json(handler)
         payload = _read_body_handler(handler)
         base_rev = _base_rev(payload, handler)
         by = wb.validate_actor(payload.get("actor", "user"))
@@ -671,7 +730,7 @@ def _handle_structure_patch(handler) -> None:
 
 def _handle_comments_patch(handler, reference: str) -> None:
     try:
-        _require_local_json(handler)
+        _require_json(handler)
         payload = _read_body_handler(handler)
         base_rev = _base_rev(payload, handler)
         by = wb.validate_actor(payload.get("actor", "user"))
@@ -694,17 +753,16 @@ def _handle_comments_patch(handler, reference: str) -> None:
 
 def _handle_attachment_upload(handler, reference: str, query: str) -> None:
     try:
-        _require_local(handler)
         length = _content_length(handler, wb.MAX_ATTACHMENT_BYTES)
         base_rev = _base_rev({}, handler)
         by = wb.validate_actor(unquote(handler.headers.get("X-WorkBoard-Actor", "user")))
         names = parse_qs(query, keep_blank_values=True).get("name", [])
         if len(names) != 1 or not names[0]:
             raise BodyError(422, "one nonempty attachment name is required")
-        _require_board_present()
+        _require_board_present(handler.board)
         data = _read_bytes(handler, length)
         doc, card, metadata = wb.attachment_add(
-            _serve_board, unquote(reference), names[0], data, by,
+            handler.board, unquote(reference), names[0], data, by,
             mime=handler.headers.get("Content-Type"), expected_rev=base_rev, card_scoped=False)
     except (BodyError, wb.WorkflowError, wb.RefError, SystemExit, wb.LockTimeout,
             OSError, ValueError, KeyError, TypeError) as e:
@@ -713,13 +771,11 @@ def _handle_attachment_upload(handler, reference: str, query: str) -> None:
                    "attachment": metadata, "event": "card-updated"})
 
 
-
-
 def _handle_attachment_get(handler, reference: str, attachment_id: str) -> None:
     try:
-        _require_board_present()
+        _require_board_present(handler.board)
         doc, card, item, body = wb.attachment_read(
-            _serve_board, unquote(reference), unquote(attachment_id))
+            handler.board, unquote(reference), unquote(attachment_id))
         name = item["name"]
         fallback = re.sub(r'[^A-Za-z0-9._ -]', "_", name).strip(" .") or "download"
         disposition = f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
@@ -734,14 +790,13 @@ def _handle_attachment_get(handler, reference: str, attachment_id: str) -> None:
 
 def _handle_attachment_delete(handler, reference: str, attachment_id: str) -> None:
     try:
-        _require_local_json(handler)
+        _require_json(handler)
         payload = _read_body_handler(handler)
         base_rev = _base_rev(payload, handler)
         by = wb.validate_actor(payload.get("actor", "user"))
-        _require_board_present()
-
+        _require_board_present(handler.board)
         doc, card, item = wb.attachment_detach(
-            _serve_board, unquote(reference), unquote(attachment_id), by, expected_rev=base_rev,
+            handler.board, unquote(reference), unquote(attachment_id), by, expected_rev=base_rev,
             card_scoped=False)
     except (BodyError, wb.WorkflowError, wb.RefError, SystemExit, wb.LockTimeout,
             OSError, ValueError, KeyError, TypeError) as e:
@@ -752,15 +807,15 @@ def _handle_attachment_delete(handler, reference: str, attachment_id: str) -> No
 
 def _handle_projection(handler, kind: str) -> None:
     try:
-        doc = _doc()
+        doc = _doc(handler.board)
         data = {"cards": wb.ready_cards(doc)} if kind == "ready" else {"stats": wb.board_stats(doc)}
     except (wb.WorkflowError, SystemExit, OSError, ValueError, KeyError, TypeError) as e:
         return _send_error(handler, e)
     handler._json({"rev": doc["rev"], **data})
 
 
-def _git_state() -> dict:
-    root = _serve_board.parent.parent.resolve()
+def _git_state(board: Path) -> dict:
+    root = board.parent.parent.resolve()
     result = {
         "state": "error", "root": str(root), "branch": None, "head": None,
         "subject": None, "ahead": None, "behind": None, "staged": None, "unstaged": None,
@@ -864,51 +919,137 @@ def _git_state() -> dict:
 
 
 def _handle_card_get(handler, reference: str) -> None:
+    reference = unquote(reference)
     try:
-        from urllib.parse import unquote
-        reference = unquote(reference)
-        doc = _doc()
+        doc = _doc(handler.board)
         card = wb.resolve_ref(doc, reference)
     except FileNotFoundError:
         return _send_board_missing(handler)
     except SystemExit as e:
-        handler._json({"error": str(e)}, 500)
-        return
+        return handler._json({"error": str(e)}, 500)
     except (wb.LockTimeout, OSError, ValueError, KeyError, TypeError) as e:
-        handler._json({"error": f"board unavailable: {e}"}, 500)
-        return
+        return handler._json({"error": f"board unavailable: {e}"}, 500)
     except wb.RefError:
-        handler._json({"error": f"no card matching '{reference}'"}, 404)
-        return
+        return handler._json({"error": f"no card matching '{reference}'"}, 404)
     handler._json({"card": card, "rev": doc.get("rev")}, 200)
 
 
 def _handle_cards_page(handler, query: str) -> None:
-    from urllib.parse import parse_qs
     qs = parse_qs(query)
     column = (qs.get("column") or [""])[0]
     try:
         offset = max(0, int((qs.get("offset") or ["0"])[0]))
         limit = min(250, max(1, int((qs.get("limit") or ["50"])[0])))
     except ValueError:
-        handler._json({"error": "invalid offset/limit"}, 400)
-        return
+        return handler._json({"error": "invalid offset/limit"}, 400)
     try:
-        doc = _doc()
+        doc = _doc(handler.board)
     except FileNotFoundError:
         return _send_board_missing(handler)
     except SystemExit as e:
-        handler._json({"error": str(e)}, 500)
-        return
+        return handler._json({"error": str(e)}, 500)
     except (wb.LockTimeout, OSError, ValueError, KeyError, TypeError) as e:
-        handler._json({"error": f"board unavailable: {e}"}, 500)
-        return
+        return handler._json({"error": f"board unavailable: {e}"}, 500)
     in_col = [c for c in doc["cards"] if c["column"] == column]
     handler._json({"column": column, "cards": in_col[offset:offset + limit],
                    "total": len(in_col), "rev": doc.get("rev")}, 200)
-def _handle_viewer_delete(handler) -> None:
+
+
+def _handle_board_get(handler, path: str, query: str) -> None:
+    if path in ("/board.json", "/api/bootstrap", "/rev"):
+        try:
+            doc = _doc(handler.board)
+        except (SystemExit, OSError, ValueError, KeyError, TypeError) as e:
+            return _send_error(handler, e)
+        if path == "/rev":
+            return handler._send(200, str(doc.get("rev", 0)).encode(), "text/plain; charset=utf-8")
+        return handler._json({"state": doc} if path == "/api/bootstrap" else doc)
+    if path == "/events":
+        return handler._sse()
+    if path in ("/api/ready", "/api/stats"):
+        return _handle_projection(handler, path.rsplit("/", 1)[-1])
+    if path == "/api/git":
+        if not handler.board.is_file():
+            return _send_board_missing(handler)
+        return handler._json(_git_state(handler.board))
+    if path == "/api/cards":
+        return _handle_cards_page(handler, query)
+    match = _ATTACHMENT_API.match(path)
+    if match:
+        return _handle_attachment_get(handler, match.group(1), match.group(2))
+    match = _CONTEXT_API.match(path)
+    if match:
+        try:
+            _require_board_present(handler.board)
+            return handler._json(wb.card_context(handler.board, unquote(match.group(1))))
+        except (wb.RefError, OSError, ValueError, KeyError, TypeError) as exc:
+            return _send_error(handler, exc)
+    match = _CARD_API.match(path)
+    if match:
+        return _handle_card_get(handler, match.group(1))
+    handler._json({"error": "not found"}, 404)
+
+
+def _handle_board_write(handler, method: str, path: str, query: str) -> None:
+    if method == "POST":
+        if path == "/board.json":
+            return _handle_board_post(handler)
+        match = _ATTACHMENTS_API.match(path)
+        if match:
+            return _handle_attachment_upload(handler, match.group(1), query)
+    elif method == "PATCH":
+        if path == "/api/structure":
+            return _handle_structure_patch(handler)
+        for pattern, handle in ((_CARD_API, _handle_card_patch),
+                                (_LIFECYCLE_API, _handle_lifecycle_patch),
+                                (_COMMENTS_API, _handle_comments_patch)):
+            match = pattern.match(path)
+            if match:
+                return handle(handler, match.group(1))
+    elif method == "DELETE":
+        match = _ATTACHMENT_API.match(path)
+        if match:
+            return _handle_attachment_delete(handler, match.group(1), match.group(2))
+    handler._json({"error": "not found"}, 404)
+
+
+# ===== server-level endpoints =====
+
+def _health(server) -> dict:
     try:
-        _require_local_json(handler)
+        boards, registry_error = len(wb.registry_load()["boards"]), None
+    except (OSError, ValueError) as exc:
+        boards, registry_error = None, str(exc)
+    return {**wb.runtime_info(), "ok": True, "app": "workboard", "pid": os.getpid(),
+            "port": server.server_port, "startedAt": server.started_at, "boards": boards,
+            "registryError": registry_error, "sseClients": server.sse_clients()}
+
+
+def _handle_boards_list(handler) -> None:
+    try:
+        registered = wb.registry_load()["boards"]
+    except (OSError, ValueError) as exc:
+        return _send_error(handler, exc)
+    boards = []
+    for name in sorted(registered, key=lambda item: (item.casefold(), item)):
+        entry = {"name": name, "board": registered[name], "url": f"/b/{quote(name, safe='')}/",
+                 "exists": False, "rev": None, "cards": None, "error": None}
+        try:
+            path = wb.canonical_registered_board(registered[name])
+            entry["board"] = str(path)
+            if path.is_file():
+                entry["exists"] = True
+                doc = wb.load(path)
+                entry.update(rev=int(doc.get("rev") or 0), cards=len(doc["cards"]))
+        except (wb.UnsafeBoardPath, SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
+            entry["error"] = str(exc)
+        boards.append(entry)
+    handler._json({"boards": boards})
+
+
+def _handle_boards_delete(handler) -> None:
+    try:
+        _require_json(handler)
         payload = _read_body_handler(handler)
         name = payload.get("name")
         expected_board = payload.get("board")
@@ -923,55 +1064,30 @@ def _handle_viewer_delete(handler) -> None:
                 and (isinstance(base_rev, bool) or not isinstance(base_rev, int)
                      or base_rev < 0)):
             raise BodyError(400, "invalid baseRev")
-        with _WRITE_LOCK:
-            result = wb.delete_registered_board(name, expected_board, base_rev)
+        result = wb.delete_registered_board(name, expected_board, base_rev)
     except BodyError as e:
         return handler._json({"error": e.message}, e.status)
     except wb.RegistryNotFound:
         return handler._json({"error": f"no registered board '{name}'"}, 404)
     except (wb.RegistryConflict, wb.UnsafeBoardPath) as e:
-        return handler._json(
-            {"ok": False, "conflict": True, "error": str(e)}, 409)
+        return handler._json({"ok": False, "conflict": True, "error": str(e)}, 409)
     except (wb.LockTimeout, OSError, ValueError, KeyError, TypeError) as e:
         return handler._json({"error": f"delete failed: {e}"}, 500)
-    current = (
-        os.path.normcase(str(_serve_board.resolve(strict=False)))
-        == os.path.normcase(result["board"])
-    )
-    handler._json({"ok": True, "deleted": name,
-                   "recoveryPath": result["recoveryPath"], "current": current})
+    handler._json({"ok": True, "recoveryPath": result["recoveryPath"], "board": result["board"]})
 
 
-
-
-def _handle_viewer_start(handler) -> None:
-    try:
-        _require_local_json(handler)
-        payload = _read_body_handler(handler)
-        name = payload.get("name")
-        if not isinstance(name, str) or not name:
-            raise BodyError(400, "board name is required")
-        with _WRITE_LOCK:
-            entry = wb.ensure_registered_viewer(name)
-    except BodyError as e:
-        return _send_error(handler, e)
-    except wb.RegistryNotFound:
-        return handler._json({"error": f"no registered board '{name}'"}, 404)
-    except wb.WorkflowError as e:
-        return _send_error(handler, e)
-    except FileNotFoundError:
-        return handler._json({"error": "board_missing"}, 410)
-    except (wb.RegistryConflict, wb.UnsafeBoardPath) as e:
-        return handler._json({"error": str(e), "conflict": True}, 409)
-    except (wb.LockTimeout, OSError, ValueError, KeyError, TypeError) as e:
-        return handler._json({"error": f"viewer start failed: {e}"}, 503)
-    if entry and entry.get("port"):
-        return handler._json({"ok": True, "url": f"http://127.0.0.1:{entry['port']}/"})
-    return handler._json({"error": "viewer did not start"}, 503)
+def _handle_shutdown(handler) -> None:
+    handler.close_connection = True  # Any request body stays unread.
+    supplied = handler.headers.get("X-WorkBoard-Token", "")
+    if not secrets.compare_digest(supplied.encode("utf-8"), handler.server.token.encode("utf-8")):
+        return handler._json({"ok": False, "status": 403, "error": "invalid shutdown token"}, 403)
+    handler._json({"ok": True})
+    threading.Thread(target=handler.server.shutdown, daemon=True).start()
 
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    board: Path | None = None
 
     def log_message(self, fmt, *args):
         pass
@@ -996,145 +1112,61 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj).encode("utf-8"),
                    "application/json; charset=utf-8")
 
-    def do_POST(self):
-        path, _, query = self.path.partition("?")
-        if path == "/board.json":
-            return _handle_board_post(self)
-        if path == "/viewers/delete":
-            return _handle_viewer_delete(self)
-        if path == "/viewers/start":
-            return _handle_viewer_start(self)
-        match = _ATTACHMENTS_API.match(path)
-        if match:
-            return _handle_attachment_upload(self, match.group(1), query)
-        self._json({"error": "not found"}, 404)
-
-    def do_PATCH(self):
-        path = self.path.split("?")[0]
-        if path == "/api/structure":
-            return _handle_structure_patch(self)
-        match = _CARD_API.match(path)
-        if match:
-            return _handle_card_patch(self, match.group(1))
-        match = _LIFECYCLE_API.match(path)
-        if match:
-            return _handle_lifecycle_patch(self, match.group(1))
-        match = _COMMENTS_API.match(path)
-        if match:
-            return _handle_comments_patch(self, match.group(1))
-        self._json({"error": "not found"}, 404)
-
-    def do_DELETE(self):
-        match = _ATTACHMENT_API.match(self.path.split("?")[0])
-        if match:
-            return _handle_attachment_delete(self, match.group(1), match.group(2))
-        self._json({"error": "not found"}, 404)
+    def _html(self):
+        try:
+            body = resources.files("workboard").joinpath("web/board.html").read_bytes()
+        except OSError:
+            return self._json({"error": "board.html missing"}, 500)
+        self._send(200, body, "text/html; charset=utf-8")
 
     def do_GET(self):
+        self._route("GET")
+
+    def do_POST(self):
+        self._route("POST")
+
+    def do_PATCH(self):
+        self._route("PATCH")
+
+    def do_DELETE(self):
+        self._route("DELETE")
+
+    def _route(self, method: str) -> None:
         try:
             _require_local(self)
         except BodyError as e:
             return _send_error(self, e)
         path, _, query = self.path.partition("?")
-        path = path.split("?")[0]
-        if path in ("/", "/index.html"):
-            try:
-                body = HTML_PATH.read_bytes()
-            except OSError:
-                return self._json({"error": "board.html missing"}, 500)
-            return self._send(200, body, "text/html; charset=utf-8")
-        if path == "/board.json" or path == "/api/bootstrap":
-            try:
-                doc = _doc()
-            except FileNotFoundError:
-                return _send_board_missing(self)
-            except (SystemExit, OSError, ValueError, KeyError, TypeError) as e:
-                return _send_error(self, e)
-            if path == "/api/bootstrap":
-                return self._json({"state": doc})
-            return self._json(doc)
-        if path == "/rev":
-            try:
-                doc = _doc()
-            except FileNotFoundError:
-                return _send_board_missing(self)
-            except (SystemExit, OSError, ValueError, KeyError, TypeError) as e:
-                return _send_error(self, e)
-            return self._send(200, str(doc.get("rev", 0)).encode(),
-                              "text/plain; charset=utf-8")
-        if path == "/health":
-            board_error = None
-            try:
-                doc = _doc()
-            except (SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
-                doc = None
-                board_error = {"error": str(exc), "status": getattr(exc, "status", 500)}
-            registry_errors = {}
-            for label, reader in (("boards", wb.registry_load), ("viewers", wb._viewers_load)):
-                try:
-                    reader()
-                except (OSError, ValueError, KeyError, TypeError) as exc:
-                    registry_errors[label] = str(exc)
-            with _state_lock:
-                n = len(_clients)
-            name = doc.get("name") if doc else _serve_name
-            return self._json({
-                **wb.runtime_info(), "boardError": board_error, "registryErrors": registry_errors,
-                "ok": True, "pid": os.getpid(), "projectId": name, "name": name,
-                "board": str(_serve_board), "boardAvailable": doc is not None,
-                "rev": doc.get("rev") if doc else None,
-                "cards": len(doc["cards"]) if doc else None,
-                "sseClients": n, "nowMs": int(time.time() * 1000),
-            })
-        if path == "/api/projects":
-            try:
-                reg = wb.registry_load()
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                return _send_error(self, exc)
-            boards = [{"id": k, "name": k} for k in sorted(reg.get("boards", {}))]
-            return self._json({"projects": boards})
-        if path == "/viewers":
-            current_dir = str(_serve_board.parent.resolve(strict=False))
-            boards = []
-            current_name = ""
-            try:
-                discovered = _discovery()
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                return _send_error(self, exc)
-            for b in discovered:
-                is_cur = b.pop("dir") == current_dir
-                b["current"] = is_cur
-                if is_cur:
-                    current_name = b["name"]
-                boards.append(b)
-            return self._json({"current": current_name, "boards": boards,
-                               "boardAvailable": _serve_board.is_file()})
-        if path == "/viewers/start":
-            return self._json({"error": "use same-origin JSON POST to start a viewer"}, 405)
-        if path == "/events":
-            return self._sse()
-        if path in ("/api/ready", "/api/stats"):
-            return _handle_projection(self, path.rsplit("/", 1)[-1])
-        if path == "/api/git":
-            if not _serve_board.is_file():
-                return _send_board_missing(self)
-            return self._json(_git_state())
-        match = _ATTACHMENT_API.match(path)
-        if match:
-            return _handle_attachment_get(self, match.group(1), match.group(2))
-        context_match = re.fullmatch(r"/api/card/([^/]+)/context", path)
-        if context_match:
-            try:
-                _require_board_present()
-                return self._json(wb.card_context(_serve_board, unquote(context_match.group(1))))
-            except (wb.RefError, OSError, ValueError, KeyError, TypeError) as exc:
-                return _send_error(self, exc)
-        match = _CARD_API.match(path)
-        if match:
-            return _handle_card_get(self, match.group(1))
-        if path == "/api/cards":
-            return _handle_cards_page(self, query)
-        self._json({"error": "not found"}, 404)
+        root = {("GET", "/"): self._html,
+                ("GET", "/health"): lambda: self._json(_health(self.server)),
+                ("GET", "/api/boards"): lambda: _handle_boards_list(self),
+                ("POST", "/api/boards/delete"): lambda: _handle_boards_delete(self),
+                ("POST", "/api/shutdown"): lambda: _handle_shutdown(self)}.get((method, path))
+        if root:
+            return root()
+        match = _BOARD_ROUTE.match(path)
+        if not match:
+            return self._json({"error": "not found"}, 404)
+        encoded, rest = match.groups()
+        if rest is None or rest == "/":
+            if method != "GET":
+                return self._json({"error": "not found"}, 404)
+            if rest is None:
+                location = f"/b/{encoded}/" + (f"?{query}" if query else "")
+                return self._send(301, b"", "text/plain; charset=utf-8", {"Location": location})
+            return self._html()
+        name = unquote(encoded)
+        try:
+            self.board = _registered_board(name)
+        except UnknownBoard:
+            return self._json({"error": "unknown_board", "name": name}, 404)
+        except wb.UnsafeBoardPath as e:
+            return _send_error(self, BodyError(409, str(e)))
+        except (OSError, ValueError) as e:
+            return _send_error(self, e)
+        if method == "GET":
+            return _handle_board_get(self, rest, query)
+        _handle_board_write(self, method, rest, query)
 
     def _sse(self):
         self.send_response(200)
@@ -1142,133 +1174,185 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        q = queue.Queue(maxsize=256)
-        with _state_lock:
-            _clients.append(q)
+        self.close_connection = True
+        board = self.board
+        q = self.server.subscribe(board)
         try:
             self.wfile.write(b": connected\n\n")
             self.wfile.flush()
-            while True:
+            while not self.server.closed.is_set():
                 try:
                     data = q.get(timeout=15.0)
-                except Exception:
+                except queue.Empty:
                     data = ": keepalive\n\n"
                 self.wfile.write(data.encode("utf-8"))
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except OSError:
             pass
         finally:
-            with _state_lock:
-                if q in _clients:
-                    _clients.remove(q)
-
-
-
-
-def _start_server(port):
-    """An explicit port is an exact contract, never a hint."""
-    if port is not None:
-        if type(port) is not int or not 1 <= port <= 65535:
-            raise wb.WorkflowError("port must be an integer 1..65535")
-        return Server(("127.0.0.1", port), Handler), port
-    for candidate in range(7891, 7941):
-        try:
-            return Server(("127.0.0.1", candidate), Handler), candidate
-        except OSError:
-            continue
-    raise wb.WorkflowError("no free viewer port in 7891..7940", 503)
+            self.server.unsubscribe(board, q)
 
 
 class Server(ThreadingHTTPServer):
+    """Loopback HTTP server for every registered board, with per-board SSE watchers."""
     daemon_threads = True
-    allow_reuse_address = False
+    block_on_close = False  # SSE streams never finish on their own.
+    # POSIX needs SO_REUSEADDR to rebind over TIME_WAIT; on Windows it would allow port theft.
+    allow_reuse_address = os.name != "nt"
+    allow_reuse_port = False  # A second server must see the port as busy.
+
+    def __init__(self, address):
+        # State first: a failed bind calls server_close() from inside super().__init__.
+        self.token = secrets.token_urlsafe(32)
+        self.started_at = wb.now_iso()
+        self.closed = threading.Event()
+        self._lock = threading.Lock()
+        self._watched: dict[Path, dict] = {}  # board -> {"sig": stat signature, "clients": [queue]}
+        super().__init__(address, Handler)
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    def server_close(self):
+        self.closed.set()
+        super().server_close()
+
+    def subscribe(self, board: Path) -> queue.Queue:
+        q = queue.Queue(maxsize=256)
+        with self._lock:
+            entry = self._watched.get(board)
+            if entry is None:  # The first subscriber sets the change baseline.
+                entry = self._watched[board] = {"sig": _sig(board), "clients": []}
+            entry["clients"].append(q)
+        return q
+
+    def unsubscribe(self, board: Path, q: queue.Queue) -> None:
+        with self._lock:
+            entry = self._watched.get(board)
+            if entry and q in entry["clients"]:
+                entry["clients"].remove(q)
+                if not entry["clients"]:
+                    del self._watched[board]
+
+    def sse_clients(self) -> int:
+        with self._lock:
+            return sum(len(entry["clients"]) for entry in self._watched.values())
+
+    def _broadcast(self, board: Path, event: str, payload: dict) -> None:
+        with self._lock:
+            entry = self._watched.get(board)
+            clients = list(entry["clients"]) if entry else []
+        data = f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+        for q in clients:
+            try:
+                q.put_nowait(data)
+            except queue.Full:
+                pass
+
+    def _watch(self) -> None:
+        while not self.closed.wait(0.5):
+            with self._lock:
+                watched = [(board, entry["sig"]) for board, entry in self._watched.items()]
+            for board, last in watched:
+                current = _sig(board)
+                if current == last:
+                    continue
+                with self._lock:
+                    entry = self._watched.get(board)
+                    if entry is None:
+                        continue
+                    entry["sig"] = current
+                try:
+                    rev = int(_doc(board).get("rev") or 0)
+                except (SystemExit, OSError, ValueError, KeyError, TypeError):
+                    self._broadcast(board, "board-missing", {"board": str(board)})
+                else:
+                    self._broadcast(board, "rev-bumped", {"rev": rev})
+                self._broadcast(board, "resync-required", {})
 
 
-def main(args):
-    global _serve_board, _serve_name
-    explicit = args.board or os.environ.get("WORKBOARD_DEFAULT_BOARD")
-    if explicit:
-        selected = Path(explicit).absolute()
-        _serve_board = selected / "board" / "board.json" if selected.is_dir() else selected
-    else:
-        _serve_board = wb.find_board()
-    _serve_board = wb.require_write_scope(_serve_board)
-    if not _serve_board.parent.is_dir():
-        raise FileNotFoundError(f"no board directory at {_serve_board.parent}")
-    board_announce = wb.require_write_scope(_serve_board.parent / ".viewer.port")
-    requested_announce = getattr(args, "announce", None)
-    if requested_announce:
-        wb.require_write_scope(requested_announce)
-    wb.require_write_scope(wb.REGISTRY_PATH)
-    wb.require_write_scope(wb.VIEWER_REGISTRY)
-    wb.registry_load()
-    wb._viewers_load()
-    if _serve_board.is_file():
-        wb.load(_serve_board)
-    httpd = None
+# ===== serve command =====
 
-    def start():
-        nonlocal httpd
-        with wb.board_lock(_serve_board):
-            existing = wb.viewer_start_gate(_serve_board, own_pid=os.getpid())
-            if existing:
-                raise wb.WorkflowError(
-                    f"viewer already running at http://127.0.0.1:{existing['port']}/; reuse it instead", 409)
-            doc = wb.load(_serve_board) if _serve_board.is_file() else None
-            httpd, port = _start_server(args.port)
-            info = {"pid": os.getpid(), "port": port, **wb.runtime_info()}
-            wb._atomic_write_json(board_announce, info)
-            if requested_announce:
-                if Path(requested_announce).absolute() != board_announce:
-                    wb._atomic_write_json(Path(requested_announce), info)
-            else:
-                wb.register_viewer(_serve_board, info["pid"], info["port"])
-            return doc, port
-
+def _log_to_file() -> None:
+    """Service/pythonw mode: append stdout and stderr to logs/server.log (rotated at start)."""
+    logs = wb.logs_dir()
+    logs.mkdir(parents=True, exist_ok=True)
+    log = logs / "server.log"
     try:
-        if requested_announce:
-            # The spawning parent holds the lifecycle lock; the board lock also
-            # serializes independently launched --announce viewers.
-            doc, port = start()
-        else:
-            wb.REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with wb.board_lock(wb.REGISTRY_PATH):
-                doc, port = start()
-    except BaseException:
-        if httpd is not None:
-            httpd.server_close()
-        raise
-    url = f"http://127.0.0.1:{port}/"
-    _serve_name = doc.get("name") if doc else _serve_board.parent.parent.name
-    if sys.stdout is not None:
-        if getattr(args, "json", False):
-            message = json.dumps({"ok": True, "board": str(_serve_board), "url": url,
-                                  "pid": os.getpid(), "port": port, "rev": doc["rev"] if doc else None,
-                                  **wb.runtime_info()})
-        elif doc:
-            message = f"serving '{_serve_name}' — {url}  ({len(doc['cards'])} cards, Ctrl+C to stop)"
-        else:
-            message = f"serving board chooser — {url}  (board missing, Ctrl+C to stop)"
-        print(message, flush=True)
-    threading.Thread(target=_watcher, daemon=True).start()
-    if args.open:
-        webbrowser.open(url)
+        if log.stat().st_size > LOG_ROTATE_BYTES:
+            os.replace(log, logs / "server.log.1")
+    except OSError:
+        pass  # Missing log, or another process still holds it; append instead.
+    stream = open(log, "a", encoding="utf-8", errors="replace", buffering=1)
+    sys.stdout = sys.stderr = stream
+
+
+def _emit(args, line: str, payload: dict) -> None:
+    print(json.dumps(payload) if args.json else line, flush=True)
+
+
+def _open_name(args) -> str | None:
+    """Registered name of the --board/cwd board for `serve --open`; None opens the hub."""
+    board = _local_board(args)
+    return _board_name(board, register=False) if board else None
+
+
+def _open_browser(name: str | None, port: int) -> None:
+    import webbrowser
+    webbrowser.open(board_url(name, port) if name else server_url(port))
+
+
+def _remove_state() -> None:
+    """Delete server.json only if it still describes this process."""
+    if _state().get("pid") == os.getpid():
+        try:
+            wb.server_state_path().unlink()
+        except FileNotFoundError:
+            pass
+
+
+def serve(args) -> None:
+    service = bool(getattr(args, "service", False))
+    if service:
+        from . import install
+        if install.relaunch_from_runtime_copy():
+            return
+    if service or sys.stdout is None:
+        _log_to_file()
+    want_open = bool(getattr(args, "open", False)) and not service
+    open_name = _open_name(args) if want_open else None
+    count = len(wb.registry_load()["boards"])
+    port = _configured_port() if args.port is None else args.port
+    if not 0 <= port <= 65535:
+        raise wb.WorkflowError("port must be an integer 0..65535")
     try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        if sys.stdout is not None and not getattr(args, "json", False):
-            print("\nstopped.")
+        httpd = Server(("127.0.0.1", port))
+    except OSError:
+        info = _health_at(port) if port else None
+        if info is None:
+            raise wb.WorkflowError(
+                f"port {port} is in use by another program; pass --port or set WORKBOARD_PORT",
+                409, "state")
+        url = server_url(port)
+        _emit(args, f"already running: {url}", {"ok": True, "url": url, "pid": info.get("pid"),
+                                                "port": port, "version": info.get("version"),
+                                                "alreadyRunning": True})
+        if want_open:
+            _open_browser(open_name, port)
+        return
+    try:
+        port = httpd.server_port
+        url = server_url(port)
+        wb._atomic_write_json(wb.server_state_path(), {
+            "pid": os.getpid(), "port": port, "url": url, "version": __version__,
+            "startedAt": httpd.started_at, "executable": sys.executable, "token": httpd.token})
+        _emit(args, f"serving {count} board{'' if count == 1 else 's'} at {url} (Ctrl+C to stop)",
+              {"ok": True, "url": url, "pid": os.getpid(), "port": port, "version": __version__})
+        if want_open:
+            _open_browser(open_name, port)
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            if not args.json:
+                print("stopped.", flush=True)
     finally:
         httpd.server_close()
-
-
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser(prog="serve.py", allow_abbrev=False)
-    ap.add_argument("--board")
-    ap.add_argument("--port", type=int)
-    ap.add_argument("--open", action="store_true")
-    ap.add_argument("--announce")
-    try:
-        main(ap.parse_args())
-    except (wb.WorkflowError, wb.LockTimeout, OSError, ValueError, KeyError, TypeError) as exc:
-        raise SystemExit(f"error: {exc}")
+        _remove_state()

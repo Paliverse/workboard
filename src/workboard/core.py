@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""WorkBoard core: schema, board discovery, crash-safe persistence.
+"""WorkBoard core: schema, board discovery, registry, crash-safe persistence.
 
-One board/board.json per project is the single source of truth.
+One board/board.json per project is the single source of truth; the per-user
+registry (home()/boards.json) lists the boards the local server serves.
 Writes serialize on <board_dir>/.board.lock (msvcrt/fcntl), commit through an
 fsync'd temp file swapped in atomically (ReplaceFileW on Windows, os.replace
 elsewhere), and snapshot every committed rev to .backups/ (newest 10 kept).
+Nothing here starts a server or opens a browser.
 """
 from __future__ import annotations
 
@@ -23,9 +25,10 @@ import threading
 import uuid
 from pathlib import Path
 
+from . import __version__
+
 SCHEMA_VERSION = 2
 API_VERSION = 2
-RUNTIME_VERSION = "2.1-agent-ready"
 CAPABILITIES = ("context", "attachment-cli", "shared-attachments", "expected-rev",
                 "schema-guard", "scoped-writes")
 BACKUP_KEEP = 10
@@ -146,9 +149,9 @@ def require_write_scope(path) -> Path:
 
 
 def runtime_info() -> dict:
-    return {"runtimeVersion": RUNTIME_VERSION, "apiVersion": API_VERSION,
+    return {"version": __version__, "apiVersion": API_VERSION,
             "schemaVersion": SCHEMA_VERSION, "supportedSchemaVersions": [1, SCHEMA_VERSION],
-            "capabilities": list(CAPABILITIES), "runtimeRoot": str(Path(__file__).resolve().parent)}
+            "capabilities": list(CAPABILITIES)}
 
 def validate_actor(value) -> str:
     if (not isinstance(value, str) or not value.strip() or len(value) > 80
@@ -612,7 +615,7 @@ def load(board_path: Path) -> dict:
     try:
         raw = json.loads(data)
     except json.JSONDecodeError as e:
-        raise WorkflowError(f"{board_path} is not valid JSON ({e}); restore via card.py recover") from e
+        raise WorkflowError(f"{board_path} is not valid JSON ({e}); restore via workboard recover") from e
     return normalize_doc(raw)
 
 
@@ -1296,21 +1299,13 @@ def require_export_destination(destination, board_path: Path) -> Path:
     path = require_write_scope(destination)
     if path.exists() or path.is_symlink():
         raise WorkflowError(f"export destination already exists: {path}", 409)
-    runtime = Path(__file__).resolve().parent
-    managed = [Path(board_path).absolute().parent, home(), VIEWER_REGISTRY.parent]
+    managed = [Path(board_path).absolute().parent, home(), Path(__file__).resolve().parent]
     managed.extend(Path(value).absolute().parent for value in registry_load()["boards"].values())
     if any(path.is_relative_to(root.resolve(strict=False)) for root in managed):
-        raise WorkflowError("exports cannot target managed board or registry storage", 403)
+        raise WorkflowError("exports cannot target managed board, registry, or runtime storage", 403)
     for ancestor in path.parents:
         if os.path.normcase(ancestor.name) in ("board", ".workboard", ".git") or (ancestor / "board.json").exists():
             raise WorkflowError("exports cannot target managed storage", 403)
-    if path.is_relative_to(runtime):
-        parts = tuple(os.path.normcase(part) for part in path.relative_to(runtime).parts)
-        if len(parts) == 1 or parts[0] in ("skills", "board", "__pycache__"):
-            raise WorkflowError("exports cannot target runtime-managed files", 403)
-        if parts[0] == ".preview-home" and (
-                len(parts) < 3 or parts[1] != "downloads"):
-            raise WorkflowError("use .preview-home/downloads for preview exports", 403)
     return path
 
 
@@ -1713,249 +1708,6 @@ def delete_registered_board(name: str, expected_board: str,
                 raise OSError(
                     f"board recovered at {recovery}, but registry update failed") from e
             return {"recoveryPath": str(recovery), "board": str(target)}
-
-
-# ===== on-demand viewers =====
-# Viewers are spawned only by an explicit `serve` command or by the in-tab
-# project switcher. Ordinary card.py commands never start a server or browser.
-
-VIEWER_REGISTRY = Path.home() / ".workboard" / "viewers.json"
-
-
-def _pid_alive(pid: int) -> bool | None:
-    if type(pid) is not int or pid <= 0:
-        return None
-    if _IS_WINDOWS:
-        import ctypes
-        from ctypes import wintypes
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        k32.OpenProcess.restype = wintypes.HANDLE
-        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        k32.CloseHandle.argtypes = [wintypes.HANDLE]
-        handle = k32.OpenProcess(0x00100000, False, pid)
-        if not handle:
-            return False if ctypes.get_last_error() == 87 else None
-        try:
-            state = k32.WaitForSingleObject(handle, 0)
-            return True if state == 258 else False if state == 0 else None
-        finally:
-            k32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return None
-
-
-def _viewers_load(path=None, *, max_bytes=None) -> dict:
-    path = Path(path) if path is not None else VIEWER_REGISTRY
-    try:
-        viewers = _registry_json(path, max_bytes)
-    except FileNotFoundError:
-        if path.is_symlink():
-            raise
-        return {}
-    if not isinstance(viewers, dict) or any(
-            not isinstance(key, str) or not Path(key).is_absolute() or not isinstance(entry, dict)
-            for key, entry in viewers.items()):
-        raise ValueError(f"invalid viewer registry: {path}")
-    return viewers
-
-
-def viewer_status(entry: dict, board_path: Path | None = None) -> dict:
-    """Keep liveness evidence separate from protocol/source compatibility."""
-    result = {"compatibility": "indeterminate", "health": None, "reason": "invalid viewer evidence"}
-    if not isinstance(entry, dict):
-        return result
-    alive = _pid_alive(entry.get("pid"))
-    result["pidAlive"] = alive
-    if alive is False:
-        return {**result, "compatibility": "confirmed-dead", "reason": "recorded PID has exited"}
-    port = entry.get("port")
-    if type(port) is not int or not 1 <= port <= 65535:
-        return result
-    try:
-        import urllib.request
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=0.4) as response:
-            raw = response.read(65537)
-            if len(raw) > 65536:
-                raise ValueError("health response exceeds 64 KiB")
-            health = json.loads(raw)
-        result["health"] = health
-        if not isinstance(health, dict) or health.get("ok") is not True:
-            raise ValueError("malformed health response")
-        if type(health.get("pid")) is not int or health["pid"] != entry.get("pid"):
-            raise ValueError("health PID does not match viewer evidence")
-        if board_path is not None:
-            actual = health.get("board")
-            if not isinstance(actual, str) or not Path(actual).is_absolute() or (
-                    os.path.normcase(str(Path(actual).resolve(strict=False))) !=
-                    os.path.normcase(str(Path(board_path).resolve(strict=False)))):
-                raise ValueError("health board identity does not match viewer evidence")
-        required = runtime_info()
-        compatible = all(health.get(key) == required[key] for key in
-                         ("runtimeVersion", "apiVersion", "schemaVersion", "supportedSchemaVersions"))
-        compatible = compatible and isinstance(health.get("capabilities"), list) and (
-            set(CAPABILITIES) <= set(health["capabilities"]))
-        root = health.get("runtimeRoot")
-        compatible = compatible and isinstance(root, str) and (
-            os.path.normcase(str(Path(root).resolve(strict=False))) ==
-            os.path.normcase(required["runtimeRoot"]))
-        return {**result, "compatibility": "compatible" if compatible else "incompatible",
-                "reason": "supported runtime" if compatible else "viewer runtime/protocol differs; restart all old writers together"}
-    except (OSError, ValueError, TypeError, KeyError) as exc:
-        return {**result, "reason": f"potentially-live viewer cannot be verified: {exc}"}
-
-
-def viewer_evidence(board_path: Path, viewers=None) -> list:
-    viewers = _viewers_load() if viewers is None else viewers
-    target = Path(board_path).absolute()
-    key = os.path.normcase(str(target.parent.resolve(strict=False)))
-    evidence = []
-    for registered, entry in viewers.items():
-        if os.path.normcase(str(Path(registered).resolve(strict=False))) == key:
-            evidence.append({"source": "registry", "entry": entry, **viewer_status(entry, target)})
-    announce = target.parent / ".viewer.port"
-    try:
-        entry = _registry_json(announce, max_bytes=65536)
-    except FileNotFoundError:
-        pass
-    except (OSError, ValueError) as exc:
-        evidence.append({"source": "announcement", "entry": None, "health": None,
-                         "compatibility": "indeterminate", "reason": str(exc)})
-    else:
-        evidence.append({"source": "announcement", "entry": entry, **viewer_status(entry, target)})
-    return evidence
-
-
-def viewer_start_gate(board_path: Path, viewers=None, *, own_pid=None) -> dict | None:
-    evidence = [item for item in viewer_evidence(board_path, viewers)
-                if not (own_pid is not None and item["source"] == "registry"
-                        and isinstance(item["entry"], dict)
-                        and item["entry"].get("pid") == own_pid
-                        and item["entry"].get("port") is None)]
-    blocked = [item for item in evidence if item["compatibility"] in ("incompatible", "indeterminate")]
-    if blocked:
-        raise WorkflowError("refusing a second viewer: " + "; ".join(
-            f"{item['source']}: {item['reason']}" for item in blocked) +
-            "; inspect and quiesce/restart the recorded writer before serving", 409)
-    live = [item["entry"] for item in evidence if item["compatibility"] == "compatible"]
-    if len({(entry["pid"], entry["port"]) for entry in live}) > 1:
-        raise WorkflowError("conflicting live registry and announcement viewers; quiesce writers before serving", 409)
-    return live[0] if live else None
-
-
-def _viewer_running(entry: dict, board_path: Path | None = None) -> bool:
-    return viewer_status(entry, board_path)["compatibility"] == "compatible"
-
-
-def _viewers_save(viewers: dict) -> None:
-    _atomic_write_json(VIEWER_REGISTRY, viewers)
-
-def register_viewer(board_path: Path, pid: int, port: int) -> dict:
-    """Atomically register a viewer started directly by the serve command."""
-    board_path = require_write_scope(board_path)
-    require_write_scope(VIEWER_REGISTRY)
-    _viewers_load()
-    key = str(board_path.parent.resolve())
-    entry = {"pid": int(pid), "port": int(port), "started": now_iso(), **runtime_info()}
-    VIEWER_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    with board_lock(VIEWER_REGISTRY):
-        viewers = _viewers_load()
-        viewers[key] = entry
-        _viewers_save(viewers)
-    return entry
-
-
-def ensure_viewer(board_path: Path, force: bool = False) -> dict | None:
-    """Spawn or refresh a detached viewer for an explicit project switch."""
-    if not force and os.environ.get("WB_VIEWER") == "0":
-        return None
-    board_path = require_write_scope(board_path)
-    require_write_scope(VIEWER_REGISTRY)
-    require_write_scope(board_path.parent / ".viewer.port")
-    load(board_path)
-    registry_load()
-    _viewers_load()
-    VIEWER_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    with board_lock(VIEWER_REGISTRY):
-        return _ensure_viewer_locked(board_path)
-
-
-def ensure_registered_viewer(name: str) -> dict | None:
-    """Resolve and start a board while holding the shared lifecycle lock."""
-    target = _registered_target(registry_load(), name)
-    require_write_scope(target)
-    require_write_scope(registry_path())
-    require_write_scope(VIEWER_REGISTRY)
-    load(target)
-    _viewers_load()
-    registry_path().parent.mkdir(parents=True, exist_ok=True)
-    with board_lock(registry_path()):
-        target = _registered_target(registry_load(), name)
-        require_write_scope(target)
-        load(target)
-        return _ensure_viewer_locked(target)
-
-
-def _ensure_viewer_locked(board_path: Path) -> dict | None:
-    import subprocess
-    board_path = require_write_scope(board_path)
-    require_write_scope(VIEWER_REGISTRY)
-    load(board_path)
-    key = str(board_path.parent.resolve())
-    # Serialize against both registered starts and standalone --announce writers.
-    # The child needs this lock too, so release it before waiting for readiness.
-    with board_lock(board_path):
-        load(board_path)
-        viewers = _viewers_load()
-        entry = viewer_start_gate(board_path, viewers)
-        if entry:
-            viewers[key] = entry
-            _viewers_save(viewers)
-            return entry
-        announce = require_write_scope(board_path.parent / ".viewer.port")
-        announce.unlink(missing_ok=True)
-        creationflags = 0
-        if os.name == "nt":
-            creationflags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
-        try:
-            proc = subprocess.Popen(
-                [sys.executable, str(Path(__file__).resolve().parent / "serve.py"),
-                 "--board", str(board_path), "--announce", str(announce)],
-                creationflags=creationflags,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                close_fds=True)
-        except OSError as exc:
-            raise WorkflowError(f"viewer spawn failed: {exc}", 503) from exc
-        # Preserve even an unprobeable child as potentially-live writer evidence.
-        viewers[key] = {"pid": proc.pid, "port": None, "started": now_iso(), **runtime_info()}
-        _viewers_save(viewers)
-    info = None
-    deadline = time.monotonic() + 6.0
-    while time.monotonic() < deadline:
-        try:
-            candidate = _registry_json(announce, max_bytes=65536)
-            if candidate.get("pid") == proc.pid and _viewer_running(candidate, board_path):
-                info = candidate
-                break
-        except (OSError, ValueError, TypeError, AttributeError):
-            pass
-        if info is None:
-            if proc.poll() is not None:
-                break
-            time.sleep(0.1)
-    if info is None:
-        raise WorkflowError(
-            f"viewer PID {proc.pid} did not announce compatible health; inspect its evidence before retrying", 503)
-    entry = {**info, "started": now_iso()}
-    viewers[key] = entry
-    _viewers_save(viewers)
-    return entry
 
 
 # ===== output =====

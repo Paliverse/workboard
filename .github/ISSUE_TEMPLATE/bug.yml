@@ -1,0 +1,103 @@
+name: Bug report
+description: Something in WorkBoard doesn't work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please search [existing issues](https://github.com/Paliverse/workboard/issues) first.
+        **Security problems must not be reported here.** Follow [SECURITY.md](https://github.com/Paliverse/workboard/blob/main/SECURITY.md) instead.
+  - type: textarea
+    id: version
+    attributes:
+      label: Version
+      description: Paste the output of `workboard version --json`.
+      render: json
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version and architecture
+      placeholder: e.g. Windows 11 x64, macOS 15 arm64, Ubuntu 24.04 x64
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Install channel
+      options:
+        - npm
+        - Homebrew
+        - winget
+        - Scoop
+        - uv
+        - pipx
+        - pip
+        - Install script
+        - GitHub Release archive
+        - Source checkout
+        - Other / not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI
+        - Board UI (browser)
+        - Server / HTTP API
+        - Agent skill
+        - Setup, service or upgrade
+        - Docs
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands or clicks, starting from a fresh board if possible.
+      placeholder: |
+        1. workboard init demo
+        2. workboard add --title "..."
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include full error output. For CLI errors, the `--json` output helps.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Output of `workboard doctor --json`, relevant lines of `~/.workboard/logs/server.log`, or browser console errors. Remove anything private.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

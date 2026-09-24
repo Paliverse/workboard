@@ -1,0 +1,57 @@
+name: Feature request
+description: Suggest an improvement to WorkBoard.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        WorkBoard stays small on purpose: standard library only, exactly five columns, one board per project and one local server.
+        Requests that fit those limits are much more likely to land.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The behavior you'd like, such as a command, flag, UI interaction or API change.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use now, or other designs you thought about.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI
+        - Board UI (browser)
+        - Server / HTTP API
+        - Agent skill
+        - Setup, service or upgrade
+        - Packaging / install channels
+        - Docs
+    validations:
+      required: true
+  - type: dropdown
+    id: users
+    attributes:
+      label: Who benefits?
+      options:
+        - People using the board
+        - Coding agents
+        - Both
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
