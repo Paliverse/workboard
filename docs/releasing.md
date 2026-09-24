@@ -12,11 +12,10 @@ A release is one annotated tag, `vX.Y.Z`. Pushing the tag runs [`.github/workflo
 | `github-release` | `ubuntu-latest` | Creates the GitHub Release with the six archives, sdist, wheel, `install.sh`, `install.ps1` and `SHA256SUMS`. The notes are that version's CHANGELOG section. |
 | `pypi` | `ubuntu-latest` | Publishes to PyPI through trusted publishing (environment `pypi`). |
 | `npm` | `ubuntu-latest` | Builds the seven npm packages from the archives. It publishes the six platform packages first, then `workboard`, all with provenance (environment `npm`). |
-| `homebrew` | `macos-15` | Renders `Formula/workboard.rb`, then runs `brew install` and `brew test` on it. Pushes it to `Paliverse/homebrew-workboard`. Skipped without `HOMEBREW_TAP_TOKEN`. |
+| `manifests` | `macos-15` | Renders `Formula/workboard.rb` and `bucket/workboard.json`, then runs `brew install` and `brew test` on the formula from a throwaway local tap. Only then commits both files to `main` in one commit. It skips the commit when both files are unchanged, and rebases and retries once if `main` moved. |
 | `winget` | `windows-latest` | Renders the `Paliverse.WorkBoard` manifests and opens a pull request on `microsoft/winget-pkgs` with `wingetcreate submit`. Skipped without `WINGET_TOKEN`. |
-| `scoop` | `ubuntu-latest` | Commits `bucket/workboard.json` to `main`. |
 
-The channel jobs start only after the GitHub Release exists, because every manifest points at its assets. Generated manifests are never committed by hand, and `bucket/workboard.json` exists only after the first release.
+The channel jobs start only after the GitHub Release exists, because every manifest points at its assets. Generated manifests are never committed by hand, and `Formula/workboard.rb` and `bucket/workboard.json` exist only after the first release.
 
 Release assets have unversioned names, so `releases/latest/download/<asset>` always works:
 
@@ -35,7 +34,7 @@ The runner labels were checked against GitHub's [hosted runner reference](https:
 
 Complete these steps before the first tag.
 
-1. **Repository.** Create `github.com/Paliverse/workboard` and push `main`. In *Settings → Actions → General*, allow GitHub Actions. The default `GITHUB_TOKEN` permission can stay read-only, because each job asks for what it needs. If `main` is protected, allow `github-actions[bot]` to push, or the `scoop` job can't commit `bucket/workboard.json`.
+1. **Repository.** Create `github.com/Paliverse/workboard` and push `main`. In *Settings → Actions → General*, allow GitHub Actions. The default `GITHUB_TOKEN` permission can stay read-only, because each job asks for what it needs. The `manifests` job pushes a bot commit straight to `main`. If `main` is protected by a branch protection rule or ruleset, that push must be allowed: add GitHub Actions to the bypass list, or don't require pull requests for it. Otherwise the job can't commit `Formula/workboard.rb` and `bucket/workboard.json`.
 2. **Environments.** Create the environments `pypi` and `npm` in *Settings → Environments*. Add required reviewers if you want to approve each publication.
 3. **PyPI.** On pypi.org, go to *Your account → Publishing* and add a pending trusted publisher: project `workboard`, owner `Paliverse`, repository `workboard`, workflow `release.yml`, environment `pypi`. The name `workboard` was free on 2026-09-24. No token is needed.
 4. **npm names.** The main package `workboard` needs the platform packages `workboard-win32-x64`, `workboard-win32-arm64`, `workboard-darwin-x64`, `workboard-darwin-arm64`, `workboard-linux-x64` and `workboard-linux-arm64` as optional dependencies.
@@ -43,8 +42,14 @@ Complete these steps before the first tag.
    - **Claim them promptly.** A platform name taken by someone else would be installed by every `npm install -g workboard`, so claim all seven names with the first release.
    - **First release.** Create a granular npm access token that can publish new packages (bypass 2FA) and store it as the `NPM_TOKEN` secret of the `npm` environment.
    - **After the first release.** Configure trusted publishing on each of the seven packages (*package → Settings → Trusted publishing*: GitHub Actions, `Paliverse/workboard`, workflow `release.yml`, environment `npm`), then delete `NPM_TOKEN`. When no token is present, npm authenticates with the job's OIDC identity. The job uses Node 24, whose npm supports trusted publishing.
-5. **Homebrew tap.** Create the public repository `Paliverse/homebrew-workboard` with an initial commit, for example a README, on `main`. Create a fine-grained token with *Contents: read and write* on that repository only, and store it as the repository secret `HOMEBREW_TAP_TOKEN`. Users install with `brew install Paliverse/workboard/workboard`.
-6. **winget.** Fork `microsoft/winget-pkgs` into the GitHub account that owns the token. Create a classic personal access token with the `public_repo` scope (see the [wingetcreate token guide](https://aka.ms/winget-create-token)). Store it as the repository secret `WINGET_TOKEN`. winget moderators review the first `Paliverse.WorkBoard` submission by hand; later versions go through automated validation.
+5. **Homebrew.** No setup, no extra repository and no token. The tap is this repository: the `manifests` job commits `Formula/workboard.rb` to `main`. Users install with two commands and upgrade with `brew upgrade workboard`:
+
+   ```sh
+   brew tap paliverse/workboard https://github.com/Paliverse/workboard
+   brew install paliverse/workboard/workboard
+   ```
+
+6. **winget.** Fork `microsoft/winget-pkgs` into the GitHub account that owns the token. `wingetcreate` pushes to that fork only to open the submission pull requests; it is not a project repository. Create a classic personal access token with the `public_repo` scope (see the [wingetcreate token guide](https://aka.ms/winget-create-token)). Store it as the repository secret `WINGET_TOKEN`. winget moderators review the first `Paliverse.WorkBoard` submission by hand; later versions go through automated validation.
 7. **Scoop.** No setup. The bucket is this repository: `scoop bucket add workboard https://github.com/Paliverse/workboard`.
 
 ### Secrets and environments
@@ -54,9 +59,8 @@ Complete these steps before the first tag.
 | `pypi` | environment + PyPI trusted publisher | `pypi` | The PyPI upload fails. |
 | `npm` | environment | `npm` | The job can't start. |
 | `NPM_TOKEN` | `npm` environment secret | `npm` (first release, or instead of trusted publishing) | npm uses trusted publishing. |
-| `HOMEBREW_TAP_TOKEN` | repository secret | `homebrew` | The job is skipped with a notice. |
 | `WINGET_TOKEN` | repository secret | `winget` | The job is skipped with a notice. |
-| `GITHUB_TOKEN` | automatic | `github-release`, `scoop` | Always present. |
+| `GITHUB_TOKEN` | automatic | `github-release`, `manifests` | Always present. |
 
 ## Cutting a release
 
@@ -75,7 +79,7 @@ Complete these steps before the first tag.
 7. Check the result:
    - the GitHub Release has 6 archives, the sdist, the wheel, both install scripts and `SHA256SUMS`;
    - `pipx run --spec workboard==X.Y.Z workboard --version` and `npx workboard@X.Y.Z --version` print `workboard X.Y.Z`;
-   - the tap has a `workboard X.Y.Z` commit, the `winget` job log links the winget-pkgs pull request, and `main` has a `scoop: workboard X.Y.Z` commit;
+   - `main` has a `manifests: workboard X.Y.Z` commit, and the `winget` job log links the winget-pkgs pull request;
    - `workboard version --check` on an older install reports the update.
 
 Never move or reuse a published tag. If a release is broken, fix it on `main` and release `X.Y.Z+1`. PyPI and npm refuse to overwrite a published version.
@@ -86,7 +90,7 @@ Use *Re-run failed jobs* on the workflow run. Publishing is safe to repeat:
 
 - PyPI skips files that were already uploaded.
 - npm skips packages whose `name@version` already exists.
-- Homebrew and Scoop don't commit when the file is unchanged.
+- `manifests` doesn't commit when `Formula/workboard.rb` and `bucket/workboard.json` are unchanged.
 
 `github-release` is the exception: if it failed after creating the release, delete that release (not the tag) before you re-run it.
 
@@ -110,7 +114,7 @@ WORKBOARD_TEST_COMMAND="$PWD/build/pyinstaller/dist/workboard/workboard" python 
 - `checksums [DIR]`: writes `SHA256SUMS`.
 - `notes --version X`: prints the CHANGELOG section of that version.
 - `npm --version X`: builds `build/npm/` from the archives in `dist/`.
-- `manifests --version X --sums SHA256SUMS`: renders the Homebrew formula, the Scoop manifest and the winget manifests into `build/manifests/`.
+- `manifests --version X --sums SHA256SUMS`: renders the Homebrew formula, the Scoop manifest and the winget manifests into `build/manifests/`. The `manifests` job copies the first two to `Formula/workboard.rb` and `bucket/workboard.json`.
 
 ### Testing the install scripts
 
@@ -129,7 +133,7 @@ HOME=$(mktemp -d) WORKBOARD_INSTALL_BASE_URL=http://127.0.0.1:8000 sh scripts/in
 
 | Path | Purpose |
 |---|---|
-| `pyproject.toml` | Hatchling build. The version comes from `src/workboard/__init__.py`, and the wheel ships `web/board.html` and `skills/workboard/SKILL.md`. |
+| `pyproject.toml` | Hatchling build. The version comes from `src/workboard/__init__.py`, and the wheel ships `web/board.html`, `skills/workboard/SKILL.md` and `LICENSE`. |
 | `packaging/workboard.spec`, `packaging/entry.py` | PyInstaller onedir build. It produces the console `workboard` executable, plus the windowed `workboardw` on Windows for the background service, and bundles the package data at package-relative paths. |
 | `packaging/build.py` | The release tool described above (stdlib only). |
 | `packaging/npm/` | Template for the main npm package and its `bin/workboard.js` launcher, which runs the platform binary. |

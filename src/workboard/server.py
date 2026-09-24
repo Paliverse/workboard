@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Paliverse
 """WorkBoard local server: one per-user process that serves every registered board.
 
 Stdlib only, bound to 127.0.0.1. Root routes: ``/health``, ``/`` (board chooser),

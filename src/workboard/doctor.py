@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Paliverse
 """`workboard doctor`: installation health plus read-only board data integrity.
 
 Data checks never create files, locks, or directories. They validate the board

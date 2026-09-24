@@ -31,7 +31,7 @@ First public release.
 - `workboard init` creates and registers a board. `workboard open` opens it in the browser, starting the server if needed.
 - `workboard setup` installs the agent skill for Claude Code (`~/.claude/skills`) and for Codex, Pi, Oh My Pi, Gemini CLI, Cursor, OpenCode and GitHub Copilot (`~/.agents/skills`). It also installs a background service: HKCU Run on Windows, a LaunchAgent on macOS, and a systemd user unit on Linux.
 - `skills install|remove|status`, `service install|remove|status|restart`, `version [--check]`, `upgrade [--dry-run]` and `doctor [--all]`.
-- Distribution through self-contained binaries for Windows, macOS and Linux (x64 and arm64) on GitHub Releases, plus npm, PyPI, a Homebrew tap, winget, Scoop and one-line install scripts.
+- Distribution through self-contained binaries for Windows, macOS and Linux (x64 and arm64) on GitHub Releases, plus npm, PyPI, a Homebrew formula (tap this repository), winget, Scoop and one-line install scripts.
 
 [Unreleased]: https://github.com/Paliverse/workboard/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/Paliverse/workboard/releases/tag/v0.1.0

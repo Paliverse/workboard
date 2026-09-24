@@ -96,3 +96,4 @@ Run from the repository root:
 
 - Behavior changes update `docs/`, `README.md` and the `## [Unreleased]` section of `CHANGELOG.md` in the same change.
 - The version lives only in `src/workboard/__init__.py`. Releases follow [docs/releasing.md](docs/releasing.md).
+- `LICENSE` ships in every distributable. The Python modules and `web/board.html` under `src/workboard/` keep their SPDX and copyright header; new source files copy it.

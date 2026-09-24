@@ -15,10 +15,11 @@ The `workboard` package installs the `workboard` and `wb` commands. They launch 
 ### Homebrew (macOS, Linux)
 
 ```sh
-brew install Paliverse/workboard/workboard
+brew tap paliverse/workboard https://github.com/Paliverse/workboard
+brew install paliverse/workboard/workboard
 ```
 
-This command taps `Paliverse/homebrew-workboard` and installs the binary for your OS and architecture. The formula also has a `service` block. You can use `brew services start workboard` instead of `workboard service install`, but don't use both.
+The tap is this repository: the formula is `Formula/workboard.rb`, updated by each release, so there is no separate tap repository. It installs the binary for your OS and architecture. Upgrade with `brew upgrade workboard`. The formula also has a `service` block. You can use `brew services start workboard` instead of `workboard service install`, but don't use both.
 
 ### winget (Windows)
 
@@ -170,7 +171,7 @@ Then remove the program:
 | Channel | Command |
 |---|---|
 | npm | `npm uninstall -g workboard` |
-| Homebrew | `brew uninstall workboard` (optionally `brew untap Paliverse/workboard`) |
+| Homebrew | `brew uninstall workboard`, then `brew untap paliverse/workboard` |
 | winget | `winget uninstall --id Paliverse.WorkBoard` |
 | Scoop | `scoop uninstall workboard` (optionally `scoop bucket rm workboard`) |
 | uv | `uv tool uninstall workboard` |

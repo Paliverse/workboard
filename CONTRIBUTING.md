@@ -78,6 +78,7 @@ WorkBoard's safety depends on a few rules. Pull requests that weaken them won't 
 - **Stable output.** Mutations print one concise line. `--json` prints one line with `rev` and card identity. Error codes (`stale|owned|deps|wip|state|not_found|invalid|lock|scope|io`) are a public contract.
 - **Cheap imports.** Heavy or OS-specific modules are imported inside functions, and `workboard digest` must not import the server.
 - **Portable skill.** `src/workboard/skills/workboard/SKILL.md` stays at 6 KB or less, uses the bare `workboard` command, and contains no absolute paths or shell-specific syntax. Operator procedures belong in `docs/`.
+- **License header.** New source files start with the same two-line `SPDX-License-Identifier` and copyright header as the existing modules (after any `#!` line).
 
 See [docs/architecture.md](docs/architecture.md) for how the pieces fit together.
 

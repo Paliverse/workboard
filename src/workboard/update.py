@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Paliverse
 """Version reporting, update checks, and channel-aware upgrades."""
 from __future__ import annotations
 

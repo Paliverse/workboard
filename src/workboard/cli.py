@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Paliverse
 """WorkBoard: the concise agent/human interface for the project kanban.
 
 Every mutation prints one line and supports --json for a machine postcondition.

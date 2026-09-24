@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Paliverse
 """WorkBoard core: schema, board discovery, registry, crash-safe persistence.
 
 One board/board.json per project is the single source of truth; the per-user

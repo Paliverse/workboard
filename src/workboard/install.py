@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Paliverse
 """Per-user setup: agent skill installation and the background server service.
 
 `workboard setup` copies the bundled skill into every agent harness and

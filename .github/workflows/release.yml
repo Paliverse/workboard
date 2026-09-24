@@ -192,53 +192,55 @@ jobs:
             fi
           done
 
-  homebrew:
-    name: Homebrew tap
+  manifests:
+    name: Homebrew formula and Scoop manifest
     needs: [verify, github-release]
     runs-on: macos-15
+    permissions:
+      contents: write
     env:
       VERSION: ${{ needs.verify.outputs.version }}
     steps:
-      - name: Check for HOMEBREW_TAP_TOKEN
-        id: gate
-        env:
-          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          if [ -n "$TOKEN" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else echo "::notice::HOMEBREW_TAP_TOKEN is not set; skipping the Homebrew tap update"; fi
-      - if: steps.gate.outputs.enabled == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
-      - if: steps.gate.outputs.enabled == 'true'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+          ref: main
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - if: steps.gate.outputs.enabled == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: sha256sums
           path: build
-      - name: Install, test and push the formula
-        if: steps.gate.outputs.enabled == 'true'
+      - run: python packaging/build.py manifests --version "$VERSION" --sums build/SHA256SUMS
+      - name: Install and test the formula from a throwaway local tap
         env:
-          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: |
-          python packaging/build.py manifests --version "$VERSION" --sums build/SHA256SUMS
-          tap="$(brew --repository)/Library/Taps/paliverse/homebrew-workboard"
-          git clone "https://x-access-token:$TOKEN@github.com/Paliverse/homebrew-workboard.git" "$tap"
+          brew tap-new --no-git workboard-ci/local
+          tap="$(brew --repository workboard-ci/local)"
           mkdir -p "$tap/Formula"
           cp build/manifests/workboard.rb "$tap/Formula/workboard.rb"
-          brew install paliverse/workboard/workboard
-          brew test paliverse/workboard/workboard
-          cd "$tap"
-          git add Formula/workboard.rb
-          if git diff --cached --quiet; then echo "Formula already at $VERSION"; exit 0; fi
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -m "workboard $VERSION"
-          git push
+          brew install workboard-ci/local/workboard
+          brew test workboard-ci/local/workboard
+      - name: Commit Formula/workboard.rb and bucket/workboard.json to main
+        env:
+          GIT_AUTHOR_NAME: "github-actions[bot]"
+          GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+          GIT_COMMITTER_NAME: "github-actions[bot]"
+          GIT_COMMITTER_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+        run: |
+          mkdir -p Formula bucket
+          cp build/manifests/workboard.rb Formula/workboard.rb
+          cp build/manifests/workboard.json bucket/workboard.json
+          git add Formula/workboard.rb bucket/workboard.json
+          if git diff --cached --quiet; then echo "Formula/workboard.rb and bucket/workboard.json already at $VERSION"; exit 0; fi
+          git commit -m "manifests: workboard $VERSION"
+          if ! git push origin HEAD:main; then
+            echo "main moved; rebasing once and retrying"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
 
   winget:
     name: winget
@@ -283,33 +285,3 @@ jobs:
           }
           & $exe submit --no-open --prtitle "New version: Paliverse.WorkBoard version $env:VERSION" build/manifests/winget
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-
-  scoop:
-    name: Scoop manifest
-    needs: [verify, github-release]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      VERSION: ${{ needs.verify.outputs.version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: main
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.13"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: sha256sums
-          path: build
-      - name: Commit bucket/workboard.json to main
-        run: |
-          python packaging/build.py manifests --version "$VERSION" --sums build/SHA256SUMS
-          mkdir -p bucket
-          cp build/manifests/workboard.json bucket/workboard.json
-          git add bucket/workboard.json
-          if git diff --cached --quiet; then echo "bucket/workboard.json already at $VERSION"; exit 0; fi
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -m "scoop: workboard $VERSION"
-          git push origin HEAD:main
