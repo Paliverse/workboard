@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.support import last_json, make_env, run, scratch
+from tests.support import PORT, last_json, make_env, run, scratch
 
 from workboard import __version__, core
 
@@ -102,7 +102,7 @@ class BoardLifecycle(unittest.TestCase):
         listed = wb(["boards"], self.proj)
         self.assertEqual(listed.returncode, 0, detail(listed))
         self.assertIn("smoke-board", listed.stdout)
-        self.assertIn("http://127.0.0.1:7891/b/smoke-board/", listed.stdout)
+        self.assertIn(f"http://127.0.0.1:{PORT}/b/smoke-board/", listed.stdout)
 
     def test_c02_add_flags_and_json_postconditions(self):
         r = wb(["add", "--title", "first task", "--tag", "alpha", "--priority", "critical",
@@ -390,7 +390,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(wb(["init", "team/α b", "--dir", root], BASE, env).returncode, 0)
         listed = last_json(wb(["boards", "--json"], BASE, env))["boards"]
         self.assertEqual([(item["name"], item["url"], item["exists"]) for item in listed],
-                         [("team/α b", "http://127.0.0.1:7891/b/team%2F%CE%B1%20b/", True)])
+                         [("team/α b", f"http://127.0.0.1:{PORT}/b/team%2F%CE%B1%20b/", True)])
         human = wb(["boards"], BASE, {**env, "WORKBOARD_PORT": "45678"})
         self.assertIn("http://127.0.0.1:45678/b/team%2F%CE%B1%20b/", human.stdout)
 
@@ -762,7 +762,7 @@ class Contracts(unittest.TestCase):
         registered = last_json(wb(["boards", "--json"], BASE))["boards"]
         self.assertTrue(any(item["name"] == "agent" and item["exists"] is True
                             and Path(item["board"]).resolve() == path.resolve()
-                            and item["url"] == "http://127.0.0.1:7891/b/agent/"
+                            and item["url"] == f"http://127.0.0.1:{PORT}/b/agent/"
                             for item in registered), registered)
         pulse = last_json(wb(["digest", "--board", root, "--json"], BASE))
         self.assertEqual((pulse["rev"], pulse["stats"]["total"], pulse["ready"]),

@@ -23,10 +23,10 @@ These rules are for people and coding agents changing this repository. For using
 | `src/workboard/server.py` | The per-user HTTP/SSE server, browser mutation endpoints and lifecycle helpers (`server_info`, `stop`, `start_background`, `open_board`) |
 | `src/workboard/web/board.html` | The whole browser UI, served directly with no generated bundle |
 | `src/workboard/install.py` | `setup`, `skills …`, `service …`, `server_command()` and the Windows runtime copy |
-| `src/workboard/update.py` | `version`, channel detection and `upgrade` |
+| `src/workboard/update.py` | `version`, channel detection (`npm`, `script`, `source`, `unknown`) and `upgrade` |
 | `src/workboard/doctor.py` | Read-only installation and data-integrity checks |
 | `src/workboard/skills/workboard/SKILL.md` | The single portable agent skill |
-| `packaging/`, `scripts/`, `bucket/`, `.github/workflows/` | Binaries, npm, Homebrew, winget, Scoop, the install scripts and CI/release |
+| `packaging/`, `scripts/`, `.github/workflows/` | PyInstaller binaries, npm packages, the install scripts and CI/release |
 | `docs/`, `README.md` | User, operator and API documentation |
 | `tests/` | Stdlib `unittest` suites; `tests/support.py` provides scratch environments |
 

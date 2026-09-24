@@ -27,7 +27,7 @@ All modules live in `src/workboard/`.
 | `skills/workboard/SKILL.md` | The portable agent skill that `skills install` copies. |
 | `__main__.py` | `python -m workboard`. |
 
-Package data (`web/board.html`, `skills/workboard/SKILL.md`) is read with `importlib.resources`, so wheels and PyInstaller binaries find it at the same package-relative paths.
+Package data (`web/board.html`, `skills/workboard/SKILL.md`) is read with `importlib.resources`, so source installs and PyInstaller binaries find it at the same package-relative paths.
 
 Imports are kept cheap. `http.server`, `winreg`, `plistlib`, `urllib.request` and `subprocess` are imported inside the functions that need them, and board commands such as `workboard digest` never import `server`.
 
@@ -110,15 +110,13 @@ Subscribers are kept per board. A watcher polls the size and modification time o
 
 | OS | Mechanism |
 |---|---|
-| Windows | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `WorkBoard`. Binary installs run the windowed `workboardw.exe`; Python installs run `pythonw.exe -m workboard`. |
+| Windows | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `WorkBoard`. Binary installs run the windowed `workboardw.exe`; source installs run `pythonw.exe -m workboard`. |
 | macOS | LaunchAgent `~/Library/LaunchAgents/io.github.paliverse.workboard.plist` (`RunAtLoad`, restart on crash), loaded with `launchctl bootstrap gui/<uid>`. |
 | Linux | systemd user unit `~/.config/systemd/user/workboard.service` (`Restart=on-failure`). Without a usable `systemctl --user`, an XDG autostart entry is used and the server is started immediately. |
 
-The service command points at a stable path where possible. For example, Homebrew's `bin` symlink is used rather than the versioned Cellar path.
-
 ### Windows runtime copy
 
-Windows won't replace an executable that is running. On Windows binary installs, `serve --service` therefore first copies the application directory to `WORKBOARD_HOME/runtime/<version>/`, starts the copy with the same arguments and exits. winget, Scoop, npm and the install script can then replace the installed files while the service runs. Older runtime versions that are no longer in use are deleted on a best-effort basis.
+Windows won't replace an executable that is running. On Windows binary installs, `serve --service` therefore first copies the application directory to `WORKBOARD_HOME/runtime/<version>/`, starts the copy with the same arguments and exits. npm and the install script can then replace the installed files while the service runs. Older runtime versions that are no longer in use are deleted on a best-effort basis.
 
 ## Skills
 

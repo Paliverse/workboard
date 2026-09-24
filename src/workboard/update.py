@@ -21,42 +21,21 @@ REPO = "Paliverse/workboard"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASE_DOWNLOADS = f"https://github.com/{REPO}/releases/latest/download"
 RECEIPT = "install-receipt.json"
-CHANNELS = ("npm", "brew", "winget", "scoop", "pipx", "uv", "pip", "script", "source", "unknown")
-_COMMANDS = {
-    "npm": ["npm", "install", "-g", "workboard@latest"],
-    "brew": ["brew", "upgrade", "workboard"],
-    "winget": ["winget", "upgrade", "--id", "Paliverse.WorkBoard", "--exact"],
-    "scoop": ["scoop", "update", "workboard"],
-    "pipx": ["pipx", "upgrade", "workboard"],
-    "uv": ["uv", "tool", "upgrade", "workboard"],
-}
+CHANNELS = ("npm", "script", "source", "unknown")
 _UNSUPPORTED = {
-    "source": "this WorkBoard runs from a source checkout; update it with `git pull` instead",
-    "unknown": ("cannot tell how this WorkBoard was installed; reinstall it from "
-                f"https://github.com/{REPO}/releases or through your package manager"),
+    "source": ("this WorkBoard runs from a source checkout; update it with `git pull`, "
+               "then reinstall the dev environment (`pip install -e .`)"),
+    "unknown": ("cannot tell how this WorkBoard was installed; reinstall it with `npm install -g workboard` "
+                f"or the install script from https://github.com/{REPO}/releases"),
 }
 
 
 # ===== channels =====
 
-def channel_for(location: str, *, frozen: bool) -> str:
-    """Classify an install by path: the executable when frozen, else the package directory."""
-    path = "/" + location.replace("\\", "/").lower().strip("/") + "/"
-    if frozen:
-        if "/node_modules/" in path:  # Before brew: npm's global prefix may live under Homebrew.
-            return "npm"
-        if "/microsoft/winget/" in path:
-            return "winget"
-        if "/scoop/apps/" in path:
-            return "scoop"
-        if "/cellar/" in path or "homebrew" in path or "linuxbrew" in path:
-            return "brew"
-        return "unknown"
-    if "/pipx/venvs/" in path:
-        return "pipx"
-    if "/uv/tools/" in path:
-        return "uv"
-    return "pip"
+def channel_for(executable: str) -> str:
+    """Classify a frozen executable by path: npm installs live under node_modules."""
+    path = "/" + executable.replace("\\", "/").lower().strip("/") + "/"
+    return "npm" if "/node_modules/" in path else "unknown"
 
 
 def detect_channel() -> str:
@@ -64,22 +43,22 @@ def detect_channel() -> str:
         executable = Path(sys.executable).resolve()
         if (executable.parent / RECEIPT).is_file():
             return "script"
-        return channel_for(str(executable), frozen=True)
+        return channel_for(str(executable))
     package = Path(__file__).resolve().parent
     if package.parent.name == "src" and (package.parent.parent / "pyproject.toml").is_file():
         return "source"
-    return channel_for(str(package), frozen=False)
+    return "unknown"
 
 
 def upgrade_command(channel: str) -> list[str] | None:
-    if channel == "pip":
-        return [sys.executable, "-m", "pip", "install", "--upgrade", "workboard"]
+    if channel == "npm":
+        return ["npm", "install", "-g", "workboard@latest"]
     if channel == "script":
         if install._WINDOWS:
             return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
                     f"irm {RELEASE_DOWNLOADS}/install.ps1 | iex"]
         return ["sh", "-c", f"curl -fsSL {RELEASE_DOWNLOADS}/install.sh | sh"]
-    return _COMMANDS.get(channel)
+    return None
 
 
 def display(argv: list[str]) -> str:

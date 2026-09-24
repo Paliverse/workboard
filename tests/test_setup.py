@@ -209,25 +209,14 @@ class ServerCommandTest(unittest.TestCase):
         self.enterContext(mock.patch.object(sys, "frozen", frozen, create=True))
         self.enterContext(mock.patch.object(sys, "executable", str(executable)))
 
-    def test_frozen_windows_prefers_the_windowed_sibling(self):
+    def test_frozen_prefers_the_windowed_sibling_only_on_windows(self):
         root = self.app("workboard.exe")
         self.patch(windows=True, frozen=True, executable=root / "workboard.exe")
         self.assertEqual(install.server_command(), [str(root / "workboard.exe"), "serve", "--service"])
         (root / "workboardw.exe").write_bytes(b"")
         self.assertEqual(install.server_command(), [str(root / "workboardw.exe"), "serve", "--service"])
-
-    def test_frozen_posix_prefers_a_stable_link_to_the_same_binary(self):
-        root = self.app("workboard")
-        real, link = root / "Cellar" / "0.1.0" / "workboard", root / "bin" / "workboard"
-        self.patch(windows=False, frozen=True, executable=real)
-        realpath = lambda path: str(real) if str(path) == str(link) else str(path)
-        with mock.patch("os.path.realpath", side_effect=realpath):
-            with mock.patch("shutil.which", return_value=str(link)):
-                self.assertEqual(install.server_command(), [str(link), "serve", "--service"])
-            with mock.patch("shutil.which", return_value=str(root / "other" / "workboard")):
-                self.assertEqual(install.server_command(), [str(real), "serve", "--service"])
-            with mock.patch("shutil.which", return_value=None):
-                self.assertEqual(install.server_command(), [str(real), "serve", "--service"])
+        self.patch(windows=False, frozen=True, executable=root / "workboard.exe")
+        self.assertEqual(install.server_command(), [str(root / "workboard.exe"), "serve", "--service"])
 
     def test_source_install_runs_the_module_with_pythonw_on_windows(self):
         root = self.app("python.exe")
@@ -372,26 +361,16 @@ class ServiceTest(ScratchCase):
 
 class ChannelTest(unittest.TestCase):
     TABLE = [
-        (r"C:\Users\u\AppData\Roaming\npm\node_modules\workboard\node_modules\workboard-win32-x64\workboard\workboard.exe", True, "npm"),
-        ("/opt/homebrew/lib/node_modules/workboard/node_modules/workboard-darwin-arm64/workboard/workboard", True, "npm"),
-        ("/opt/homebrew/Cellar/workboard/0.1.0/libexec/workboard", True, "brew"),
-        ("/usr/local/Cellar/workboard/0.1.0/libexec/workboard", True, "brew"),
-        ("/home/linuxbrew/.linuxbrew/Cellar/workboard/0.1.0/libexec/workboard", True, "brew"),
-        (r"C:\Users\u\AppData\Local\Microsoft\WinGet\Packages\Paliverse.WorkBoard_Microsoft.Winget.Source_8wekyb3d8bbwe\workboard\workboard.exe", True, "winget"),
-        (r"C:\Users\u\scoop\apps\workboard\0.1.0\workboard.exe", True, "scoop"),
-        (r"C:\Users\u\AppData\Local\Programs\WorkBoard\workboard.exe", True, "unknown"),
-        ("/home/u/.local/share/pipx/venvs/workboard/lib/python3.12/site-packages/workboard", False, "pipx"),
-        (r"C:\Users\u\pipx\venvs\workboard\Lib\site-packages\workboard", False, "pipx"),
-        ("/home/u/.local/share/uv/tools/workboard/lib/python3.12/site-packages/workboard", False, "uv"),
-        (r"C:\Users\u\AppData\Roaming\uv\tools\workboard\Lib\site-packages\workboard", False, "uv"),
-        ("/opt/homebrew/lib/python3.12/site-packages/workboard", False, "pip"),
-        (r"C:\Python314\Lib\site-packages\workboard", False, "pip"),
+        (r"C:\Users\u\AppData\Roaming\npm\node_modules\workboard\node_modules\workboard-win32-x64\workboard\workboard.exe", "npm"),
+        ("/usr/local/lib/node_modules/workboard/node_modules/workboard-darwin-arm64/workboard/workboard", "npm"),
+        ("/home/u/.local/share/workboard/workboard", "unknown"),
+        (r"C:\Users\u\AppData\Local\Programs\WorkBoard\workboard.exe", "unknown"),
     ]
 
     def test_path_heuristics(self):
-        for location, frozen, expected in self.TABLE:
-            with self.subTest(location=location):
-                self.assertEqual(update.channel_for(location, frozen=frozen), expected)
+        for executable, expected in self.TABLE:
+            with self.subTest(executable=executable):
+                self.assertEqual(update.channel_for(executable), expected)
 
     def test_install_receipt_marks_a_script_install_and_src_tree_marks_source(self):
         root = Path(self.enterContext(scratch("wb-receipt-")))
@@ -448,12 +427,6 @@ class UpgradeTest(ScratchCase):
         downloads = "https://github.com/Paliverse/workboard/releases/latest/download"
         cases = [
             ("npm", False, ["npm", "install", "-g", "workboard@latest"]),
-            ("brew", False, ["brew", "upgrade", "workboard"]),
-            ("winget", True, ["winget", "upgrade", "--id", "Paliverse.WorkBoard", "--exact"]),
-            ("scoop", True, ["scoop", "update", "workboard"]),
-            ("pipx", False, ["pipx", "upgrade", "workboard"]),
-            ("uv", False, ["uv", "tool", "upgrade", "workboard"]),
-            ("pip", False, [sys.executable, "-m", "pip", "install", "--upgrade", "workboard"]),
             ("script", True, ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
                               f"irm {downloads}/install.ps1 | iex"]),
             ("script", False, ["sh", "-c", f"curl -fsSL {downloads}/install.sh | sh"]),
@@ -490,6 +463,12 @@ class UpgradeTest(ScratchCase):
                 self.assertEqual((code, error["code"]), (1, "state"))
         code, error = invoke_json("upgrade", "--dry-run", "--json")  # This checkout is `source`.
         self.assertIn("git pull", error["error"])
+        site = BASE / "site-packages" / "workboard" / "update.py"
+        with mock.patch.object(update, "__file__", str(site)):
+            self.assertEqual(update.detect_channel(), "unknown")
+            code, error = invoke_json("upgrade", "--dry-run", "--json")
+        self.assertEqual((code, error["code"]), (1, "state"))
+        self.assertIn("npm install -g workboard", error["error"])
 
     def test_runtime_copy_waits_for_the_original_then_runs_the_plan(self):
         events = []

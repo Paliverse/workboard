@@ -37,16 +37,9 @@ body:
       label: Install channel
       options:
         - npm
-        - Homebrew
-        - winget
-        - Scoop
-        - uv
-        - pipx
-        - pip
-        - Install script
-        - GitHub Release archive
-        - Source checkout
-        - Other / not sure
+        - install script
+        - from source
+        - other
     validations:
       required: true
   - type: dropdown

@@ -6,14 +6,14 @@ Thanks for helping. Bug reports, ideas, docs fixes and pull requests are all wel
 
 You need Python 3.11 or newer and git. There are no runtime dependencies.
 
-With [uv](https://docs.astral.sh/uv/):
+Install an editable copy into a virtual environment. `pyproject.toml` exists only for this development install; releases ship PyInstaller binaries.
 
 ```sh
 git clone https://github.com/Paliverse/workboard
 cd workboard
-uv venv
-uv pip install -e .
-.venv/bin/workboard --version        # Windows: .venv\Scripts\workboard --version
+python -m venv .venv
+.venv/bin/python -m pip install -e .   # Windows: .venv\Scripts\python.exe -m pip install -e .
+.venv/bin/workboard --version          # Windows: .venv\Scripts\workboard --version
 ```
 
 With plain Python, no install needed:
@@ -101,7 +101,7 @@ Say in the pull request what you exercised and in which browser. Keep interactio
 
 ## Releases
 
-Maintainers cut releases from tags. The checklist, required secrets and channel setup are in [docs/releasing.md](docs/releasing.md).
+Maintainers cut releases from tags. The checklist, required secrets and npm setup are in [docs/releasing.md](docs/releasing.md).
 
 ## License
 

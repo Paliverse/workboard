@@ -6,7 +6,6 @@
   checksums [DIR]                 DIR/SHA256SUMS over every file in DIR (default: dist)
   notes --version X               print the CHANGELOG.md section of X (GitHub Release notes)
   npm --version X                 build/npm/: the `workboard` package + one package per archive in dist/
-  manifests --version X --sums F  build/manifests/: Homebrew formula, Scoop manifest, winget manifests
 """
 from __future__ import annotations
 
@@ -31,8 +30,6 @@ ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
 PYINSTALLER = BUILD / "pyinstaller"
-REPO_URL = "https://github.com/Paliverse/workboard"
-SUMMARY = "Local kanban board shared by people and coding agents"
 # Release target -> (npm os, npm cpu). Asset names are unversioned so releases/latest/download works.
 TARGETS = {
     "windows-x64": ("win32", "x64"), "windows-arm64": ("win32", "arm64"),
@@ -232,107 +229,6 @@ def npm(args) -> None:
     print(main)
 
 
-def manifests(args) -> None:
-    version = args.version.removeprefix("v")
-    sums = {}
-    for line in Path(args.sums).read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            digest, name = line.split(maxsplit=1)
-            sums[name.lstrip("*")] = digest.lower()
-    missing = [asset(t) for t in TARGETS if asset(t) not in sums]
-    if missing:
-        raise SystemExit(f"{args.sums} lacks: {', '.join(missing)}")
-    url = {t: f"{REPO_URL}/releases/download/v{version}/{asset(t)}" for t in TARGETS}
-    out = Path(args.out)
-    shutil.rmtree(out, ignore_errors=True)
-    (out / "winget").mkdir(parents=True)
-
-    def brew(target: str) -> str:
-        return f'      url "{url[target]}"\n      sha256 "{sums[asset(target)]}"\n'
-
-    (out / "workboard.rb").write_text(f'''class Workboard < Formula
-  desc "{SUMMARY}"
-  homepage "{REPO_URL}"
-  version "{version}"
-  license "Apache-2.0"
-
-  on_macos do
-    on_arm do
-{brew("macos-arm64")}    end
-    on_intel do
-{brew("macos-x64")}    end
-  end
-
-  on_linux do
-    on_arm do
-{brew("linux-arm64")}    end
-    on_intel do
-{brew("linux-x64")}    end
-  end
-
-  def install
-    libexec.install Dir["*"]
-    bin.install_symlink libexec/"workboard"
-    bin.install_symlink libexec/"workboard" => "wb"
-  end
-
-  service do
-    run [opt_bin/"workboard", "serve", "--service"]
-    keep_alive successful_exit: false
-  end
-
-  test do
-    assert_match "workboard #{{version}}", shell_output("#{{bin}}/workboard --version")
-  end
-end
-''', encoding="utf-8", newline="\n")
-
-    write_json(out / "workboard.json", {
-        "version": version,
-        "description": SUMMARY,
-        "homepage": REPO_URL,
-        "license": "Apache-2.0",
-        "architecture": {
-            "64bit": {"url": url["windows-x64"], "hash": sums[asset("windows-x64")]},
-            "arm64": {"url": url["windows-arm64"], "hash": sums[asset("windows-arm64")]},
-        },
-        "extract_dir": "workboard",
-        "bin": ["workboard.exe", ["workboard.exe", "wb"]],
-        "notes": "Run: workboard setup",
-        "checkver": {"github": REPO_URL},
-        "autoupdate": {
-            "architecture": {
-                "64bit": {"url": f"{REPO_URL}/releases/download/v$version/{asset('windows-x64')}"},
-                "arm64": {"url": f"{REPO_URL}/releases/download/v$version/{asset('windows-arm64')}"},
-            },
-            "hash": {"url": "$baseurl/SHA256SUMS"},
-        },
-    })
-
-    identity = f"PackageIdentifier: Paliverse.WorkBoard\nPackageVersion: {version}\n"
-    installers = "".join(
-        f"- Architecture: {arch}\n  InstallerUrl: {url[target]}\n  InstallerSha256: {sums[asset(target)].upper()}\n"
-        for arch, target in (("x64", "windows-x64"), ("arm64", "windows-arm64")))
-    winget = (
-        ("Paliverse.WorkBoard.yaml", "version", "DefaultLocale: en-US\n"),
-        ("Paliverse.WorkBoard.installer.yaml", "installer",
-         "InstallerType: zip\nNestedInstallerType: portable\nNestedInstallerFiles:\n"
-         "- RelativeFilePath: workboard\\workboard.exe\n  PortableCommandAlias: workboard\n"
-         f"Installers:\n{installers}"),
-        ("Paliverse.WorkBoard.locale.en-US.yaml", "defaultLocale",
-         f"PackageLocale: en-US\nPublisher: Paliverse\nPublisherUrl: https://github.com/Paliverse\n"
-         f"PackageName: WorkBoard\nPackageUrl: {REPO_URL}\nLicense: Apache-2.0\n"
-         f"LicenseUrl: {REPO_URL}/blob/main/LICENSE\nShortDescription: {SUMMARY}\n"
-         "Tags:\n- kanban\n- agents\n- cli\n- task-tracking\n"
-         f"ReleaseNotesUrl: {REPO_URL}/releases/tag/v{version}\n"),
-    )
-    for name, kind, body in winget:
-        (out / "winget" / name).write_text(
-            f"# yaml-language-server: $schema=https://aka.ms/winget-manifest.{kind}.1.10.0.schema.json\n"
-            f"{identity}{body}ManifestType: {kind}\nManifestVersion: 1.10.0\n", encoding="utf-8", newline="\n")
-    print(out)
-
-
 def pyproject() -> dict:
     return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
@@ -356,11 +252,6 @@ def main() -> None:
         p = sub.add_parser(name)
         p.add_argument("--version", required=True)
         p.set_defaults(fn=fn)
-    p = sub.add_parser("manifests")
-    p.add_argument("--version", required=True)
-    p.add_argument("--sums", required=True, help="SHA256SUMS of the release")
-    p.add_argument("--out", default=str(BUILD / "manifests"))
-    p.set_defaults(fn=manifests)
     args = ap.parse_args()
     args.fn(args)
 

@@ -48,9 +48,7 @@ workboardw = "workboard.cli:main"
 [tool.hatch.version]
 path = "src/workboard/__init__.py"
 
-# Every file under src/workboard ships, including web/board.html and skills/workboard/SKILL.md.
+# Contributor dev installs only (`pip install -e .`); releases ship PyInstaller binaries.
+# Every file under src/workboard is installed, including web/board.html and skills/workboard/SKILL.md.
 [tool.hatch.build.targets.wheel]
 packages = ["src/workboard"]
-
-[tool.hatch.build.targets.sdist]
-exclude = ["/.github", "/bucket", "/Formula"]

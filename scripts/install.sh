@@ -32,7 +32,7 @@ if [ "$os" = macos ] && [ "$arch" = x64 ] && [ "$(sysctl -n sysctl.proc_translat
     arch=arm64
 fi
 if [ "$os" = linux ] && ldd --version 2>&1 | grep -qi musl; then
-    die "musl-based Linux (e.g. Alpine) cannot run the release binaries; install with: pipx install workboard"
+    die "musl-based Linux (e.g. Alpine) cannot run the release binaries; run from source instead: https://github.com/Paliverse/workboard/blob/main/CONTRIBUTING.md"
 fi
 
 asset="workboard-$os-$arch.tar.gz"

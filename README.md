@@ -13,18 +13,25 @@ A local kanban board that you and your coding agents share: one board per projec
 
 ## Install
 
-| Channel | Command | Platforms |
-|---|---|---|
-| npm | `npm install -g workboard` | Windows, macOS, Linux |
-| Homebrew | `brew tap paliverse/workboard https://github.com/Paliverse/workboard`<br>`brew install paliverse/workboard/workboard` | macOS, Linux |
-| winget | `winget install Paliverse.WorkBoard` | Windows |
-| Scoop | `scoop bucket add workboard https://github.com/Paliverse/workboard`<br>`scoop install workboard` | Windows |
-| uv | `uv tool install workboard` | Python 3.11+ |
-| pipx | `pipx install workboard` | Python 3.11+ |
-| Install script | `curl -fsSL https://github.com/Paliverse/workboard/releases/latest/download/install.sh \| sh` | macOS, Linux |
-| Install script | `irm https://github.com/Paliverse/workboard/releases/latest/download/install.ps1 \| iex` | Windows (PowerShell) |
+With [npm](https://www.npmjs.com/package/workboard) (Node.js 18 or newer) on Windows, macOS and Linux:
 
-Self-contained binaries for Windows, macOS and Linux (x64 and arm64) are also attached to every [GitHub Release](https://github.com/Paliverse/workboard/releases). Every channel installs the `workboard` command, and every channel except winget also installs the short alias `wb`. See [docs/install.md](docs/install.md) for per-channel details and troubleshooting.
+```sh
+npm install -g workboard
+```
+
+Without Node.js, use the install script. On macOS and Linux:
+
+```sh
+curl -fsSL https://github.com/Paliverse/workboard/releases/latest/download/install.sh | sh
+```
+
+On Windows (PowerShell):
+
+```powershell
+irm https://github.com/Paliverse/workboard/releases/latest/download/install.ps1 | iex
+```
+
+Both install the `workboard` command and the short alias `wb`. Self-contained binaries for Windows, macOS and Linux (x64 and arm64) are also attached to every [GitHub Release](https://github.com/Paliverse/workboard/releases) for manual installs. See [docs/install.md](docs/install.md) for details and troubleshooting.
 
 ## Quickstart
 
@@ -89,7 +96,7 @@ workboard version --check   # compare with the latest release
 workboard upgrade           # upgrade through the channel you installed with
 ```
 
-`workboard upgrade` detects the channel you installed with (npm, Homebrew, winget, Scoop, uv, pipx, pip or the install script). It stops the running server, runs that package manager's upgrade, refreshes installed skills and restarts the service. `workboard upgrade --dry-run` prints the plan without running it.
+`workboard upgrade` stops the running server, upgrades the way you installed (`npm install -g workboard@latest`, or the install script again), refreshes installed skills and restarts the service. `workboard upgrade --dry-run` prints the plan without running it.
 
 ## Uninstall
 
@@ -98,7 +105,7 @@ workboard service remove   # stop the server and remove the background service
 workboard skills remove    # remove the agent skill files
 ```
 
-Then remove the package with the tool you installed it with, for example `npm uninstall -g workboard`, `brew uninstall workboard` and `brew untap paliverse/workboard`, `winget uninstall --id Paliverse.WorkBoard`, `scoop uninstall workboard`, `uv tool uninstall workboard` or `pipx uninstall workboard`. Your boards stay in their projects. Delete `~/.workboard` to remove the registry and logs. See [docs/install.md](docs/install.md#uninstall).
+Then remove the program: `npm uninstall -g workboard`, or delete the install script's directory. On Windows that is `%LOCALAPPDATA%\Programs\WorkBoard`; also remove it from your user `PATH` if the script added it. On macOS and Linux, delete `${XDG_DATA_HOME:-~/.local/share}/workboard` and the `~/.local/bin/workboard` and `~/.local/bin/wb` links. Your boards stay in their projects. Delete `~/.workboard` to remove the registry and logs. See [docs/install.md](docs/install.md#uninstall).
 
 ## Documentation
 

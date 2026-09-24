@@ -49,10 +49,6 @@ def server_command() -> list[str]:
         if _WINDOWS:
             windowed = executable.with_name("workboardw.exe")
             return [str(windowed if windowed.is_file() else executable), "serve", "--service"]
-        # Package managers expose a stable link (e.g. Homebrew bin/) to a per-version path.
-        stable = shutil.which("workboard")
-        if stable and os.path.realpath(stable) == os.path.realpath(executable):
-            executable = Path(stable)
         return [str(executable), "serve", "--service"]
     python = Path(sys.executable)
     if _WINDOWS:

@@ -193,11 +193,11 @@ Per-OS details are in [install.md](install.md#background-service).
 
 ### `version [--check]`
 
-Print `workboard 0.1.0 (<channel>)`. JSON adds `python`, `platform`, `executable` and `channel`. `--check` queries the latest GitHub release and reports current, latest and whether an update is available. A network failure fails with `io`.
+Print `workboard 0.1.0 (<channel>)`, where the channel is `npm`, `script` (the install script), `source` (a git checkout) or `unknown`. JSON adds `python`, `platform`, `executable` and `channel`. `--check` queries the latest GitHub release and reports current, latest and whether an update is available. A network failure fails with `io`.
 
 ### `upgrade [--dry-run]`
 
-Upgrade through the detected channel. It stops the server, runs the channel's upgrade command, refreshes installed skills and restarts the service. `--dry-run` only prints the plan. Source checkouts and unknown installations exit 1 with instructions.
+Upgrade through the detected channel: `npm` runs `npm install -g workboard@latest`, and `script` runs the install script again. It stops the server, runs the channel's upgrade command, refreshes installed skills and restarts the service. `--dry-run` only prints the plan. `source` and `unknown` installations exit 1 with instructions.
 
 ### `doctor [--all]`
 

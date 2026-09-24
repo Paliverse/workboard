@@ -15,6 +15,7 @@ import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,16 @@ if str(SRC) not in sys.path:
 
 _CLEARED = ("WORKBOARD_SCOPE_ROOT", "WORKBOARD_DEFAULT_BOARD", "WORKBOARD_ACTOR",
             "WORKBOARD_PORT", "WORKBOARD_HOME")
+
+
+def _idle_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+# Scratch environments never default to 7891, where the developer's own server may run.
+PORT = _idle_port()
 
 
 def command() -> list[str]:
@@ -48,7 +59,7 @@ def make_env(home: Path, **extra: str) -> dict:
         XDG_CONFIG_HOME=str(home / ".config"), XDG_DATA_HOME=str(home / ".local" / "share"),
         XDG_STATE_HOME=str(home / ".local" / "state"),
         PYTHONDONTWRITEBYTECODE="1", PYTHONUTF8="1", PYTHONIOENCODING="utf-8",
-        WORKBOARD_ACTOR="tester",
+        WORKBOARD_ACTOR="tester", WORKBOARD_PORT=str(PORT),
     )
     if not os.environ.get("WORKBOARD_TEST_COMMAND"):
         env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(SRC), os.environ.get("PYTHONPATH"))))

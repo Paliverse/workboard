@@ -1,48 +1,16 @@
 # Installing WorkBoard
 
-WorkBoard installs a `workboard` command, plus the short alias `wb` on every channel except winget. The release binaries bundle their own Python runtime. The PyPI package needs Python 3.11 or newer and has no dependencies.
+WorkBoard installs a `workboard` command and the short alias `wb`. npm and the install scripts install the same self-contained binary, which bundles its own Python runtime. Binaries exist for Windows, macOS and Linux on x64 and arm64. The Linux binaries need glibc 2.35 or newer, so musl-based distributions such as Alpine aren't supported.
 
 ## Channels
 
-### npm
+### npm (Windows, macOS, Linux)
 
 ```sh
 npm install -g workboard
 ```
 
-The `workboard` package installs the `workboard` and `wb` commands. They launch a prebuilt binary from a platform package (`workboard-win32-x64`, `workboard-darwin-arm64`, `workboard-linux-x64`, …), which npm selects automatically. Node.js is only used to launch the binary.
-
-### Homebrew (macOS, Linux)
-
-```sh
-brew tap paliverse/workboard https://github.com/Paliverse/workboard
-brew install paliverse/workboard/workboard
-```
-
-The tap is this repository: the formula is `Formula/workboard.rb`, updated by each release, so there is no separate tap repository. It installs the binary for your OS and architecture. Upgrade with `brew upgrade workboard`. The formula also has a `service` block. You can use `brew services start workboard` instead of `workboard service install`, but don't use both.
-
-### winget (Windows)
-
-```powershell
-winget install Paliverse.WorkBoard
-```
-
-This installs the portable binary and exposes the `workboard` command. Open a new terminal afterwards so the updated `PATH` takes effect.
-
-### Scoop (Windows)
-
-```powershell
-scoop bucket add workboard https://github.com/Paliverse/workboard
-scoop install workboard
-```
-
-### uv, pipx or pip (Python 3.11+)
-
-```sh
-uv tool install workboard
-pipx install workboard
-python -m pip install workboard   # into the current environment
-```
+This needs Node.js 18 or newer. The `workboard` package installs the `workboard` and `wb` commands. They launch a prebuilt binary from a platform package (`workboard-win32-x64`, `workboard-darwin-arm64`, `workboard-linux-x64`, …), which npm selects automatically as an optional dependency. Node.js is only used to launch the binary.
 
 ### Install script
 
@@ -90,7 +58,7 @@ Every [release](https://github.com/Paliverse/workboard/releases) has self-contai
 - `workboard-macos-x64.tar.gz` and `workboard-macos-arm64.tar.gz`
 - `workboard-linux-x64.tar.gz` and `workboard-linux-arm64.tar.gz`
 
-Each archive has a top-level `workboard/` directory. Keep the whole directory together, because the executables need `_internal/` next to them. Put the directory on your `PATH`. The release also includes `SHA256SUMS`, the install scripts, the wheel and the sdist.
+Each archive has a top-level `workboard/` directory. Keep the whole directory together, because the executables need `_internal/` next to them. Put the directory on your `PATH`. The release also includes `SHA256SUMS` and the install scripts. A manually unpacked archive has no install receipt, so `workboard upgrade` can't upgrade it; download the new archive yourself, or switch to npm or the install script.
 
 ### From source
 
@@ -128,7 +96,7 @@ workboard service remove     # stop and unregister
 | macOS | `~/Library/LaunchAgents/io.github.paliverse.workboard.plist` | `launchctl print gui/$(id -u)/io.github.paliverse.workboard` |
 | Linux | `~/.config/systemd/user/workboard.service` | `systemctl --user status workboard` |
 
-- **Windows:** the service starts at login. Binary installs run a private copy from `~/.workboard/runtime/<version>/`, so package managers can replace the installed files while it runs.
+- **Windows:** the service starts at login. Binary installs run a private copy from `~/.workboard/runtime/<version>/`, so npm and the install script can replace the installed files while it runs.
 - **macOS:** the agent starts at login and is restarted if it crashes.
 - **Linux:** the unit restarts on failure. systemd stops user services when you log out unless lingering is enabled (`loginctl enable-linger $USER`). Without a working `systemctl --user` (some containers and WSL setups), `service install` writes `~/.config/autostart/workboard.desktop` and starts the server immediately.
 
@@ -142,20 +110,20 @@ workboard upgrade --dry-run   # show the plan
 workboard upgrade
 ```
 
-`upgrade` stops the server, runs your channel's upgrade command, refreshes installed skills and restarts the service:
+`upgrade` detects how WorkBoard was installed (`workboard version` shows it), stops the server, runs that channel's upgrade command, refreshes installed skills and restarts the service:
 
 | Channel | Command it runs |
 |---|---|
-| npm | `npm install -g workboard@latest` |
-| Homebrew | `brew upgrade workboard` |
-| winget | `winget upgrade --id Paliverse.WorkBoard --exact` |
-| Scoop | `scoop update workboard` |
-| pipx | `pipx upgrade workboard` |
-| uv | `uv tool upgrade workboard` |
-| pip | `python -m pip install --upgrade workboard` |
-| Install script | the install script again |
+| `npm` | `npm install -g workboard@latest` |
+| `script` (Windows) | `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/Paliverse/workboard/releases/latest/download/install.ps1 \| iex"` |
+| `script` (macOS, Linux) | `sh -c "curl -fsSL https://github.com/Paliverse/workboard/releases/latest/download/install.sh \| sh"` |
 
-A source checkout or an unrecognized installation exits with instructions. Update it yourself, then run `workboard skills install --refresh` and `workboard service restart`.
+The `script` channel is detected by the `install-receipt.json` next to the executable. The other channels exit 1 with instructions:
+
+- `source`, a git checkout: pull it (`git pull`) and reinstall the development environment (see [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup)).
+- `unknown`, anything else, such as a manually unpacked archive: reinstall with `npm install -g workboard` or the install script.
+
+After updating by hand, run `workboard skills install --refresh` and `workboard service restart`.
 
 ## Uninstall
 
@@ -168,17 +136,12 @@ workboard skills remove
 
 Then remove the program:
 
-| Channel | Command |
+| Installed with | Remove |
 |---|---|
 | npm | `npm uninstall -g workboard` |
-| Homebrew | `brew uninstall workboard`, then `brew untap paliverse/workboard` |
-| winget | `winget uninstall --id Paliverse.WorkBoard` |
-| Scoop | `scoop uninstall workboard` (optionally `scoop bucket rm workboard`) |
-| uv | `uv tool uninstall workboard` |
-| pipx | `pipx uninstall workboard` |
-| pip | `python -m pip uninstall workboard` |
-| Script (Windows) | Delete `%LOCALAPPDATA%\Programs\WorkBoard\` and remove it from your user `PATH` |
-| Script (macOS, Linux) | Delete `~/.local/share/workboard/` (or `$XDG_DATA_HOME/workboard/`) and `~/.local/bin/workboard` and `~/.local/bin/wb` |
+| Script (Windows) | Delete `%LOCALAPPDATA%\Programs\WorkBoard\`, and remove it from your user `PATH` if the script added it |
+| Script (macOS, Linux) | Delete `${XDG_DATA_HOME:-~/.local/share}/workboard/` and the `~/.local/bin/workboard` and `~/.local/bin/wb` links |
+| GitHub Release archive | Delete the unpacked `workboard/` directory and remove it from your `PATH` |
 
 Boards stay in their projects (`board/`). Delete `~/.workboard` to remove the registry, logs and runtime copies.
 
@@ -197,6 +160,7 @@ workboard doctor --json   # full report: {"ok", "blockers", "warnings", ...}
 | Symptom | Fix |
 |---|---|
 | `workboard: command not found` | Open a new terminal. For the POSIX script, add `~/.local/bin` to `PATH`. For npm, make sure npm's global `bin` directory is on `PATH`. |
+| `the platform package workboard-<os>-<arch> is not installed` | npm skipped optional dependencies. Reinstall without `--omit=optional` or `--no-optional`: `npm install -g workboard`. |
 | `doctor` says `workboard` on `PATH` is a different installation | You have two installations. Uninstall one, or reorder `PATH`. |
 | `port 7891 is in use by another program` | Stop that program, or choose another port with `workboard serve --port N` or the `WORKBOARD_PORT` environment variable. |
 | Browser shows an old version after an upgrade | `workboard service restart`. `doctor` and `service status` report a version mismatch. |
