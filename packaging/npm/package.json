@@ -1,0 +1,20 @@
+{
+  "name": "workboard",
+  "keywords": ["kanban", "agents", "cli", "task-tracking", "claude-code", "codex"],
+  "homepage": "https://github.com/Paliverse/workboard#readme",
+  "bugs": "https://github.com/Paliverse/workboard/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Paliverse/workboard.git"
+  },
+  "license": "Apache-2.0",
+  "author": "Paliverse",
+  "bin": {
+    "workboard": "bin/workboard.js",
+    "wb": "bin/workboard.js"
+  },
+  "files": ["bin/"],
+  "engines": {
+    "node": ">=18"
+  }
+}

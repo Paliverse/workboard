@@ -22,14 +22,21 @@ classifiers = [
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development",
+  "Topic :: Software Development :: Bug Tracking",
 ]
 dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/Paliverse/workboard"
+Documentation = "https://github.com/Paliverse/workboard/tree/main/docs"
 Issues = "https://github.com/Paliverse/workboard/issues"
 Changelog = "https://github.com/Paliverse/workboard/blob/main/CHANGELOG.md"
+Releases = "https://github.com/Paliverse/workboard/releases"
 
 [project.scripts]
 workboard = "workboard.cli:main"
@@ -41,5 +48,9 @@ workboardw = "workboard.cli:main"
 [tool.hatch.version]
 path = "src/workboard/__init__.py"
 
+# Every file under src/workboard ships, including web/board.html and skills/workboard/SKILL.md.
 [tool.hatch.build.targets.wheel]
 packages = ["src/workboard"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/.github", "/bucket"]
