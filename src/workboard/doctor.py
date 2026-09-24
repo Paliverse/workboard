@@ -117,23 +117,27 @@ def _files(root, budget, depth=0):
                 yield path
 
 
-def _normalization_changes(raw, normalized, path="$", depth=0):
+def _normalization_changes(raw, normalized, path="$", depth=0, skip=frozenset()):
+    """Raw values normalization would change; `skip` names card fields whose changes are expected."""
     if depth > 64:
         raise ValueError("document nesting exceeds inspection limit")
     if isinstance(raw, dict) and isinstance(normalized, dict):
+        card = re.fullmatch(r"\$\.cards\[\d+\]", path)
         for key, value in raw.items():
-            target = {"linkedCards": "links", "lifecycleCycles": "cycles"}.get(key, key) if re.fullmatch(r"\$\.cards\[\d+\]", path) else key
+            target = {"linkedCards": "links", "lifecycleCycles": "cycles"}.get(key, key) if card else key
+            if card and key in skip:
+                continue
             if target not in normalized:
                 yield f"{path}.{key}: field would be removed"
-            elif key == "schemaVersion" and path == "$" and value in (1, wb.SCHEMA_VERSION):
+            elif key == "schemaVersion" and path == "$" and value in wb.SUPPORTED_SCHEMA_VERSIONS:
                 continue
             else:
-                yield from _normalization_changes(value, normalized[target], f"{path}.{key}", depth + 1)
+                yield from _normalization_changes(value, normalized[target], f"{path}.{key}", depth + 1, skip)
     elif isinstance(raw, list) and isinstance(normalized, list):
         if len(raw) != len(normalized):
             yield f"{path}: list length changes from {len(raw)} to {len(normalized)}"
         for index, (before, after) in enumerate(zip(raw, normalized)):
-            yield from _normalization_changes(before, after, f"{path}[{index}]", depth + 1)
+            yield from _normalization_changes(before, after, f"{path}[{index}]", depth + 1, skip)
     elif raw is not None and (type(raw) is not type(normalized) or raw != normalized):
         yield f"{path}: existing value changes during normalization"
 
@@ -202,10 +206,13 @@ def _validate_document(raw, path, board, report, budget, blob_cache, *, archive=
         raw = {"cards": raw}
     if not isinstance(raw, dict):
         raise ValueError("document must be a JSON object (legacy archive arrays are also accepted)")
+    version = raw.get("schemaVersion", 1)
     if not archive or "schemaVersion" in raw:
         version = wb.validate_schema(raw)
         if version != wb.SCHEMA_VERSION:
-            _finding(report, "legacy-schema", "Supported legacy schema will upgrade on the next mutation", path, warning=True)
+            _finding(report, "legacy-schema", f"Supported legacy schema v{version} upgrades on the next write; "
+                     "card notes then move into the notes timeline", path, warning=True)
+    log_invalid = False
     cards = raw.get("cards")
     card_ids, numbers = _identities(cards, "cards", nums=True)
     if not archive:
@@ -262,18 +269,31 @@ def _validate_document(raw, path, board, report, budget, blob_cache, *, archive=
                 _finding(report, "attachment-integrity", exc, label)
                 if isinstance(exc, _LimitError):
                     raise
+        if version == wb.SCHEMA_VERSION:
+            try:
+                wb.normalize_log(card.get("log"))
+            except wb.WorkflowError as exc:
+                log_invalid = True
+                _finding(report, "log-invalid", exc, label)
         if not archive:
             missing = sorted(set(card.get("dependsOn") or []) - card_ids)
             if missing:
                 _finding(report, "missing-dependency", f"Unresolved dependencies: {', '.join(missing)}", label, warning=True)
+    summary = {"schemaVersion": raw.get("schemaVersion", 1), "rev": raw.get("rev"), "cards": len(cards)}
+    if log_invalid:
+        return summary  # Normalization would reject the same entries; log-invalid already names them.
     if archive:
         normalized = {**raw, "cards": [wb.normalize_card(card) for card in cards]}
     else:
         normalized = wb.normalize_doc(copy.deepcopy(raw))
-    for change in _normalization_changes(raw, normalized):
+    # normalize_doc migrates pre-v3 notes into the timeline, rewriting `notes` and `log` by design.
+    skip = frozenset({"notes", "log"}) if not archive and version != wb.SCHEMA_VERSION else frozenset()
+    for change in _normalization_changes(raw, normalized, skip=skip):
         budget.take()
-        _finding(report, "normalization-loss", change, path)
-    return {"schemaVersion": raw.get("schemaVersion", 1), "rev": raw.get("rev"), "cards": len(cards)}
+        # A timeline entry normalization would still rewrite (untrimmed summary/body) breaks the v3 log rules.
+        code = "log-invalid" if re.match(r"\$\.cards\[\d+\]\.log\b", change) else "normalization-loss"
+        _finding(report, code, change, path)
+    return summary
 
 
 def _inspect_data(value, report, budget, blob_cache):

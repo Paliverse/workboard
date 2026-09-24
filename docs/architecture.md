@@ -48,11 +48,11 @@ Each project owns its board:
 Per-user state lives in `WORKBOARD_HOME` (default `~/.workboard`):
 
 ```text
-boards.json         registry: {"boards": {"<name>": "<abs path to board.json>"}}
-.board.lock         registry lock
-server.json         the running server: pid, port, url, version, startedAt, executable, token
-logs/server.log     service-mode output (rotated to server.log.1 above 5 MB)
-runtime/<version>/  Windows binary installs only: the copy the service runs from
+boards.json              registry: {"boards": {"<name>": "<abs path to board.json>"}}
+.board.lock              registry lock
+server.json              the running server: pid, port, url, version, startedAt, executable, token
+logs/server.log          service-mode output (rotated to server.log.1 above 5 MB)
+runtime/<version>-<fp>/  Windows binary installs only: the copy the service runs from
 ```
 
 Board commands find a board by `--board`, then `WORKBOARD_DEFAULT_BOARD`, then the nearest `board/board.json` at or above the working directory. The registry is only a name index for the server and the board switcher, so a board works from the CLI whether or not it is registered.
@@ -77,7 +77,29 @@ Each write holds an exclusive lock on `board/.board.lock` (`fcntl.flock` on POSI
 
 ### Schema safety
 
-Unsupported schema versions and conflicting legacy aliases fail closed. Fields written by the browser (`stackUnder`, `wipLimit`, column order) and unknown extension fields survive every round trip. Server-owned card fields (ownership, lifecycle state, history, comments, attachments, `changedRev`, …) can only be changed through their dedicated actions. The column set is exactly `backlog`, `task`, `inprogress`, `done` and `blocked`.
+Unsupported schema versions and conflicting legacy aliases fail closed. Fields written by the browser (`stackUnder`, `wipLimit`, column order) and unknown extension fields survive every round trip. Server-owned card fields (ownership, lifecycle state, history, comments, attachments, the notes timeline `log`, `changedRev`, …) can only be changed through their dedicated actions. The column set is exactly `backlog`, `task`, `inprogress`, `done` and `blocked`.
+
+### Schema 3 and the notes timeline
+
+Boards are written with `schemaVersion` 3; versions 1 and 2 are still read. A card has two kinds of notes:
+
+- **Pinned notes** (`notes`): one free-form markdown string for durable context such as acceptance criteria. `update --notes`, `workpad` and the browser's notes editor change it.
+- **Timeline** (`log`): append-only entries `{"id", "at", "by", "summary", "body"}`, oldest first. Only `note` in the CLI and the `note` lifecycle action add them. The summary is one line of 1–160 characters and the body is markdown of at most 32,000 characters. The [HTTP API](http-api.md#notes-timeline) lists the entry rules.
+
+Before version 3, `note` appended `[YYYY-MM-DD actor] text` lines to `notes`. When a raw document's `schemaVersion` is below 3, normalization splits every card's notes with `core.split_legacy_notes`. A version 3 document is never split again.
+
+- A stamp line matches `^\[(?P<date>\d{4}-\d{2}-\d{2})(?: (?P<by>[^\]]{1,80}))?\] ?(?P<text>.*)$` and opens an entry: `at` is the date and `by` the actor, or `null` when the stamp has none.
+- Following lines continue the entry, blank lines included. A markdown heading (optional spaces, then `#`) switches back to free-form text until the next stamp line. Lines before the first stamp are free-form too.
+- Free-form segments are stripped and joined with a blank line; the result becomes the pinned `notes`.
+- `core.derive_summary` splits each entry's text, after trimming its leading and trailing blank lines:
+  1. If the first line has a sentence end (`. `, `; `, `! ` or `? `) within its first 160 characters, the summary runs up to and including the first such terminator (a `;` terminator is dropped) and the rest of the text is the body.
+  2. Otherwise a first line of at most 160 characters is the summary and the remaining lines are the body.
+  3. Otherwise the summary is the first line cut at the last whitespace within 159 characters (a hard cut if there is none) plus `…`, and the body keeps the full text.
+  4. An empty entry gets the summary `(empty note)` and an empty body.
+- An entry whose body would exceed 32,000 characters stays in the pinned notes verbatim.
+- Migrated entry IDs are deterministic: the first 32 hex digits of `sha256(f"{card_id}\n{index}\n{original_line}")`, so repeated reads of an unmigrated board give the same IDs.
+
+The migration is lossless. Only the `[date actor] ` prefix moves into `at` and `by`; every other non-whitespace character of the old notes survives in order. Reads return the split document, and the next write saves it as version 3, with earlier snapshots kept in `.backups/`. `doctor` reports unmigrated boards with a `legacy-schema` warning and malformed version 3 timeline entries with a `log-invalid` blocker.
 
 ## Conflicts (409)
 
@@ -116,7 +138,9 @@ Subscribers are kept per board. A watcher polls the size and modification time o
 
 ### Windows runtime copy
 
-Windows won't replace an executable that is running. On Windows binary installs, `serve --service` therefore first copies the application directory to `WORKBOARD_HOME/runtime/<version>/`, starts the copy with the same arguments and exits. npm and the install script can then replace the installed files while the service runs. Older runtime versions that are no longer in use are deleted on a best-effort basis.
+Windows won't replace an executable that is running. On Windows binary installs, `serve --service` therefore first copies the application directory to `WORKBOARD_HOME/runtime/<version>-<fp>/`, starts the copy with the same arguments and exits. npm and the install script can then replace the installed files while the service runs.
+
+`<fp>` fingerprints the build: the first 12 hex digits of a SHA-256 over the relative path and bytes of `workboard.exe`, `workboardw.exe` (when present) and every file under `_internal/workboard/`. Reinstalling a rebuilt package with the same version therefore starts a fresh copy instead of running stale code. Other `runtime/*` directories that are no longer in use are deleted on a best-effort basis.
 
 ## Skills
 

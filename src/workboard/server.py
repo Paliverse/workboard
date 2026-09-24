@@ -65,8 +65,10 @@ def board_url(name: str, port: int | None = None) -> str:
 
 
 def _state() -> dict:
+    # FILE_SHARE_DELETE on Windows: a poller must never block the exiting server's delete.
     try:
-        state = json.loads(wb.server_state_path().read_text(encoding="utf-8"))
+        with wb.open_shared(wb.server_state_path()) as stream:
+            state = json.loads(stream.read())
     except (OSError, ValueError):
         return {}
     return state if isinstance(state, dict) else {}
@@ -1304,11 +1306,19 @@ def _open_browser(name: str | None, port: int) -> None:
 
 def _remove_state() -> None:
     """Delete server.json only if it still describes this process."""
-    if _state().get("pid") == os.getpid():
+    if _state().get("pid") != os.getpid():
+        return
+    deadline = time.monotonic() + 3.0
+    while True:
         try:
             wb.server_state_path().unlink()
+            return
         except FileNotFoundError:
-            pass
+            return
+        except PermissionError:  # A reader without delete sharing (e.g. antivirus) holds it briefly.
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def serve(args) -> None:

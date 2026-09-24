@@ -11,6 +11,7 @@ so tests exercise them in a scratch home without touching real registrations.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -57,27 +58,43 @@ def server_command() -> list[str]:
     return [str(python), "-m", "workboard", "serve", "--service"]
 
 
-def _runtime_dir() -> Path:
-    return wb.home() / "runtime" / __version__
+def runtime_fingerprint(app: Path) -> str:
+    """12 hex digits over the relative path and bytes of the executables and _internal/workboard/**."""
+    files = [app / name for name in ("workboard.exe", "workboardw.exe") if (app / name).is_file()]
+    files += (path for path in (app / "_internal" / "workboard").rglob("*") if path.is_file())
+    digest = hashlib.sha256()
+    for relative, path in sorted((path.relative_to(app).as_posix(), path) for path in files):
+        with path.open("rb") as stream:
+            digest.update(relative.encode("utf-8") + b"\0" + hashlib.file_digest(stream, "sha256").digest())
+    return digest.hexdigest()[:12]
+
+
+def _runtime_dir(app: Path) -> Path:
+    return wb.home() / "runtime" / f"{__version__}-{runtime_fingerprint(app)}"
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
 
 
 def in_runtime_copy() -> bool:
-    return (os.path.normcase(os.path.realpath(Path(sys.executable).parent))
-            == os.path.normcase(os.path.realpath(_runtime_dir())))
+    app = Path(sys.executable).parent
+    return _same_dir(app, _runtime_dir(app))
 
 
-def runtime_copy() -> Path:
-    """Copy this frozen app directory to home/runtime/<version>/ once; return the copied executable."""
-    target = _runtime_dir()
+def runtime_copy(target: Path | None = None) -> Path:
+    """Copy this frozen app directory to home/runtime/<version>-<fp>/ once; return the copied executable."""
+    app = Path(sys.executable).parent
+    target = _runtime_dir(app) if target is None else target
     if not target.is_dir():
         target.parent.mkdir(parents=True, exist_ok=True)
         staging = target.with_name(f".{target.name}.{os.getpid()}.tmp")
         shutil.rmtree(staging, ignore_errors=True)
-        shutil.copytree(Path(sys.executable).parent, staging)
+        shutil.copytree(app, staging)
         deadline = time.monotonic() + wb.REPLACE_RETRY_SECONDS
         while True:
             try:
-                staging.rename(target)  # Atomic: a present version directory is always complete.
+                staging.rename(target)  # Atomic: a present build directory is always complete.
                 break
             except OSError as exc:
                 # Antivirus scanners briefly hold freshly copied executables open on Windows.
@@ -91,9 +108,8 @@ def runtime_copy() -> Path:
     return target / Path(sys.executable).name
 
 
-def _prune_runtimes() -> None:
-    """Best effort: delete older runtime copies. Windows refuses to rename a directory in use."""
-    current = _runtime_dir()
+def _prune_runtimes(current: Path) -> None:
+    """Best effort: delete other runtime copies. Windows refuses to rename a directory in use."""
     with contextlib.suppress(OSError):
         for entry in list(current.parent.iterdir()):
             if entry.name == current.name or entry.name.startswith(".") or not entry.is_dir():
@@ -107,14 +123,16 @@ def _prune_runtimes() -> None:
 
 
 def relaunch_from_runtime_copy() -> bool:
-    """Windows + frozen: run the service from a private copy so package managers can replace files."""
+    """Windows + frozen: run the service from a private per-build copy so package managers can replace files."""
     if not (_WINDOWS and getattr(sys, "frozen", False)):
         return False
-    if in_runtime_copy():
-        _prune_runtimes()
+    app = Path(sys.executable).parent
+    target = _runtime_dir(app)
+    if _same_dir(app, target):
+        _prune_runtimes(target)
         return False
     import subprocess
-    executable = runtime_copy()
+    executable = runtime_copy(target)
     subprocess.Popen([str(executable), *sys.argv[1:]], cwd=str(executable.parent),
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, creationflags=_DETACHED, close_fds=True)

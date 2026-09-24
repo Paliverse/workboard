@@ -126,7 +126,7 @@ class BoardLifecycle(unittest.TestCase):
 
         results = [last_json(wb(args, pj)) for args in (
             ["update", "1", "--notes", "json update", "--json"],
-            ["note", "1", "--text", "json note", "--json"],
+            ["note", "1", "--summary", "json note", "--json"],
             ["subtask", "1", "add", "json subtask", "--json"])]
         for result in results:
             self.assertIs(result["ok"], True, result)
@@ -190,11 +190,13 @@ class BoardLifecycle(unittest.TestCase):
         self.assertEqual((card["title"], card["priority"], card["tags"]),
                          ("Renamed Card", "low", ["extratag"]))
 
-    def test_c06_note_appends_timestamped_text(self):
-        n = wb(["note", "2", "--text", "hello note"], self.proj)
+    def test_c06_note_appends_timeline_entry(self):
+        n = wb(["note", "2", "--summary", "hello note", "--body", "detail line"], self.proj)
         self.assertEqual(n.returncode, 0, detail(n))
-        self.assertIn("note added", n.stdout)
-        self.assertIn(f"[{utc_today()} tester] hello note", self.show("2", "--full")["notes"])
+        self.assertEqual(n.stdout.strip(), "#2 Renamed Card note added: hello note")
+        entry = self.show("2", "--full")["log"][-1]
+        self.assertEqual((entry["summary"], entry["body"], entry["by"]), ("hello note", "detail line", "tester"))
+        self.assertTrue(entry["at"].startswith(utc_today()), entry)
 
     def test_c07_done_requires_writeup_and_active_work(self):
         before = self.board.read_bytes()
@@ -803,7 +805,7 @@ class Contracts(unittest.TestCase):
         before = path.read_bytes()
         for operation in (
                 ["start", reference], ["update", reference, "--title", "Stale"],
-                ["fly", reference, "backlog"], ["note", reference, "--text", "Stale"],
+                ["fly", reference, "backlog"], ["note", reference, "--summary", "Stale"],
                 ["subtask", reference, "add", "Stale"], ["depends", reference, "--clear"],
                 ["comment", reference, "add", "Stale"], ["wip", "off"],
                 ["attachment", reference, "add", "--file", source],
@@ -878,7 +880,7 @@ class Contracts(unittest.TestCase):
         visible = {item["id"] for item, _ in core.iter_subtasks(context["card"]["subtasks"])}
         self.assertLessEqual({"step", "ancestor", "open-child", "done-11"}, visible)
         self.assertFalse({"done-0", "done-1"} & visible)
-        self.assertEqual(context["card"]["notes"], subject["notes"])
+        self.assertEqual(context["card"]["notes"], subject["notes"].strip())
         self.assertEqual(context["card"]["comments"], subject["comments"])
         self.assertEqual(context["card"]["history"], subject["history"][-25:])
         full = last_json(wb(["context", "1", "--full", "--json"], path.parent.parent))
@@ -893,11 +895,11 @@ class Contracts(unittest.TestCase):
             path.write_text(json.dumps(legacy), encoding="utf-8")
             core.save(path, core.load(path), by="Ada")
             saved = json.loads(path.read_bytes())
-            self.assertEqual(saved["schemaVersion"], 2)
+            self.assertEqual(saved["schemaVersion"], 3)
             self.assertEqual(saved["vendorDocument"], raw["vendorDocument"])
             self.assertNotIn("linkedCards", saved["cards"][0])
             self.assertNotIn("lifecycleCycles", saved["cards"][0])
-        for version in (True, False, 0, 3, "2", 2.0, None):
+        for version in (True, False, 0, 4, "2", 2.0, None):
             path.write_text(json.dumps({**raw, "schemaVersion": version}), encoding="utf-8")
             before = path.read_bytes()
             lock.unlink(missing_ok=True)
@@ -1092,7 +1094,7 @@ class Contracts(unittest.TestCase):
         y = last_json(wb(["add", "--title", "Y", "--actor", "Agent-Y", "--json"], root))
         self.assertEqual((x["actor"], y["actor"]), ("Agent-X", "Agent-Y"))
         reviewed = last_json(wb(["context", x["id"], "--json"], root))
-        changed_y = wb(["note", y["id"], "--text", "Y changed", "--actor", "Agent-Y", "--json"], root)
+        changed_y = wb(["note", y["id"], "--summary", "Y changed", "--actor", "Agent-Y", "--json"], root)
         self.assertEqual(changed_y.returncode, 0, detail(changed_y))
         claim = wb(["start", x["id"], "--expected-rev", reviewed["rev"], "--actor", "Agent-X", "--json"], root)
         self.assertEqual(claim.returncode, 0, detail(claim))
@@ -1103,7 +1105,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(current["card"]["changedRev"], claimed["rev"])
         path = root / "board" / "board.json"
         before = path.read_bytes()
-        stale = wb(["note", x["id"], "--text", "old decision", "--expected-rev", reviewed["rev"],
+        stale = wb(["note", x["id"], "--summary", "old decision", "--expected-rev", reviewed["rev"],
                     "--actor", "Agent-X", "--json"], root)
         error = last_json(stale)
         self.assertEqual((stale.returncode, error["status"], error["code"], error["rev"]),
@@ -1172,7 +1174,7 @@ class Contracts(unittest.TestCase):
             (["subtask", "1", "done", "absent"], 404, "not_found"),
             (["fly", "1", "done"], 422, "state"),
             (["query", "--fields", "num,title,column,n"], 422, "invalid"),
-            (["note", "1", "--text", "future", "--expected-rev", card["rev"] + 1], 422, "invalid"),
+            (["note", "1", "--summary", "future", "--expected-rev", card["rev"] + 1], 422, "invalid"),
             (["attachment", "1", "add", "--file", root / "absent.txt"], 404, "io"),
         ]
         for command, status, code in cases:
@@ -1186,6 +1188,90 @@ class Contracts(unittest.TestCase):
         self.assertEqual(human.returncode, 1)
         self.assertTrue(human.stderr.startswith("error [not_found]: "), human.stderr)
         self.assertEqual(path.read_bytes(), before)
+
+    def test_c29_note_timeline_grammar_and_projections(self):
+        root = self.init("timeline", "notes-timeline")
+        path = root / "board" / "board.json"
+        card = last_json(wb(["add", "--title", "Timeline", "--json"], root))
+        added = wb(["note", "1", "--summary", "  Chose the lock strategy  ",
+                    "--body", "Evidence: `abc123`\n\n- tests pass\n", "--expected-rev", card["rev"], "--json"], root)
+        self.assertEqual(added.returncode, 0, detail(added))
+        result = last_json(added)
+        item = result["item"]
+        self.assertEqual((result["rev"], result["id"]), (card["rev"] + 1, card["id"]))
+        self.assertEqual(set(item), {"id", "at", "by", "summary", "body"})
+        self.assertRegex(item["id"], r"^[0-9a-f]{32}$")
+        self.assertRegex(item["at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertEqual((item["by"], item["summary"], item["body"]),
+                         ("tester", "Chose the lock strategy", "Evidence: `abc123`\n\n- tests pass"))
+
+        piped = wb(["note", "1", "--summary", "Piped body", "--stdin"], root,
+                   input="## Findings\nonly-in-body-xyzzy\n\n")
+        self.assertEqual(piped.returncode, 0, detail(piped))
+        self.assertEqual(piped.stdout.strip(), "#1 Timeline note added: Piped body")
+        entry = last_json(wb(["context", "1", "--json"], root))["card"]["log"][-1]
+        self.assertEqual((entry["summary"], entry["body"]), ("Piped body", "## Findings\nonly-in-body-xyzzy"))
+
+        before = path.read_bytes()
+        missing = wb(["note", "1", "--body", "no summary", "--json"], root)
+        self.assertEqual(missing.returncode, 2, detail(missing))
+        self.assertIn("--summary", missing.stderr)
+        self.assertEqual(path.read_bytes(), before)
+
+        self.assertEqual(wb(["start", "1"], root).returncode, 0)
+        other = wb(["note", "1", "--summary", "Reviewer remark", "--actor", "Ada", "--json"], root)
+        self.assertEqual(other.returncode, 0, detail(other))
+        self.assertEqual(last_json(other)["item"]["by"], "Ada")
+
+        found = last_json(wb(["search", "only-in-body-xyzzy", "--json"], root))
+        self.assertEqual([hit["id"] for hit in found["cards"]], [card["id"]])
+
+        with core.board_transaction(path) as doc:
+            for n in range(9):
+                core.append_note(doc["cards"][0], f"Seeded step {n}", "L" * 400 if n == 8 else "", "tester")
+            core.save(path, doc)
+        full = last_json(wb(["context", "1", "--full", "--json"], root))
+        log = full["card"]["log"]
+        self.assertEqual(len(log), 12)
+        self.assertNotIn("omitted", full)
+        trimmed = last_json(wb(["context", "1", "--json"], root))
+        self.assertEqual(trimmed["omitted"], {"doneSubtasks": 0, "history": 0, "log": 2})
+        self.assertEqual(trimmed["card"]["log"], log[-10:])
+        self.assertEqual(trimmed["card"]["notes"], full["card"]["notes"])
+
+        shown = last_json(wb(["show", "1", "--json"], root))["card"]["log"]
+        self.assertEqual([item["id"] for item in shown], [item["id"] for item in log[-5:]])
+        self.assertEqual(shown[-1]["body"], "L" * 300 + "… (+100 ch, --full)")
+        self.assertEqual(last_json(wb(["show", "1", "--full", "--json"], root))["card"]["log"], log)
+
+    def test_c30_legacy_notes_read_as_timeline_and_migrate_on_write(self):
+        root = project("legacy-notes")
+        path = root / "board" / "board.json"
+        path.parent.mkdir()
+        legacy = ("Context before stamps\n[2026-09-01] Fixed the parser. Added tests\n  - covered edge\n"
+                  "[2026-09-02 ada] Checked edge cases; nothing else\n## Acceptance criteria\n- ships")
+        path.write_text(json.dumps({"schemaVersion": 2, "name": "legacy-notes", "rev": 3, "nextNum": 2,
+                                    "columns": core.DEFAULT_COLUMNS,
+                                    "cards": [{"id": "legacy", "num": 1, "title": "Legacy", "column": "task",
+                                               "notes": legacy}]}), encoding="utf-8")
+        before = path.read_bytes()
+        shown = last_json(wb(["show", "1", "--json"], root))["card"]
+        self.assertEqual(shown["notes"], "Context before stamps\n\n## Acceptance criteria\n- ships")
+        self.assertEqual([(e["at"], e["by"], e["summary"], e["body"]) for e in shown["log"]], [
+            ("2026-09-01", None, "Fixed the parser.", "Added tests\n  - covered edge"),
+            ("2026-09-02", "ada", "Checked edge cases", "nothing else")])
+        context = last_json(wb(["context", "1", "--json"], root))
+        self.assertEqual((context["schemaVersion"], context["card"]["log"]), (3, shown["log"]))
+        self.assertEqual(path.read_bytes(), before, "reads must not rewrite a legacy board")
+
+        wrote = wb(["update", "1", "--title", "Legacy migrated", "--json"], root)
+        self.assertEqual(wrote.returncode, 0, detail(wrote))
+        saved = read_board(path)
+        self.assertEqual((saved["schemaVersion"], saved["rev"]), (3, 4))
+        self.assertEqual((saved["cards"][0]["notes"], saved["cards"][0]["log"]), (shown["notes"], shown["log"]))
+        backups = core.list_backups(path)
+        self.assertEqual([rev for rev, _ in backups], [4])
+        self.assertEqual(read_board(backups[0][1]), saved)
 
 
 if __name__ == "__main__":

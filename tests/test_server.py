@@ -582,6 +582,55 @@ class MultiBoardApiTest(unittest.TestCase):
         assert mutate(ctx, "/api/structure", {"operation": {
             "type": "create-card", "card": {"id": tid, "title": "Recycled identity"}}})[0] == 409
 
+    def test_browser_note_adds_a_timeline_entry(self):
+        ctx = self.new_board()
+        cid = create(ctx, "Timeline")["id"]
+        before = board(ctx)["rev"]
+        stream = SseStream(ctx)
+        try:
+            status, data, _ = life(ctx, cid, "note", {"summary": "Parser shipped", "body": "- `abc1234`\n- 12 tests"})
+            self.assertEqual(status, 200, data)
+            self.assertEqual((data["event"], data["action"], data["rev"]), ("card-updated", "note", before + 1))
+            events = []
+            deadline = time.monotonic() + 15
+            while ("rev-bumped", {"rev": data["rev"]}) not in events:
+                self.assertLess(time.monotonic(), deadline, events)
+                events.append(stream.next_event(timeout=max(0.1, deadline - time.monotonic())))
+        finally:
+            stream.close()
+        saved = json.loads(ctx["path"].read_text(encoding="utf-8"))
+        entry = next(card for card in saved["cards"] if card["id"] == cid)["log"][-1]
+        self.assertEqual((saved["rev"], entry["summary"], entry["body"], entry["by"]),
+                         (before + 1, "Parser shipped", "- `abc1234`\n- 12 tests", "Ada"))
+        self.assertEqual(data["card"]["log"], [entry])
+
+        self.assertEqual(life(ctx, cid, "note", {"summary": "Late"}, rev=before)[0], 409)
+        self.assertEqual(life(ctx, cid, "note", {"summary": "two\nlines"})[0], 422)
+        on_disk = ctx["path"].read_bytes()
+        status, error, _ = mutate(ctx, f"/api/card/{cid}", {"card": {"log": [{**entry, "summary": "Rewritten"}]}})
+        self.assertEqual(status, 422, error)
+        self.assertIn("'log' is server-owned", error["error"])
+        self.assertEqual(ctx["path"].read_bytes(), on_disk)
+
+    def test_legacy_board_is_served_as_a_timeline_without_writing(self):
+        ctx = self.new_board()
+        create(ctx, "Legacy notes")
+        raw = json.loads(ctx["path"].read_text(encoding="utf-8"))
+        raw["schemaVersion"] = 2
+        raw["cards"][0].pop("log", None)
+        raw["cards"][0]["notes"] = ("Pinned context\n\n"
+                                    "[2026-09-01] Shipped the parser. Tests pass.\n[2026-09-02 ada] Fixed nits")
+        ctx["path"].write_bytes(json.dumps(raw, indent=2).encode("utf-8"))
+        before = ctx["path"].read_bytes()
+        doc = board(ctx)
+        served = doc["cards"][0]
+        self.assertEqual((doc["schemaVersion"], served["notes"]), (3, "Pinned context"))
+        self.assertEqual([(item["at"], item["by"], item["summary"], item["body"]) for item in served["log"]],
+                         [("2026-09-01", None, "Shipped the parser.", "Tests pass."),
+                          ("2026-09-02", "ada", "Fixed nits", "")])
+        self.assertEqual(board(ctx)["cards"][0]["log"], served["log"], "migrated IDs are deterministic")
+        self.assertEqual(ctx["path"].read_bytes(), before)
+
     def test_comments_and_attachments(self):
         ctx = self.new_board()
         card, other = create(ctx, "File roundtrip"), create(ctx, "Not file owner")

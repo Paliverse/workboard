@@ -65,6 +65,7 @@ On Windows, `~` is `%USERPROFILE%`. Restart running agent sessions so they load 
 - Views: Board, Ready now, Rework, Canceled, Insights, Git (local and read-only) and Calendar, each with live counts.
 - Drag cards between and within columns. Drag a column sideways to reorder it, or onto another column to stack it vertically. Moves and layout changes can be undone with Ctrl+Z.
 - Cards open in a side panel for title, priority, tags, dependencies, links, subtasks, notes, write-up, files, activity and comments. Lifecycle actions (Start, Complete, Block, Resume, Take over, Cancel, Rework, Reopen, Improve, Follow-up) go through the same server-side checks as the CLI.
+- Card notes are a collapsible timeline, newest first and grouped by day. Each entry shows a one-line summary and expands to its markdown body. Pinned notes above it hold durable context such as acceptance criteria, and Add note appends an entry from the browser.
 - Live updates arrive over Server-Sent Events. Only changed cards are patched, and a field you are editing is never overwritten.
 - Search with Ctrl/Cmd+K or `/`, filter by status, priority, owner, outcome, rework or tag, and choose a System, Light or Dark theme. `C` creates a card, `[` toggles the sidebar and Esc closes the top layer.
 - A board switcher moves between registered boards in the same tab.

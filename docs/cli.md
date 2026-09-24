@@ -31,7 +31,7 @@ Board commands use, in order: `--board`, then `WORKBOARD_DEFAULT_BOARD`, then th
 
 ### Output
 
-- Mutations print one concise line. With `--json` they print one line containing `ok`, `action`, `num`, `id`, `column`, `rev` and `actor`, plus `item` for a single created or changed subtask, comment or attachment, and `items` for subtask operations.
+- Mutations print one concise line. With `--json` they print one line containing `ok`, `action`, `num`, `id`, `column`, `rev` and `actor`, plus `item` for a single created or changed subtask, comment, attachment or note entry, and `items` for subtask operations.
 - Reads print human summaries. With `--json` they print one object that includes the board `rev`.
 - Failures exit with status 1. Human form: `error [code]: message`. JSON form: `{"ok": false, "status": HTTP_STATUS, "code": CODE, "error": MESSAGE, "rev": REV}`, where `rev` is the current board revision or `null` when the board cannot be read. Argument usage errors come from the parser and may be plain text.
 
@@ -98,11 +98,11 @@ Print the resolved board path, name, revision and card count. JSON: `{"ok", "boa
 |---|---|
 | `digest` | A board summary of about 15 lines. It shows `MINE @actor` (cards you own, plus Blocked cards you blocked), column counts, In Progress cards with `@owner`, subtask progress and attention markers, recent shipped, Blocked and canceled cards, `READY: N — #a #b …` (up to five refs), the rework count and the number of old Done cards eligible for `sweep`. JSON adds `stats`, `columns`, `attention` (with `owner`), `ready` (up to five card numbers) and `sweepCandidates`. |
 | `next [--limit N]` | Ready cards (unowned Task cards whose dependencies are all completed), ranked by priority (critical, mid, low, unset), then age. Default limit 5. JSON: `{"ok", "rev", "cards": [{"num", "id", "title", "priority", "tags", "createdAt", "dependsOn"}]}`. Read-only; it does not claim anything. |
-| `context REF [--full]` | A consistent snapshot for one card: `board`, `schemaVersion`, `rev`, `card` (with `changedRev`, all comments, notes, open subtasks and the attachment manifest), `dependencies`, `missingDependencies`, `dependents` and `ready`. By default it keeps the 10 most recent done subtasks and the last 25 history entries, and reports `omitted: {"doneSubtasks", "history"}` when it trims. `--full` returns everything. |
-| `show REF [--full]` | One card. JSON: `{"ok", "rev", "card"}`. |
+| `context REF [--full]` | A consistent snapshot for one card: `board`, `schemaVersion`, `rev`, `card` (with `changedRev`, all comments, the pinned `notes`, the `log` notes timeline, open subtasks and the attachment manifest), `dependencies`, `missingDependencies`, `dependents` and `ready`. By default it keeps the 10 most recent done subtasks, the last 25 history entries and the newest 10 `log` entries (still oldest first, with full bodies), and reports `omitted: {"doneSubtasks", "history"}` when it trims, plus `"log": N` when it dropped `N` older `log` entries. The pinned `notes` are never trimmed. `--full` returns everything. |
+| `show REF [--full]` | One card. JSON: `{"ok", "rev", "card"}`. Without `--full`, `notes` longer than 300 characters and `writeup` longer than 400 are cut with a `… (+N ch, --full)` marker, `history` keeps the last 10 entries, and `log` keeps the newest 5 entries with each body cut to 300 characters with the same marker. `--full` shows everything in full. |
 | `list [--column C] [--tag X] [--priority P]` | A human listing of cards. |
 | `query [--column C] [--tag X] [--priority P] [--owner NAME \| --mine] [--since-days N] [--limit N] [--fields LIST]` | A JSON projection: `{"ok", "rev", "cards": [...]}`. `--mine` filters by the effective actor. A card's holder is its owner or, for Blocked cards, the actor who blocked it. `--fields` is a comma list of `num,id,title,column,priority,tags,outcome,owner,deps,changedRev,createdAt,updatedAt,doneAt,origin` (default `num,title,column`). Unknown names fail with `invalid`. |
-| `search TERMS...` | Cards matching every term (case-insensitive substring) in any text, including comments. |
+| `search TERMS...` | Cards matching every term (case-insensitive substring) in any text, including comments and every `log` entry's summary and body. |
 
 `P` is `critical`, `mid` or `low`.
 
@@ -129,9 +129,9 @@ The five columns are `backlog`, `task`, `inprogress`, `done` and `blocked`.
 
 | Command | Effect |
 |---|---|
-| `update REF [--title T] [--priority P] [--add-tag X]... [--rm-tag X]... [--notes TEXT \| --notes-stdin]` | Edit fields. `--notes` replaces the notes. |
-| `note REF (--text TEXT \| --stdin)` | Append a note line prefixed `[YYYY-MM-DD actor]`. |
-| `workpad REF` | Add missing `## Acceptance criteria` and `## Verification` sections to the notes. |
+| `update REF [--title T] [--priority P] [--add-tag X]... [--rm-tag X]... [--notes TEXT \| --notes-stdin]` | Edit fields. `--notes` replaces the pinned notes. |
+| `note REF --summary TEXT [--body MARKDOWN \| --stdin]` | Append an entry to the card's notes timeline (`log`). See [Notes timeline](#notes-timeline). |
+| `workpad REF` | Add missing `## Acceptance criteria` and `## Verification` sections to the pinned notes. |
 | `subtask REF add TEXT [TEXT ...] [--parent ID]` | Add one or more subtasks in one revision. `--parent` nests them. |
 | `subtask REF done\|undone\|rm ID [ID ...]` | Change subtasks in one revision. If every requested change is already in place, nothing is saved and `rev` stays the same. |
 | `depends REF [--on REF]... [--remove REF]... [--clear]` | Add, remove or clear dependencies. Self-dependencies, unknown cards and cycles are rejected. |
@@ -142,6 +142,21 @@ The five columns are `backlog`, `task`, `inprogress`, `done` and `blocked`.
 | `attachment REF add --file SOURCE [--name NAME] [--mime MIME]` | Attach a file of up to 10 MiB. |
 | `attachment REF get ID --out DEST` | Export an attachment to a new path. The size and SHA-256 are verified and existing files are never overwritten. JSON includes `out`, `sha256`, `rev`, the metadata and the card's `num`/`id`. |
 | `attachment REF remove ID` | Detach an attachment. The bytes are kept on disk for backups and recovery. |
+
+### Notes timeline
+
+A card has two kinds of notes. The pinned `notes` string holds durable free-form context, such as acceptance criteria; `update --notes` replaces it and `workpad` seeds it. The `log` timeline holds one entry per step, appended with `note` and never edited.
+
+```sh
+workboard --actor codex-auth note 12 --summary "Chose SQLite over JSON files" --body "Concurrent writers need row-level locks." --expected-rev 41 --json
+git log -1 --format=%B | workboard --actor codex-auth note 12 --summary "Merged the flush fix" --stdin --expected-rev 42 --json
+```
+
+- `--summary` is required and must be one line of 1–160 characters after trimming; otherwise the command fails with `invalid`. State what changed or was decided.
+- The body is optional markdown: `--body MARKDOWN`, or `--stdin` to read it from standard input (blank input fails with `invalid`). At most 32,000 characters; trailing whitespace is stripped.
+- An entry is `{"id", "at", "by", "summary", "body"}`: `id` is 32 lowercase hex characters, `at` is a `YYYY-MM-DDTHH:MM:SSZ` timestamp (`YYYY-MM-DD` for entries migrated from legacy notes), and `by` is the actor (`null` for migrated entries that had none).
+- Human output: `#N <title> note added: <summary>`, with the title and summary cut to 60 characters. With `--json`, `item` is the new entry.
+- `note` is a card command, so `--expected-rev` works as for the other card commands. Adding a note does not require owning the card.
 
 ## Board maintenance
 

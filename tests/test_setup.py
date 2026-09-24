@@ -230,31 +230,66 @@ class ServerCommandTest(unittest.TestCase):
 
 
 class RuntimeCopyTest(ScratchCase):
-    def test_frozen_windows_service_relaunches_from_a_versioned_copy_and_prunes_old_ones(self):
-        app = self.home / "Programs" / "WorkBoard"
-        (app / "_internal").mkdir(parents=True)
+    def app(self, name="WorkBoard", html=b"<html>"):
+        app = self.home / "Programs" / name
+        (app / "_internal" / "workboard" / "web").mkdir(parents=True)
         (app / "workboardw.exe").write_bytes(b"exe")
         (app / "_internal" / "python3.dll").write_bytes(b"dll")
+        (app / "_internal" / "workboard" / "web" / "board.html").write_bytes(html)
+        return app
+
+    def frozen_windows(self, executable):
         self.enterContext(mock.patch.object(install, "_WINDOWS", True))
         self.enterContext(mock.patch.object(sys, "frozen", True, create=True))
-        self.enterContext(mock.patch.object(sys, "executable", str(app / "workboardw.exe")))
+        self.enterContext(mock.patch.object(sys, "executable", str(executable)))
+
+    def test_fingerprint_follows_the_build_bytes(self):
+        first, same, rebuilt = self.app("a"), self.app("b"), self.app("c", html=b"<html>new")
+        fingerprint = install.runtime_fingerprint(first)
+        self.assertRegex(fingerprint, r"^[0-9a-f]{12}$")
+        self.assertEqual(install.runtime_fingerprint(same), fingerprint)
+        self.assertNotEqual(install.runtime_fingerprint(rebuilt), fingerprint)
+        (same / "workboardw.exe").write_bytes(b"exe2")
+        self.assertNotEqual(install.runtime_fingerprint(same), fingerprint)
+
+    def test_frozen_windows_service_relaunches_from_a_build_copy_and_prunes_stale_ones(self):
+        app = self.app()
+        self.frozen_windows(app / "workboardw.exe")
         self.enterContext(mock.patch.object(sys, "argv", [str(app / "workboardw.exe"), "serve", "--service"]))
         popen = self.enterContext(mock.patch("subprocess.Popen"))
-        copy = wb.home() / "runtime" / __version__
+        copy = wb.home() / "runtime" / f"{__version__}-{install.runtime_fingerprint(app)}"
+        self.assertFalse(install.in_runtime_copy())
         self.assertTrue(install.relaunch_from_runtime_copy())
         self.assertEqual((copy / "_internal" / "python3.dll").read_bytes(), b"dll")
         argv = popen.call_args.args[0]
         self.assertEqual(argv, [str(copy / "workboardw.exe"), "serve", "--service"])
         self.assertEqual(popen.call_args.kwargs["creationflags"], install._DETACHED)
 
-        old = wb.home() / "runtime" / "0.0.9"
-        old.mkdir()
+        stale = wb.home() / "runtime" / f"{__version__}-000000000000"
+        stale.mkdir()
         sys.executable = str(copy / "workboardw.exe")
+        self.assertTrue(install.in_runtime_copy())
         popen.reset_mock()
         self.assertFalse(install.relaunch_from_runtime_copy())
         popen.assert_not_called()
-        self.assertFalse(old.exists())
+        self.assertFalse(stale.exists())
         self.assertTrue(copy.is_dir())
+
+    def test_a_rebuilt_same_version_package_gets_a_fresh_copy(self):
+        app = self.app()
+        self.frozen_windows(app / "workboardw.exe")
+        popen = self.enterContext(mock.patch("subprocess.Popen"))
+        self.assertTrue(install.relaunch_from_runtime_copy())
+        old = Path(popen.call_args.args[0][0]).parent
+        (app / "_internal" / "workboard" / "web" / "board.html").write_bytes(b"<html>rebuilt")
+        self.assertTrue(install.relaunch_from_runtime_copy())
+        new = Path(popen.call_args.args[0][0]).parent
+        self.assertNotEqual(new, old)
+        self.assertEqual((new / "_internal" / "workboard" / "web" / "board.html").read_bytes(), b"<html>rebuilt")
+        sys.executable = str(new / "workboardw.exe")
+        self.assertTrue(install.in_runtime_copy())
+        (new / "workboardw.exe").write_bytes(b"tampered")  # Bytes no longer match the directory's name.
+        self.assertFalse(install.in_runtime_copy())
 
     def test_everything_else_runs_in_place(self):
         with mock.patch.object(sys, "frozen", False, create=True):
@@ -509,7 +544,7 @@ class UpgradeTest(ScratchCase):
         popen = self.enterContext(mock.patch("subprocess.Popen"))
         popen.return_value.pid = 777
         code, out = invoke("upgrade")
-        copy = wb.home() / "runtime" / __version__ / "workboard.exe"
+        copy = wb.home() / "runtime" / f"{__version__}-{install.runtime_fingerprint(app)}" / "workboard.exe"
         self.assertEqual(code, 0)
         self.assertEqual(popen.call_args.args[0], [str(copy), "upgrade", "--channel", "script",
                                                    "--after-pid", str(os.getpid())])

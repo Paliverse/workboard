@@ -96,7 +96,7 @@ workboard service remove     # stop and unregister
 | macOS | `~/Library/LaunchAgents/io.github.paliverse.workboard.plist` | `launchctl print gui/$(id -u)/io.github.paliverse.workboard` |
 | Linux | `~/.config/systemd/user/workboard.service` | `systemctl --user status workboard` |
 
-- **Windows:** the service starts at login. Binary installs run a private copy from `~/.workboard/runtime/<version>/`, so npm and the install script can replace the installed files while it runs.
+- **Windows:** the service starts at login. Binary installs run a private copy from `~/.workboard/runtime/<version>-<fp>/`, where `<fp>` identifies the build, so npm and the install script can replace the installed files while it runs.
 - **macOS:** the agent starts at login and is restarted if it crashes.
 - **Linux:** the unit restarts on failure. systemd stops user services when you log out unless lingering is enabled (`loginctl enable-linger $USER`). Without a working `systemctl --user` (some containers and WSL setups), `service install` writes `~/.config/autostart/workboard.desktop` and starts the server immediately.
 

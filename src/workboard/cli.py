@@ -89,6 +89,7 @@ def cmd_add(args):
             "tags": list(args.tag or []),
             "origin": origin,
             "notes": "",
+            "log": [],
             "writeup": "",
             "subtasks": [],
             "links": [],
@@ -196,21 +197,14 @@ def cmd_update(args):
 
 
 def cmd_note(args):
-    text = _read_stdin() if args.stdin else args.text
-    if not text or not text.strip():
-        raise wb.WorkflowError('note requires --text "..." or --stdin')
-    p = wb.find_board(args.board)
-    with wb.board_transaction(p, args.expected_rev, args.ref) as doc:
-        card = _resolve(doc, args.ref)
-        stamp = wb.now_iso()[:10]
-        card["notes"] = ((card["notes"] + "\n") if card["notes"] else "") + f"[{stamp} {wb.actor()}] {text}"
-        wb.hist(card, "note", by=wb.actor(), note=text[:80])
-        wb.touch(card)
-        wb.save(p, doc)
+    body = _read_stdin() if args.stdin else args.body
+    card, doc = _run_workflow(args, "note", {"summary": args.summary, "body": body})
+    entry = card["log"][-1]
+    action = f"note added: {entry['summary'][:60]}"
     if args.json:
-        _emit(args, card, doc, f"note added ({len(text)} ch)")
+        _emit(args, card, doc, action, item=entry)
     else:
-        print(f"{wb.fmt_ref(card)} note added ({len(text)} ch)")
+        print(f"{wb.fmt_ref(card)} {card['title'][:60]} {action}")
 
 
 def cmd_subtask(args):
@@ -415,16 +409,19 @@ def _age_days(iso) -> int:
         return -1
 
 
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + f"… (+{len(text) - limit} ch, --full)"
+
+
 def cmd_show(args):
     p = wb.find_board(args.board)
     doc = wb.load(p)
     card = _resolve(doc, args.ref)
     out = dict(card)
     if not args.full:
-        if len(out.get("notes", "")) > 300:
-            out["notes"] = out["notes"][:300] + f"… (+{len(out['notes']) - 300} ch, --full)"
-        if len(out.get("writeup", "")) > 400:
-            out["writeup"] = out["writeup"][:400] + f"… (+{len(out['writeup']) - 400} ch, --full)"
+        out["notes"] = _clip(out.get("notes", ""), 300)
+        out["writeup"] = _clip(out.get("writeup", ""), 400)
+        out["log"] = [{**entry, "body": _clip(entry["body"], 300)} for entry in out["log"][-5:]]
         out["history"] = out["history"][-10:]
     print(json.dumps({"ok": True, "rev": doc["rev"], "card": out} if args.json else out,
                      indent=None if args.json else 2, ensure_ascii=False))
@@ -515,6 +512,7 @@ def cmd_search(args):
         blobs += c["tags"]
         blobs += [s["text"] for s, _ in wb.iter_subtasks(c["subtasks"])]
         blobs += [str(comment.get("text") or "") for comment in c["comments"]]
+        blobs += [text for entry in c["log"] for text in (entry["summary"], entry["body"])]
         return " ".join(blobs).lower()
 
     hits = [c for c in doc["cards"] if all(t in hay(c) for t in terms)]
@@ -891,11 +889,12 @@ def build_parser() -> argparse.ArgumentParser:
     notes.add_argument("--notes")
     notes.add_argument("--notes-stdin", action="store_true")
 
-    p = add("note", cmd_note, "append a timestamped note")
+    p = add("note", cmd_note, "append a timeline note: one-line summary, optional markdown body")
     p.add_argument("ref")
-    text = p.add_mutually_exclusive_group()
-    text.add_argument("--text")
-    text.add_argument("--stdin", action="store_true")
+    p.add_argument("--summary", required=True, help="one line, at most 160 characters")
+    body = p.add_mutually_exclusive_group()
+    body.add_argument("--body", help="markdown body")
+    body.add_argument("--stdin", action="store_true", help="read the markdown body from stdin")
 
     p = add("subtask", cmd_subtask, "manage subtasks: add/done/undone/rm")
     p.add_argument("ref")
@@ -945,7 +944,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = add("context", cmd_context, "card, discussion, files, readiness, and bounded completed work/history")
     p.add_argument("ref")
-    p.add_argument("--full", action="store_true", help="include all done subtasks and history")
+    p.add_argument("--full", action="store_true", help="include all done subtasks, history, and notes")
 
     p = add("attachment", cmd_attachment, "list, add, export, or detach a card attachment")
     p.add_argument("ref")

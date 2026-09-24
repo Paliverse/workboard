@@ -32,6 +32,12 @@ First public release.
 - `workboard setup` installs the agent skill for Claude Code (`~/.claude/skills`) and for Codex, Pi, Oh My Pi, Gemini CLI, Cursor, OpenCode and GitHub Copilot (`~/.agents/skills`). It also installs a background service: HKCU Run on Windows, a LaunchAgent on macOS, and a systemd user unit on Linux.
 - `skills install|remove|status`, `service install|remove|status|restart`, `version [--check]`, `upgrade [--dry-run]` and `doctor [--all]`.
 - Self-contained binaries for Windows, macOS and Linux (x64 and arm64) on GitHub Releases, installed through npm (`npm install -g workboard`) or one-line install scripts.
+- Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
+- Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
+
+### Changed
+
+- `note` requires `--summary` and takes its body from `--body` or `--stdin`; `--text` was removed.
 
 [Unreleased]: https://github.com/Paliverse/workboard/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/Paliverse/workboard/releases/tag/v0.1.0

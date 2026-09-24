@@ -154,7 +154,7 @@ class DataIntegrityTest(DoctorCase):
         self.assertIn("[board-invalid]", out)
 
         mutations = [
-            lambda doc: doc.update(schemaVersion=3),
+            lambda doc: doc.update(schemaVersion=4),
             lambda doc: doc.update(schemaVersion=True),
             lambda doc: doc.update(schemaVersion="2"),
             lambda doc: doc.update(rev=-1),
@@ -261,6 +261,34 @@ class DataIntegrityTest(DoctorCase):
         card["links"] = ["deliberately-different"]
         write_json(self.board, doc)
         self.assertIn("board-invalid", codes(self.inspect()))
+
+    def test_legacy_stamped_notes_are_an_expected_migration_not_a_loss(self):
+        doc = copy.deepcopy(self.doc)
+        doc["schemaVersion"] = 2
+        card = doc["cards"][0]
+        card.pop("log", None)
+        card["notes"] = ("## Acceptance criteria\n- parser handles stamps\n\n"
+                         "[2026-09-01] Shipped the parser. Tests pass.\n[2026-09-02 ada] Fixed review nits")
+        write_json(self.board, doc)
+        report = self.inspect()
+        self.assertEqual(report["blockers"], [], report)
+        self.assertIn("legacy-schema", codes(report, "warnings"))
+
+    def test_v3_timeline_entries_are_validated(self):
+        entry = {"id": "a" * 32, "at": "2026-09-24T10:00:00Z", "by": "ada", "summary": "Shipped", "body": ""}
+        healthy = [entry, {**entry, "id": "b" * 32, "at": "2026-09-01", "by": None, "body": "- `abc1234`"}]
+        for log in ([entry, dict(entry)], [{**entry, "summary": "two\nlines"}], [{**entry, "summary": " padded"}]):
+            doc = copy.deepcopy(self.doc)
+            doc["cards"][0]["log"] = log
+            write_json(self.board, doc)
+            with self.subTest(log=log):
+                self.assertEqual(codes(self.inspect()), {"log-invalid"})
+        doc = copy.deepcopy(self.doc)
+        doc["cards"][0]["log"] = healthy
+        write_json(self.board, doc)
+        report = self.inspect()
+        self.assertTrue(report["ok"], report)
+        self.assertNotIn("legacy-schema", codes(report, "warnings"))
 
     def test_links_and_path_traversal_are_rejected(self):
         external = self.root / "same-bytes.json"

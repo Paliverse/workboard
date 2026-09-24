@@ -29,7 +29,8 @@ from pathlib import Path
 
 from . import __version__
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+SUPPORTED_SCHEMA_VERSIONS = (1, 2, SCHEMA_VERSION)
 API_VERSION = 2
 CAPABILITIES = ("context", "attachment-cli", "shared-attachments", "expected-rev",
                 "schema-guard", "scoped-writes")
@@ -39,11 +40,13 @@ LOCK_NAME = ".board.lock"
 BACKUP_DIR = ".backups"
 ARCHIVE_DIR = "archive"
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+NOTE_SUMMARY_MAX = 160
+NOTE_BODY_MAX = 32000
 PROTECTED_CARD_FIELDS = frozenset({
     "activeOwner", "claimedAt", "dependsOn", "outcome", "cancelReason",
     "reworkReason", "comments", "attachments", "cycles", "doneAt",
     "reopenReason", "blockedReason", "unblockWhen", "blockedAt",
-    "verification", "reviews",
+    "verification", "reviews", "log",
     "id", "num", "createdAt", "updatedAt", "history", "changedRev",
 })
 
@@ -152,7 +155,7 @@ def require_write_scope(path) -> Path:
 
 def runtime_info() -> dict:
     return {"version": __version__, "apiVersion": API_VERSION,
-            "schemaVersion": SCHEMA_VERSION, "supportedSchemaVersions": [1, SCHEMA_VERSION],
+            "schemaVersion": SCHEMA_VERSION, "supportedSchemaVersions": list(SUPPORTED_SCHEMA_VERSIONS),
             "capabilities": list(CAPABILITIES)}
 
 def validate_actor(value) -> str:
@@ -452,8 +455,9 @@ def validate_schema(raw: dict) -> int:
     if not isinstance(raw, dict):
         raise WorkflowError("board document must be an object")
     version = raw.get("schemaVersion", 1)
-    if type(version) is not int or version not in (1, SCHEMA_VERSION):
-        raise WorkflowError(f"unsupported board schemaVersion {version!r}; supported: 1, {SCHEMA_VERSION}", 409)
+    if type(version) is not int or version not in SUPPORTED_SCHEMA_VERSIONS:
+        raise WorkflowError(f"unsupported board schemaVersion {version!r}; supported: "
+                            + ", ".join(map(str, SUPPORTED_SCHEMA_VERSIONS)), 409)
     return version
 
 
@@ -490,6 +494,85 @@ def _norm_subtask(st: dict) -> dict:
         "collapsed": bool(st.get("collapsed", False)),
         "children": [_norm_subtask(c) for c in (st.get("children") or [])],
     }
+
+
+_LEGACY_NOTE_STAMP = re.compile(r"^\[(?P<date>\d{4}-\d{2}-\d{2})(?: (?P<by>[^\]]{1,80}))?\] ?(?P<text>.*)$")
+
+
+def validate_note(summary, body) -> tuple[str, str]:
+    """Return one log entry's canonical (summary, body) or raise 422 invalid."""
+    if not isinstance(summary, str) or not summary.strip():
+        raise WorkflowError("note summary must be nonempty text")
+    summary = summary.strip()
+    if "\n" in summary or "\r" in summary or len(summary) > NOTE_SUMMARY_MAX:
+        raise WorkflowError(f"note summary must be one line of at most {NOTE_SUMMARY_MAX} characters")
+    body = "" if body is None else body
+    if not isinstance(body, str) or len(body.rstrip()) > NOTE_BODY_MAX:
+        raise WorkflowError(f"note body must be markdown text of at most {NOTE_BODY_MAX} characters")
+    return summary, body.rstrip()
+
+
+def normalize_log(entries) -> list[dict]:
+    """Validate a card's note timeline; malformed entries are refused, never dropped."""
+    if entries is None:
+        return []
+    if not isinstance(entries, list):
+        raise WorkflowError("card log must be an array")
+    log, seen = [], set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise WorkflowError("card log entries must be objects; refusing data loss")
+        entry_id, by = entry.get("id"), entry.get("by")
+        if not isinstance(entry_id, str) or not re.fullmatch(r"[0-9a-f]{32}", entry_id) or entry_id in seen:
+            raise WorkflowError(f"card log entry IDs must be unique 32-digit lowercase hex: {entry_id!r}")
+        if not isinstance(entry.get("at"), str) or (by is not None and not isinstance(by, str)):
+            raise WorkflowError(f"card log entry {entry_id} needs text 'at' and text or null 'by'")
+        seen.add(entry_id)
+        summary, body = validate_note(entry.get("summary"), entry.get("body"))
+        log.append({**entry, "by": by, "summary": summary, "body": body})
+    return log
+
+
+def derive_summary(text: str) -> tuple[str, str]:
+    """Split one legacy note's text into a one-line summary and a markdown body."""
+    lines = text.strip().splitlines()
+    if not lines:
+        return "(empty note)", ""
+    first = lines[0].rstrip()
+    end = re.search(r"[.;!?] ", first)
+    if end and end.start() < NOTE_SUMMARY_MAX:
+        summary = first[:end.start() + 1].removesuffix(";").rstrip()
+        if summary:
+            return summary, "\n".join([first[end.start() + 1:], *lines[1:]]).strip()
+    if len(first) <= NOTE_SUMMARY_MAX:
+        return first, "\n".join(lines[1:]).strip()
+    cut = re.match(r"(.*\S)\s", first[:NOTE_SUMMARY_MAX - 1])
+    return (cut[1] if cut else first[:NOTE_SUMMARY_MAX - 1]) + "…", "\n".join(lines).strip()
+
+
+def split_legacy_notes(card_id: str, text: str) -> tuple[str, list[dict]]:
+    """Move v1/v2 `[date actor] text` note lines into log entries; other text stays pinned."""
+    segments = []   # (stamp match or None for free-form text, lines)
+    for line in text.splitlines():
+        stamp = _LEGACY_NOTE_STAMP.match(line)
+        if stamp:
+            segments.append((stamp, [stamp["text"]]))
+        elif not segments or (segments[-1][0] and re.match(" *#", line)):
+            segments.append((None, [line]))
+        else:
+            segments[-1][1].append(line)
+    notes, log = [], []
+    for stamp, lines in segments:
+        if stamp is not None:
+            summary, body = derive_summary("\n".join(lines))
+            if len(body) <= NOTE_BODY_MAX:
+                digest = hashlib.sha256(f"{card_id}\n{len(log)}\n{stamp.string}".encode("utf-8")).hexdigest()
+                log.append({"id": digest[:32], "at": stamp["date"], "by": (stamp["by"] or "").strip() or None,
+                            "summary": summary, "body": body})
+                continue
+            lines = [stamp.string, *lines[1:]]   # too large for one entry: keep it verbatim as pinned text
+        notes.append("\n".join(lines).strip())
+    return "\n\n".join(part for part in notes if part), log
 
 
 def normalize_card(raw: dict) -> dict:
@@ -538,6 +621,7 @@ def normalize_card(raw: dict) -> dict:
         "verification": list(raw.get("verification") or []),
         "reviews": list(raw.get("reviews") or []),
         "changedRev": raw["changedRev"] if type(raw.get("changedRev")) is int and raw["changedRev"] >= 0 else 0,
+        "log": normalize_log(raw.get("log")),
     }
     return card
 
@@ -565,7 +649,7 @@ def flatten_column_stacks(columns: list[dict]) -> list[dict]:
 
 
 def normalize_doc(raw: dict) -> dict:
-    validate_schema(raw)
+    version = validate_schema(raw)
     for key in ("columns", "cards"):
         if raw.get(key) is not None and not isinstance(raw[key], list):
             raise WorkflowError(f"board {key} must be an array")
@@ -592,6 +676,10 @@ def normalize_doc(raw: dict) -> dict:
             uniq.append(c)
     flatten_column_stacks(uniq)
     cards = [normalize_card(r) for r in (raw.get("cards") or [])]
+    if version < 3:   # v1/v2 stamped note lines become the v3 timeline; a v3 doc never re-splits
+        for card in cards:
+            card["notes"], legacy = split_legacy_notes(card["id"], card["notes"])
+            card["log"] = legacy + card["log"]
     nums = [c["num"] for c in cards if isinstance(c["num"], int)]
     next_num = raw.get("nextNum")
     if not isinstance(next_num, int) or next_num <= (max(nums) if nums else 0):
@@ -843,7 +931,7 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
     if not any(c is card for c in doc["cards"]):
         raise WorkflowError("action must use the current board card", 409)
     supported = {"start", "complete", "block", "resume", "takeover", "cancel",
-                 "rework", "reopen", "bug", "improve", "move", "dependencies", "workpad"}
+                 "rework", "reopen", "bug", "improve", "move", "dependencies", "workpad", "note"}
     if not isinstance(action, str) or action not in supported:
         raise WorkflowError(f"unsupported lifecycle action '{action}'")
     frm = card["column"]
@@ -859,6 +947,9 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
         card["notes"] += "\n\n".join(f"## {heading}\n" for heading in missing)
         hist(card, "workpad", by=by, note="Added missing notes sections")
         touch(card)
+        return card
+    if action == "note":   # timeline entries carry no ownership guard, like comments
+        append_note(card, details.get("summary"), details.get("body"), by)
         return card
     if action != "takeover" and owner and owner != by:
         raise WorkflowError(f"owned by {owner}; use takeover with a reason", 409, "owned")
@@ -1068,6 +1159,17 @@ def board_stats(doc: dict) -> dict:
     return stats
 
 
+def append_note(card: dict, summary, body, by: str) -> dict:
+    """Append one timeline entry (one-line summary, optional markdown body) and return it."""
+    by = validate_actor(by)
+    summary, body = validate_note(summary, body)
+    entry = {"id": uuid.uuid4().hex, "at": now_iso(), "by": by, "summary": summary, "body": body}
+    card.setdefault("log", []).append(entry)
+    hist(card, "note", by=by, note=summary[:80])
+    touch(card)
+    return entry
+
+
 def comment_action(card: dict, operation: dict, by: str) -> dict | None:
     by = validate_actor(by)
     if not isinstance(operation, dict) or operation.get("type") not in ("add", "edit", "delete"):
@@ -1173,8 +1275,9 @@ def attachment_remove(board_path: Path, attachment_id: str) -> None:
 def card_context(board_path: Path, ref: str, full: bool = False) -> dict:
     """One atomic document read; no lock file, unread state, or embedded file bytes.
 
-    Default output keeps comments, notes, and open subtasks whole but trims done
-    subtasks to the 10 most recently completed and history to the last 25.
+    Default output keeps comments, pinned notes, and open subtasks whole but trims done
+    subtasks to the 10 most recently completed, history to the last 25, and the note
+    log to the newest 10 entries.
     """
     doc = load(board_path)
     card = resolve_ref(doc, ref)
@@ -1198,7 +1301,7 @@ def card_context(board_path: Path, ref: str, full: bool = False) -> dict:
     if full:
         return context
     done = [st for st, _ in iter_subtasks(card["subtasks"]) if st["done"]]
-    if len(done) <= 10 and len(card["history"]) <= 25:
+    if len(done) <= 10 and len(card["history"]) <= 25 and len(card["log"]) <= 10:
         return context
     recent = {id(st) for st in sorted(done, key=lambda st: st.get("doneAt") or "")[-10:]}
 
@@ -1213,8 +1316,11 @@ def card_context(board_path: Path, ref: str, full: bool = False) -> dict:
     subtasks = prune(card["subtasks"]) if len(done) > 10 else card["subtasks"]
     omitted = {"doneSubtasks": len(done) - sum(st["done"] for st, _ in iter_subtasks(subtasks)),
                "history": max(0, len(card["history"]) - 25)}
+    if len(card["log"]) > 10:
+        omitted["log"] = len(card["log"]) - 10
     if any(omitted.values()):
-        context["card"] = {**card, "subtasks": subtasks, "history": card["history"][-25:]}
+        context["card"] = {**card, "subtasks": subtasks, "history": card["history"][-25:],
+                           "log": card["log"][-10:]}
         context["omitted"] = omitted
     return context
 
