@@ -1,0 +1,3278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WorkBoard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231a1c1f'/%3E%3Cpath d='M9 10v12M16 10v7M23 10v10' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('wbTheme');var d=t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=d?'dark':'light'}catch(e){}</script>
+<style>
+/* ─────────────────────────────────────────────────────────────────────
+   WorkBoard · "Quiet" design system
+   Neutral surfaces, hairline borders, one solid primary, restrained colour.
+   Motion is transform/opacity only; nothing animates layout or blur.
+   ───────────────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: light;
+  --font: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+
+  --fg-rgb: 26 28 31;
+  --fg: rgb(var(--fg-rgb));
+  --fg-2: rgb(var(--fg-rgb) / .64);
+  --fg-3: rgb(var(--fg-rgb) / .44);
+  --fg-4: rgb(var(--fg-rgb) / .28);
+  --line: rgb(var(--fg-rgb) / .08);
+  --line-soft: rgb(var(--fg-rgb) / .05);
+  --line-strong: rgb(var(--fg-rgb) / .13);
+  --fill-1: rgb(var(--fg-rgb) / .04);
+  --fill-2: rgb(var(--fg-rgb) / .07);
+  --fill-3: rgb(var(--fg-rgb) / .11);
+
+  --bg: #ffffff;
+  --bg-side: #f9f9f9;
+  --bg-lane: #f7f7f7;
+  --surface: #ffffff;
+  --surface-2: #fbfbfb;
+  --elevated: #ffffff;
+  --primary: #1a1c1f;
+  --on-primary: #ffffff;
+  --accent: #2f6fed;
+  --accent-soft: rgb(47 111 237 / .10);
+  --focus: rgb(47 111 237 / .45);
+  --scrim: rgb(10 10 10 / .18);
+
+  --gray: #9aa0a6;
+  --blue: #3b82f6;
+  --amber: #d48a04;
+  --green: #1e9e5a;
+  --red: #e5484d;
+  --violet: #8b5cf6;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / .04);
+  --shadow-card-hover: 0 2px 8px -2px rgb(0 0 0 / .08), 0 1px 2px rgb(0 0 0 / .04);
+  --shadow-pop: 0 12px 32px -8px rgb(0 0 0 / .16), 0 2px 6px -2px rgb(0 0 0 / .06);
+  --shadow-panel: 0 24px 64px -16px rgb(0 0 0 / .20), 0 4px 12px -4px rgb(0 0 0 / .06);
+
+  --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 10px; --r-xl: 12px; --r-2xl: 16px; --r-3xl: 20px; --r-full: 999px;
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px;
+
+  --t-2xs: 11px; --t-xs: 12px; --t-sm: 13px; --t-md: 14px; --t-lg: 16px; --t-xl: 20px; --t-2xl: 24px;
+
+  --ease-enter: cubic-bezier(.19, 1, .22, 1);
+  --ease-exit: cubic-bezier(.8, 0, .4, 1);
+  --ease-move: cubic-bezier(.65, 0, .35, 1);
+  --d-fast: 120ms; --d: 180ms; --d-slow: 280ms;
+
+  --side-w: 248px;
+  --top-h: 52px;
+  --lane-min: 220px;
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --fg-rgb: 236 236 236;
+  --bg: #181818;
+  --bg-side: #131313;
+  --bg-lane: #1c1c1c;
+  --surface: #232323;
+  --surface-2: #1f1f1f;
+  --elevated: #232323;
+  --primary: #ececec;
+  --on-primary: #141414;
+  --accent: #6d9eff;
+  --accent-soft: rgb(109 158 255 / .14);
+  --focus: rgb(109 158 255 / .5);
+  --scrim: rgb(0 0 0 / .45);
+  --gray: #8c9199;
+  --blue: #6d9eff;
+  --amber: #f0b43c;
+  --green: #4cc38a;
+  --red: #ff6369;
+  --violet: #a78bfa;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / .3);
+  --shadow-card-hover: 0 4px 12px -4px rgb(0 0 0 / .5);
+  --shadow-pop: 0 16px 40px -8px rgb(0 0 0 / .6), 0 0 0 1px rgb(255 255 255 / .04);
+  --shadow-panel: 0 24px 72px -12px rgb(0 0 0 / .7), 0 0 0 1px rgb(255 255 255 / .03);
+}
+
+/* ── Base ─────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font: 400 var(--t-md)/1.45 var(--font);
+  color: var(--fg); background: var(--bg);
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+  overflow: hidden; font-feature-settings: "ss01", "cv11";
+}
+button, input, textarea, select { font: inherit; color: inherit; letter-spacing: inherit; }
+button { cursor: pointer; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+::selection { background: var(--accent-soft); }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-sm); }
+input:focus-visible, textarea:focus-visible, select:focus-visible, [contenteditable]:focus-visible { outline: none; }
+[hidden] { display: none !important; } /* the attribute must win over component display rules */
+.num { font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--mono); font-size: .92em; }
+.muted { color: var(--fg-2); }
+.faint { color: var(--fg-3); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.i.sm { width: 14px; height: 14px; }
+.i.lg { width: 18px; height: 18px; }
+* { scrollbar-width: thin; scrollbar-color: var(--fill-3) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--fill-3); border-radius: 10px; border: 3px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--fg-4); }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+
+/* ── Controls ─────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 32px; padding: 0 10px; border: 0; border-radius: var(--r-md);
+  background: transparent; color: var(--fg-2); font-size: var(--t-sm); font-weight: 500; white-space: nowrap;
+  transition: background-color var(--d-fast), color var(--d-fast), transform var(--d-fast) var(--ease-enter);
+}
+.btn:hover { background: var(--fill-1); color: var(--fg); }
+.btn:active { background: var(--fill-2); transform: scale(.98); }
+.btn[aria-pressed="true"], .btn.on { background: var(--fill-2); color: var(--fg); }
+.btn:disabled { opacity: .45; pointer-events: none; }
+.btn.sm { height: 28px; padding: 0 8px; font-size: var(--t-xs); border-radius: var(--r-sm); }
+.btn.xs { height: 24px; padding: 0 6px; font-size: var(--t-xs); border-radius: var(--r-sm); }
+.btn.icon { width: 32px; padding: 0; }
+.btn.icon.sm { width: 28px; }
+.btn.icon.xs { width: 24px; }
+.btn.subtle { background: var(--fill-1); color: var(--fg); }
+.btn.subtle:hover { background: var(--fill-2); }
+.btn.outline { box-shadow: inset 0 0 0 1px var(--line-strong); color: var(--fg); }
+.btn.outline:hover { background: var(--fill-1); }
+.btn.primary { background: var(--primary); color: var(--on-primary); }
+.btn.primary:hover { background: var(--primary); opacity: .88; }
+.btn.danger { color: var(--red); }
+.btn.danger:hover { background: color-mix(in srgb, var(--red) 10%, transparent); }
+.btn.pill { border-radius: var(--r-full); }
+.kbd {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px;
+  border-radius: var(--r-xs); background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--line);
+  font: 500 var(--t-2xs)/1 var(--font); color: var(--fg-3);
+}
+.input {
+  height: 32px; width: 100%; padding: 0 10px; border-radius: var(--r-md);
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--fg); font-size: var(--t-sm);
+  transition: border-color var(--d-fast), box-shadow var(--d-fast);
+}
+.input::placeholder, .field::placeholder, textarea::placeholder { color: var(--fg-3); }
+.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.input.ghost { border-color: transparent; background: var(--fill-1); }
+.input.ghost:focus { background: var(--surface); border-color: var(--accent); }
+/* Borderless inline-edit fields that grow with their content (no JS measuring). */
+.field {
+  display: block; width: 100%; margin: 0; padding: 6px 8px; border: 1px solid transparent; border-radius: var(--r-md);
+  background: transparent; color: var(--fg); resize: none; field-sizing: content; min-height: 32px;
+  transition: background-color var(--d-fast), border-color var(--d-fast);
+}
+.field:hover { background: var(--fill-1); }
+.field:focus { background: var(--surface); border-color: var(--line-strong); }
+select.input { appearance: none; padding-right: 28px; background: var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E") no-repeat right 8px center; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; max-width: 100%;
+  border-radius: var(--r-sm); background: var(--fill-1); color: var(--fg-2);
+  font-size: var(--t-2xs); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.chip .dot { width: 6px; height: 6px; }
+.chip.lg { height: 24px; padding: 0 8px; font-size: var(--t-xs); border-radius: var(--r-md); }
+.chip button { display: inline-grid; place-items: center; width: 14px; height: 14px; margin-right: -3px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--fg-3); }
+.chip button:hover { background: var(--fill-2); color: var(--fg); }
+.badge {
+  display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; border-radius: var(--r-sm);
+  font-size: var(--t-2xs); font-weight: 600; white-space: nowrap;
+  color: var(--tone, var(--fg-2)); background: color-mix(in srgb, var(--tone, var(--fg)) 11%, transparent);
+}
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--tone, var(--gray)); }
+.ring { /* hollow status ring used for backlog/task */
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex: none;
+  box-shadow: inset 0 0 0 1.6px var(--tone, var(--gray));
+}
+.avatar {
+  display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; flex: none;
+  font-size: 10px; font-weight: 600; color: #fff; background: var(--tone, var(--gray)); letter-spacing: 0;
+}
+.avatar.lg { width: 28px; height: 28px; font-size: 12px; }
+.progress { position: relative; height: 4px; border-radius: 4px; background: var(--fill-2); overflow: hidden; }
+.progress > i { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--tone, var(--fg-2)); transform-origin: left; }
+.prio { display: inline-flex; align-items: flex-end; gap: 1.5px; height: 12px; flex: none; }
+.prio > i { width: 3px; border-radius: 1px; background: var(--fg-4); }
+.prio > i:nth-child(1) { height: 5px; } .prio > i:nth-child(2) { height: 8px; } .prio > i:nth-child(3) { height: 11px; }
+.prio[data-p="low"] > i:nth-child(1),
+.prio[data-p="mid"] > i:nth-child(-n+2),
+.prio[data-p="critical"] > i { background: var(--tone); }
+.prio[data-p="critical"] { --tone: var(--red); }
+.prio[data-p="mid"] { --tone: var(--amber); }
+.prio[data-p="low"] { --tone: var(--fg-2); }
+
+/* Status tones (column ids) */
+[data-status="backlog"] { --tone: var(--gray); }
+[data-status="task"] { --tone: var(--blue); }
+[data-status="inprogress"] { --tone: var(--amber); }
+[data-status="done"] { --tone: var(--green); }
+[data-status="blocked"] { --tone: var(--red); }
+
+/* ── Popovers, menus, dialogs, toasts ─────────────────────────────── */
+.pop {
+  position: fixed; z-index: 60; min-width: 200px; max-width: min(420px, calc(100vw - 16px)); max-height: min(70vh, 520px);
+  padding: 4px; overflow: auto; border-radius: var(--r-xl); background: var(--elevated);
+  box-shadow: var(--shadow-pop), 0 0 0 1px var(--line); transform-origin: var(--origin, top left);
+  animation: pop-in var(--d) var(--ease-enter);
+}
+.pop.out { animation: pop-out var(--d-fast) var(--ease-exit) forwards; pointer-events: none; }
+@keyframes pop-in { from { opacity: 0; transform: scale(.97) translateY(-2px); } }
+@keyframes pop-out { to { opacity: 0; transform: scale(.98); } }
+.menu-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 32px; padding: 6px 10px; border: 0; border-radius: var(--r-md);
+  background: transparent; color: var(--fg); font-size: var(--t-sm); text-align: left;
+}
+.menu-item .i { color: var(--fg-2); }
+.menu-item:hover, .menu-item.active { background: var(--fill-1); }
+.menu-item.danger { color: var(--red); } .menu-item.danger .i { color: var(--red); }
+.menu-item .hint { margin-left: auto; color: var(--fg-3); font-size: var(--t-xs); }
+.menu-item[aria-checked="true"]::after { content: ""; width: 14px; height: 8px; margin-left: auto; border: solid var(--fg); border-width: 0 0 1.6px 1.6px; transform: translateY(-2px) rotate(-45deg); }
+.menu-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+.menu-label { padding: 8px 10px 4px; font-size: var(--t-2xs); font-weight: 600; color: var(--fg-3); text-transform: uppercase; letter-spacing: .04em; }
+
+.scrim { position: fixed; inset: 0; z-index: 70; background: var(--scrim); animation: fade-in var(--d) var(--ease-enter); }
+.scrim.out { animation: fade-out var(--d-fast) var(--ease-exit) forwards; }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
+.dialog {
+  position: fixed; z-index: 71; left: 50%; top: 22vh; width: min(440px, calc(100vw - 32px)); translate: -50% 0;
+  padding: var(--s-5); border-radius: var(--r-2xl); background: var(--elevated); box-shadow: var(--shadow-panel), 0 0 0 1px var(--line);
+  animation: dialog-in var(--d-slow) var(--ease-enter);
+}
+.dialog.out { animation: dialog-out var(--d-fast) var(--ease-exit) forwards; }
+@keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+@keyframes dialog-out { to { opacity: 0; transform: translateY(4px) scale(.99); } }
+.dialog h2 { margin: 0 0 6px; font: 600 var(--t-lg)/1.35 var(--font-display); letter-spacing: -.01em; }
+.dialog p { margin: 0 0 var(--s-4); color: var(--fg-2); font-size: var(--t-sm); }
+.dialog label { display: block; margin: var(--s-3) 0 6px; font-size: var(--t-xs); font-weight: 500; color: var(--fg-2); }
+.dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: var(--s-5); }
+
+.toasts { position: fixed; z-index: 90; left: 50%; bottom: 20px; translate: -50% 0; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+.toast {
+  display: flex; align-items: center; gap: 12px; min-height: 40px; max-width: min(560px, calc(100vw - 32px)); padding: 8px 8px 8px 14px;
+  border-radius: var(--r-xl); background: var(--primary); color: var(--on-primary); font-size: var(--t-sm);
+  box-shadow: var(--shadow-pop); pointer-events: auto; animation: toast-in var(--d-slow) var(--ease-enter);
+}
+.toast.out { animation: toast-out var(--d-fast) var(--ease-exit) forwards; }
+.toast.error { background: var(--red); color: #fff; }
+.toast .btn { height: 26px; color: inherit; background: rgb(255 255 255 / .14); }
+html[data-theme="dark"] .toast .btn { background: rgb(0 0 0 / .1); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(10px) scale(.98); } }
+@keyframes toast-out { to { opacity: 0; transform: translateY(6px); } }
+.tip {
+  position: fixed; z-index: 95; padding: 5px 8px; border-radius: var(--r-md); pointer-events: none;
+  background: var(--primary); color: var(--on-primary); font-size: var(--t-xs); white-space: nowrap;
+  animation: fade-in var(--d-fast);
+}
+
+/* ── App shell ────────────────────────────────────────────────────── */
+.app { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr); height: 100vh; height: 100dvh; transition: grid-template-columns var(--d-slow) var(--ease-enter); }
+.app.side-collapsed { grid-template-columns: 0 minmax(0, 1fr); }
+
+.side {
+  display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+  background: var(--bg-side); border-right: 1px solid var(--line-soft);
+}
+.app.side-collapsed .side { border-right: 0; }
+.side-inner { display: flex; flex-direction: column; width: var(--side-w); height: 100%; padding: 10px 8px 8px; }
+.side-head { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; }
+.board-pick {
+  display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; height: 40px; padding: 0 8px; border: 0; border-radius: var(--r-lg);
+  background: transparent; text-align: left;
+}
+.board-pick:hover { background: var(--fill-1); }
+.board-pick .mark {
+  display: grid; place-items: center; width: 24px; height: 24px; flex: none; border-radius: 7px;
+  background: var(--primary); color: var(--on-primary); font: 700 12px/1 var(--font-display);
+}
+.board-pick .name { flex: 1; min-width: 0; font-weight: 600; font-size: var(--t-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.board-pick .sub { display: block; font-weight: 400; font-size: var(--t-2xs); color: var(--fg-3); }
+.new-card-btn { width: 100%; justify-content: flex-start; gap: 10px; height: 36px; padding: 0 10px; color: var(--fg); font-size: var(--t-sm); margin-bottom: 6px; }
+.nav { display: flex; flex-direction: column; gap: 1px; }
+.nav-item {
+  position: relative; display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border: 0; border-radius: var(--r-md);
+  background: transparent; color: var(--fg-2); font-size: var(--t-sm); text-align: left;
+  transition: background-color var(--d-fast), color var(--d-fast);
+}
+.nav-item:hover { background: var(--fill-1); color: var(--fg); }
+.nav-item[aria-current="page"] { background: var(--fill-2); color: var(--fg); font-weight: 500; }
+.nav-item .count { margin-left: auto; font-size: var(--t-xs); color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.side-section { margin-top: 18px; }
+.side-label { display: flex; align-items: center; justify-content: space-between; height: 24px; padding: 0 10px; font-size: var(--t-2xs); font-weight: 600; color: var(--fg-3); }
+.side-label .btn { color: var(--fg-3); }
+.view-item .del { margin-left: auto; opacity: 0; }
+.view-item:hover .del { opacity: 1; }
+.side-empty { padding: 4px 10px; font-size: var(--t-xs); color: var(--fg-3); }
+.side-scroll { flex: 1; min-height: 0; overflow: auto; margin: 0 -8px; padding: 0 8px; }
+.side-foot { display: flex; align-items: center; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.actor-btn { flex: 1; min-width: 0; justify-content: flex-start; gap: 8px; height: 36px; padding: 0 6px; color: var(--fg); }
+.actor-btn .who { overflow: hidden; text-overflow: ellipsis; }
+
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
+.top { display: flex; align-items: center; gap: 6px; height: var(--top-h); padding: 0 12px 0 16px; flex: none; }
+.top .title {
+  min-width: 0; max-width: 38vw; padding: 4px 6px; margin-left: -6px; border-radius: var(--r-md);
+  font: 600 var(--t-lg)/1.3 var(--font-display); letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.top .title[contenteditable="true"] { background: var(--fill-1); box-shadow: 0 0 0 1px var(--line-strong); text-overflow: clip; }
+.live { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex: none; margin: 0 4px; box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 18%, transparent); }
+.live.stale { background: var(--amber); box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 18%, transparent); }
+.live.down { background: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 18%, transparent); }
+.top .spacer { flex: 1; }
+.search-trigger {
+  display: flex; align-items: center; gap: 8px; width: 240px; height: 32px; padding: 0 6px 0 10px; border: 0; border-radius: var(--r-md);
+  background: var(--fill-1); color: var(--fg-3); font-size: var(--t-sm);
+}
+.search-trigger:hover { background: var(--fill-2); color: var(--fg-2); }
+.search-trigger .kbd { margin-left: auto; }
+.filterbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 0 16px 10px; flex: none; }
+.filterbar:empty { display: none; }
+.filter-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 4px 0 10px; border-radius: var(--r-full); background: var(--accent-soft); color: var(--accent); font-size: var(--t-xs); font-weight: 500; }
+.filter-chip button { display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 50%; background: transparent; color: inherit; padding: 0; }
+.filter-chip button:hover { background: var(--accent-soft); }
+.content { position: relative; flex: 1; min-height: 0; }
+.banner {
+  display: flex; align-items: center; gap: 10px; margin: 0 16px 10px; padding: 8px 12px; border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--amber) 12%, transparent); color: var(--fg); font-size: var(--t-sm);
+}
+.banner.error { background: color-mix(in srgb, var(--red) 12%, transparent); }
+.banner .btn { margin-left: auto; }
+
+/* ── Board ────────────────────────────────────────────────────────── */
+.board {
+  position: absolute; inset: 0; display: flex; align-items: flex-start; gap: 10px;
+  padding: 2px 16px 16px; overflow: auto; overscroll-behavior: contain;
+}
+.stack { display: flex; flex-direction: column; gap: 10px; flex: 1 0 var(--lane-min); min-width: var(--lane-min); max-width: 420px; max-height: 100%; }
+.lane {
+  position: relative; display: flex; flex-direction: column; min-height: 0; max-height: 100%;
+  border-radius: var(--r-2xl); background: var(--bg-lane);
+  transition: background-color var(--d-fast), box-shadow var(--d-fast);
+}
+.stack > .lane { flex: 0 1 auto; }
+.stack > .lane + .lane, .stack > .lane:has(+ .lane) { min-height: 132px; }
+.lane-head { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 6px 0 12px; flex: none; }
+.lane-head .name { font-size: var(--t-sm); font-weight: 600; white-space: nowrap; }
+.lane-head .count { font-size: var(--t-xs); color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.lane-head .count.over { color: var(--red); font-weight: 600; }
+.lane-head .tools { display: flex; gap: 2px; margin-left: auto; opacity: 0; transition: opacity var(--d-fast); }
+.lane:hover .lane-head .tools, .lane-head .tools:focus-within { opacity: 1; }
+.lane-head .grip { cursor: grab; }
+.lane-body { flex: 1; min-height: 8px; overflow-y: auto; overflow-x: hidden; padding: 0 6px 6px; overscroll-behavior: contain; }
+.lane-foot { flex: none; padding: 0 6px 6px; }
+.lane-add { width: 100%; justify-content: flex-start; height: 32px; color: var(--fg-3); }
+.lane-empty { padding: 10px 8px 14px; font-size: var(--t-xs); color: var(--fg-3); }
+.lane.drop { background: color-mix(in srgb, var(--accent) 7%, var(--bg-lane)); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 45%, transparent); }
+.lane.stack-target::after {
+  content: "Stack below"; position: absolute; left: 8px; right: 8px; bottom: 8px; height: 34px; display: grid; place-items: center;
+  border-radius: var(--r-lg); border: 1.5px dashed color-mix(in srgb, var(--accent) 60%, transparent); color: var(--accent);
+  font-size: var(--t-xs); font-weight: 600; background: var(--accent-soft);
+}
+.stack.insert-before::before, .stack.insert-after::after {
+  content: ""; position: absolute; top: 4px; bottom: 4px; width: 3px; border-radius: 3px; background: var(--accent);
+}
+.stack { position: relative; }
+.stack.insert-before::before { left: -7px; }
+.stack.insert-after::after { right: -7px; }
+.lane.dragging { opacity: .45; }
+.group-head {
+  display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px; margin-top: 2px; border: 0; width: 100%;
+  background: transparent; color: var(--fg-3); font-size: var(--t-2xs); font-weight: 600; letter-spacing: .03em; text-transform: uppercase; border-radius: var(--r-sm);
+}
+.group-head:hover { color: var(--fg-2); background: var(--fill-1); }
+.group-head .i { transition: transform var(--d) var(--ease-enter); }
+.group-head[aria-expanded="false"] .i { transform: rotate(-90deg); }
+.group-head .count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.more-btn { width: 100%; height: 30px; color: var(--fg-3); font-size: var(--t-xs); }
+
+/* Card */
+.card {
+  position: relative; display: block; width: 100%; margin: 0 0 6px; padding: 10px 12px 10px; border: 0; border-radius: var(--r-xl);
+  background: var(--surface); box-shadow: var(--shadow-card), 0 0 0 1px var(--line); text-align: left; color: var(--fg);
+  cursor: pointer; content-visibility: auto; contain-intrinsic-size: auto 92px;
+  transition: box-shadow var(--d-fast), background-color var(--d-fast);
+}
+.card:hover { box-shadow: var(--shadow-card-hover), 0 0 0 1px var(--line-strong); }
+.card.selected { box-shadow: 0 0 0 1.5px var(--accent), var(--shadow-card-hover); }
+.card:focus-visible { outline-offset: 1px; border-radius: var(--r-xl); }
+.card-top { display: flex; align-items: center; gap: 6px; height: 18px; margin-bottom: 4px; font-size: var(--t-2xs); color: var(--fg-3); }
+.card-top .ref { font-family: var(--mono); font-size: 11px; letter-spacing: -.01em; }
+.card-top .when { margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.card-top .avatar { width: 18px; height: 18px; font-size: 9px; }
+.card-title { font-size: var(--t-md); font-weight: 500; line-height: 1.42; letter-spacing: -.003em; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.card.is-done .card-title { color: var(--fg-2); }
+.card.is-canceled .card-title { color: var(--fg-3); text-decoration: line-through; text-decoration-color: var(--fg-4); }
+.card-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; margin-top: 8px; font-size: var(--t-2xs); color: var(--fg-3); }
+.card-foot:empty { display: none; }
+.card-foot .meta { display: inline-flex; align-items: center; gap: 3px; font-variant-numeric: tabular-nums; }
+.card-foot .meta .i { width: 13px; height: 13px; }
+.card-foot .progress { width: 44px; }
+.card-note {
+  margin-top: 8px; padding: 6px 8px; border-radius: var(--r-md); font-size: var(--t-xs); line-height: 1.4;
+  color: var(--tone, var(--red)); background: color-mix(in srgb, var(--tone, var(--red)) 8%, transparent);
+}
+.card-note > span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.card.dragging { opacity: .35; }
+.card.enter { animation: card-enter var(--d-slow) var(--ease-enter); }
+.card.flash { animation: card-flash 900ms var(--ease-enter); }
+.card.leave { animation: card-leave var(--d) var(--ease-exit) forwards; pointer-events: none; }
+@keyframes card-enter { from { opacity: 0; transform: translateY(6px) scale(.985); } }
+@keyframes card-leave { to { opacity: 0; transform: scale(.97); } }
+@keyframes card-flash { 0%, 35% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent), var(--shadow-card-hover); } }
+.card.active-work { box-shadow: inset 3px 0 0 var(--amber), var(--shadow-card), 0 0 0 1px var(--line); }
+.trash {
+  position: fixed; z-index: 50; left: 50%; bottom: 24px; display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 18px;
+  border-radius: var(--r-full); background: var(--elevated); color: var(--fg-2); box-shadow: var(--shadow-pop), 0 0 0 1px var(--line);
+  font-size: var(--t-sm); font-weight: 500; translate: -50% 0; animation: toast-in var(--d) var(--ease-enter);
+}
+.trash.over { color: #fff; background: var(--red); box-shadow: var(--shadow-pop); }
+
+/* ── Card panel (floating peek) ───────────────────────────────────── */
+.panel {
+  position: fixed; z-index: 40; top: 8px; right: 8px; bottom: 8px; width: min(680px, calc(100vw - 16px), max(440px, 46vw));
+  display: flex; flex-direction: column; border-radius: var(--r-2xl); background: var(--elevated);
+  box-shadow: var(--shadow-panel), 0 0 0 1px var(--line); overflow: hidden;
+  transform: translateX(calc(100% + 24px)); visibility: hidden;
+  transition: transform var(--d-slow) var(--ease-enter), visibility 0s linear var(--d-slow);
+  will-change: transform;
+}
+.panel.open { transform: none; visibility: visible; transition: transform var(--d-slow) var(--ease-enter), visibility 0s; }
+.panel.closing { transition: transform var(--d) var(--ease-exit), visibility 0s linear var(--d); }
+/* Laid out and painted off-screen for one frame before sliding, so the slide only composites. */
+.panel.preparing { visibility: visible; transition: none; }
+.panel.wide { width: min(1040px, calc(100vw - 16px)); }
+.panel.wide .panel-body { padding-inline: max(24px, calc((100% - 760px) / 2)); }
+.panel.wide .panel-foot { padding-inline: max(14px, calc((100% - 780px) / 2)); }
+.panel-bar { display: flex; align-items: center; gap: 4px; height: 48px; padding: 0 10px 0 14px; flex: none; border-bottom: 1px solid var(--line-soft); }
+.panel-bar .ref { font-family: var(--mono); font-size: var(--t-xs); color: var(--fg-3); margin-right: 4px; }
+.panel-bar .spacer { flex: 1; }
+.panel-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 24px 24px; overscroll-behavior: contain; }
+.panel-body.swap { animation: fade-in var(--d) var(--ease-enter); }
+.panel-title {
+  display: block; width: 100%; margin: 0 0 14px -8px; width: calc(100% + 16px); padding: 4px 8px; border: 1px solid transparent; border-radius: var(--r-md);
+  background: transparent; resize: none; field-sizing: content;
+  font: 600 var(--t-2xl)/1.3 var(--font-display); letter-spacing: -.018em; color: var(--fg);
+}
+.panel-title:hover { background: var(--fill-1); }
+.panel-title:focus { background: var(--surface); border-color: var(--line-strong); }
+.props { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 2px 8px; margin: 0 0 8px; }
+.prop-label { font-size: var(--t-sm); color: var(--fg-3); height: 32px; display: flex; align-items: center; }
+.prop-value { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-height: 32px; min-width: 0; font-size: var(--t-sm); }
+.prop-value > .btn { color: var(--fg); }
+.prop-value .add-inline { width: 150px; height: 26px; padding: 0 8px; border: 0; border-radius: var(--r-sm); background: transparent; font-size: var(--t-xs); }
+.prop-value .add-inline:hover { background: var(--fill-1); }
+.prop-value .add-inline:focus { background: var(--surface); box-shadow: 0 0 0 1px var(--line-strong); }
+.dep { display: inline-flex; align-items: center; gap: 6px; height: 26px; max-width: 100%; padding: 0 4px 0 8px; border-radius: var(--r-md); background: var(--fill-1); font-size: var(--t-xs); }
+.dep .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dep.ok .ref { color: var(--green); }
+.section { margin: 22px -10px 0; padding: 0 10px; }
+.section-head { display: flex; align-items: center; gap: 8px; height: 28px; margin-bottom: 4px; }
+.section-head h3 { margin: 0; font-size: var(--t-sm); font-weight: 600; }
+.section-head .count { font-size: var(--t-xs); color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.section-head .tools { margin-left: auto; display: flex; gap: 2px; }
+.section .field { margin-left: -8px; width: calc(100% + 16px); font-size: var(--t-md); line-height: 1.55; }
+.section .field.mono { font-family: var(--mono); font-size: var(--t-sm); }
+.checklist { display: flex; flex-direction: column; }
+.check-row { display: flex; align-items: flex-start; gap: 8px; min-height: 30px; padding: 4px 6px; margin: 0 -6px; border-radius: var(--r-md); }
+.check-row:hover { background: var(--fill-1); }
+.check-row .box {
+  display: grid; place-items: center; width: 16px; height: 16px; margin-top: 3px; flex: none; padding: 0; border: 1.5px solid var(--fg-4); border-radius: 5px; background: transparent; color: transparent;
+  transition: background-color var(--d-fast), border-color var(--d-fast);
+}
+.check-row .box .i { width: 12px; height: 12px; stroke-width: 2.4; }
+.check-row.done .box { background: var(--fg); border-color: var(--fg); color: var(--bg); }
+.check-row .text { flex: 1; min-width: 0; padding: 1px 0; border: 0; background: transparent; resize: none; field-sizing: content; font-size: var(--t-sm); line-height: 1.5; color: var(--fg); }
+.check-row.done .text { color: var(--fg-3); }
+.check-row .row-tools { display: flex; opacity: 0; }
+.check-row:hover .row-tools, .check-row:focus-within .row-tools { opacity: 1; }
+.check-children { margin-left: 22px; }
+.file-row { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 6px 8px; margin: 0 -8px; border-radius: var(--r-md); }
+.file-row:hover { background: var(--fill-1); }
+.file-row .ic { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r-md); background: var(--fill-1); color: var(--fg-2); flex: none; }
+.file-row .meta { font-size: var(--t-xs); color: var(--fg-3); }
+.thread { display: flex; flex-direction: column; gap: 14px; }
+.msg { display: flex; gap: 10px; }
+.msg-body { flex: 1; min-width: 0; }
+.msg-head { display: flex; align-items: baseline; gap: 8px; font-size: var(--t-xs); color: var(--fg-3); }
+.msg-head b { color: var(--fg); font-weight: 600; font-size: var(--t-sm); }
+.msg-text { margin-top: 2px; font-size: var(--t-md); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg-tools { margin-left: auto; display: flex; opacity: 0; }
+.msg:hover .msg-tools { opacity: 1; }
+.activity { list-style: none; margin: 0; padding: 0; }
+.activity li { display: flex; gap: 10px; padding: 5px 0; font-size: var(--t-xs); color: var(--fg-2); }
+.activity li time { flex: none; width: 92px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.panel-foot { flex: none; padding: 10px 14px 14px; }
+.composer {
+  display: flex; flex-direction: column; border-radius: var(--r-3xl); background: var(--surface);
+  box-shadow: 0 0 0 1px var(--line-strong), 0 2px 8px -4px rgb(0 0 0 / .08); transition: box-shadow var(--d-fast);
+}
+.composer:focus-within { box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 26%, transparent), 0 4px 16px -6px rgb(0 0 0 / .12); }
+.composer textarea { display: block; width: 100%; min-height: 44px; max-height: 30vh; padding: 12px 16px 4px; border: 0; background: transparent; resize: none; field-sizing: content; font-size: var(--t-md); line-height: 1.5; }
+.composer-bar { display: flex; align-items: center; gap: 4px; padding: 4px 8px 8px 10px; }
+.composer-bar .who { font-size: var(--t-xs); color: var(--fg-3); }
+.composer-bar .send { margin-left: auto; width: 32px; height: 32px; border-radius: 50%; padding: 0; background: var(--primary); color: var(--on-primary); }
+.composer-bar .send:disabled { opacity: .25; }
+.panel-msg { margin: 0 0 12px; }
+
+/* ── Secondary views ──────────────────────────────────────────────── */
+.view { position: absolute; inset: 0; overflow: auto; padding: 8px 32px 48px; animation: fade-in var(--d) var(--ease-enter); }
+.view-inner { max-width: 1080px; margin: 0 auto; }
+.view-head { display: flex; align-items: flex-end; gap: 12px; margin: 12px 0 20px; }
+.view-head h1 { margin: 0; font: 600 var(--t-xl)/1.25 var(--font-display); letter-spacing: -.015em; }
+.view-head p { margin: 4px 0 0; color: var(--fg-2); font-size: var(--t-sm); }
+.view-head .tools { margin-left: auto; display: flex; gap: 6px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-bottom: 24px; }
+.kpi { padding: 14px 16px; border-radius: var(--r-xl); background: var(--surface); box-shadow: 0 0 0 1px var(--line); }
+.kpi .v { font: 600 28px/1.1 var(--font-display); letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--tone, var(--fg)); }
+.kpi .l { margin-top: 6px; font-size: var(--t-xs); color: var(--fg-2); }
+.card-block { padding: 16px 18px; margin-bottom: 14px; border-radius: var(--r-xl); background: var(--surface); box-shadow: 0 0 0 1px var(--line); }
+.card-block h2 { margin: 0 0 12px; font-size: var(--t-sm); font-weight: 600; }
+.bars { display: flex; flex-direction: column; gap: 8px; }
+.bar-row { display: grid; grid-template-columns: 120px minmax(0, 1fr) 44px; align-items: center; gap: 12px; font-size: var(--t-sm); }
+.bar-row .track { height: 8px; border-radius: 8px; background: var(--fill-1); overflow: hidden; }
+.bar-row .fill { height: 100%; border-radius: inherit; background: var(--tone, var(--fg-2)); transform-origin: left; animation: grow var(--d-slow) var(--ease-enter) both; }
+.bar-row .n { text-align: right; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+@keyframes grow { from { transform: scaleX(0); } }
+.grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.grid-cards .card { margin: 0; }
+.list { border-radius: var(--r-xl); box-shadow: 0 0 0 1px var(--line); background: var(--surface); overflow: hidden; }
+.list-row { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 8px 14px; border-bottom: 1px solid var(--line-soft); font-size: var(--t-sm); }
+.list-row:last-child { border-bottom: 0; }
+.empty { display: grid; place-items: center; gap: 8px; padding: 64px 16px; text-align: center; color: var(--fg-3); font-size: var(--t-sm); }
+.empty .i { width: 28px; height: 28px; color: var(--fg-4); stroke-width: 1.3; }
+.empty b { color: var(--fg); font-weight: 600; font-size: var(--t-md); }
+
+/* Calendar */
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-radius: var(--r-xl); overflow: hidden; box-shadow: 0 0 0 1px var(--line); background: var(--line-soft); gap: 1px; }
+.cal-dow { padding: 8px 10px; background: var(--surface-2); font-size: var(--t-2xs); font-weight: 600; color: var(--fg-3); text-transform: uppercase; letter-spacing: .04em; }
+.cal-day { min-height: 112px; padding: 6px; background: var(--surface); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cal-day.out { background: var(--surface-2); }
+.cal-day.out .d { color: var(--fg-4); }
+.cal-day .d { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; font-size: var(--t-xs); font-weight: 500; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.cal-day.today .d { background: var(--primary); color: var(--on-primary); }
+.cal-ev {
+  display: flex; align-items: center; gap: 6px; width: 100%; height: 22px; padding: 0 6px; border: 0; border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--tone, var(--gray)) 10%, transparent); color: var(--fg); font-size: var(--t-2xs); text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cal-ev:hover { background: color-mix(in srgb, var(--tone, var(--gray)) 18%, transparent); }
+.cal-ev .ref { font-family: var(--mono); color: var(--fg-3); }
+.cal-more { border: 0; background: transparent; color: var(--fg-3); font-size: var(--t-2xs); text-align: left; padding: 0 6px; }
+.cal-more:hover { color: var(--fg); }
+
+/* Command palette */
+.palette {
+  position: fixed; z-index: 80; left: 50%; top: 14vh; width: min(640px, calc(100vw - 24px)); translate: -50% 0;
+  border-radius: var(--r-2xl); background: var(--elevated); box-shadow: var(--shadow-panel), 0 0 0 1px var(--line); overflow: hidden;
+  animation: dialog-in var(--d-slow) var(--ease-enter);
+}
+.palette.out { animation: dialog-out var(--d-fast) var(--ease-exit) forwards; }
+.palette-input { display: flex; align-items: center; gap: 10px; height: 54px; padding: 0 16px; border-bottom: 1px solid var(--line-soft); color: var(--fg-3); }
+.palette-input input { flex: 1; height: 100%; border: 0; background: transparent; font-size: var(--t-lg); color: var(--fg); }
+.palette-list { max-height: min(56vh, 460px); overflow: auto; padding: 6px; }
+.palette-foot { display: flex; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--line-soft); font-size: var(--t-2xs); color: var(--fg-3); }
+.palette-foot span { display: inline-flex; align-items: center; gap: 4px; }
+
+/* Setup / chooser */
+.setup { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; }
+.setup-card { width: min(520px, 100%); text-align: center; }
+.setup-card h1 { margin: 16px 0 8px; font: 600 var(--t-2xl)/1.25 var(--font-display); letter-spacing: -.02em; }
+.setup-card p { color: var(--fg-2); margin: 0 0 20px; }
+
+/* ── Responsive ───────────────────────────────────────────────────── */
+@media (max-width: 1100px) { :root { --side-w: 232px; } .search-trigger { width: 180px; } }
+@media (max-width: 820px) {
+  .app, .app.side-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .side {
+    position: fixed; z-index: 75; inset: 0 auto 0 0; width: var(--side-w); transform: translateX(-100%); visibility: hidden;
+    transition: transform var(--d-slow) var(--ease-enter), visibility 0s linear var(--d-slow); box-shadow: var(--shadow-panel);
+  }
+  .app.side-open .side { transform: none; visibility: visible; transition: transform var(--d-slow) var(--ease-enter), visibility 0s; }
+  .search-trigger { width: 36px; padding: 0; justify-content: center; } .search-trigger .label, .search-trigger .kbd { display: none; }
+  .panel { top: 0; right: 0; bottom: 0; width: 100vw; border-radius: 0; }
+  .view { padding: 8px 16px 40px; }
+}
+
+/* ── Reduced motion: every animation and transition becomes instant ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-delay: 0s !important; transition-duration: 1ms !important; transition-delay: 0s !important; }
+}
+
+/* ── Card panel additions (only what design.css lacks; same tokens) ─ */
+.panel:focus-visible { outline: none; }
+.panel.drop-files { box-shadow: var(--shadow-panel), 0 0 0 2px var(--accent); }
+.panel > .panel-msg { flex: none; margin: 10px 14px 0; }
+.panel [aria-invalid="true"] { box-shadow: 0 0 0 1px var(--red); }
+.section-head .count { display: inline-flex; align-items: center; gap: 6px; }
+.section-head .progress { width: 56px; }
+.dep.ok > .i { color: var(--green); }
+.file-row .main { flex: 1; min-width: 0; }
+.file-row .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg:focus-within .msg-tools { opacity: 1; }
+.msg-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 4px; }
+
+/* ── Secondary views: additions to design.css (same tokens, transform/opacity motion only) ── */
+.view-inner .banner { margin: 0 0 16px; }
+.view-note { margin: 10px 2px 0; font-size: var(--t-xs); color: var(--fg-3); }
+.block-note { margin: 0; font-size: var(--t-sm); color: var(--fg-3); }
+.block-note + .block-note, .bars + .block-note { margin-top: 10px; }
+
+/* Insights */
+.vgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 0 14px; align-items: start; }
+.card-block h2 { display: flex; align-items: baseline; gap: 8px; }
+.card-block h2 .aside { margin-left: auto; font-size: var(--t-xs); font-weight: 400; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.bar-row .l { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bar-row .l span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hist { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 6px; }
+.hist-col { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+.hist-track { display: flex; align-items: flex-end; justify-content: center; width: 100%; height: 96px; }
+.hist-bar {
+  width: 100%; max-width: 20px; min-height: 2px; border-radius: 4px 4px 2px 2px; background: var(--green);
+  transform-origin: bottom; animation: grow-y var(--d-slow) var(--ease-enter) both;
+}
+.hist-bar.zero { background: var(--fill-2); }
+.hist-col .d { font-size: var(--t-2xs); color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.hist-col.today .d { color: var(--fg); font-weight: 600; }
+@keyframes grow-y { from { transform: scaleY(0); } }
+
+/* Git */
+.git-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; font-size: var(--t-sm); }
+.git-subject { flex: 1 1 240px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-root { margin-top: 8px; font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-counts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.git-code { flex: none; min-width: 2.5ch; color: var(--fg-2); }
+.git-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Calendar */
+.cal-head { flex-wrap: wrap; }
+.cal-head .tools { align-items: center; flex-wrap: wrap; }
+.cal-nav { display: flex; align-items: center; gap: 2px; }
+.seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--r-md); background: var(--fill-1); }
+.seg .btn { padding: 0 10px; }
+.seg .btn[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: var(--shadow-card), 0 0 0 1px var(--line); }
+.cal-ev .ref { flex: none; }
+.cal-ev .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cal-ev.canceled .t { color: var(--fg-3); text-decoration: line-through; text-decoration-color: var(--fg-4); }
+
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-board" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16M15 4v10"/></symbol>
+  <symbol id="i-ready" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-4.9"/></symbol>
+  <symbol id="i-rework" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.6-5.9"/><path d="M4 4v4.5h4.5"/></symbol>
+  <symbol id="i-canceled" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m6 18 12-12"/></symbol>
+  <symbol id="i-insights" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></symbol>
+  <symbol id="i-git" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="8" r="2.2"/><path d="M6 8.2v7.6M18 10.2c0 4-4 4.5-9.6 6.4"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-new" viewBox="0 0 24 24"><path d="M12 20h8M16.5 3.6a2.1 2.1 0 1 1 3 3L7 19.1 3 20l.9-4z"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.1" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="m10 7 5 5-5 5"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="m14 7-5 5 5 5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2.5"/><path d="M8 20h8M12 16v4"/></symbol>
+  <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9.5 4v16"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="m20.5 11.5-8.3 8.3a5.3 5.3 0 0 1-7.5-7.5l8.3-8.3a3.5 3.5 0 0 1 5 5l-8.3 8.3a1.8 1.8 0 0 1-2.5-2.5l7.6-7.6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-comment" viewBox="0 0 24 24"><path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.2A8 8 0 1 1 20 12z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/></symbol>
+  <symbol id="i-blocked" viewBox="0 0 24 24"><path d="M8.2 3h7.6L21 8.2v7.6L15.8 21H8.2L3 15.8V8.2z"/><path d="M8.5 12h7"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1" fill="currentColor"/><circle cx="15" cy="6" r="1" fill="currentColor"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="18" r="1" fill="currentColor"/><circle cx="15" cy="18" r="1" fill="currentColor"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></symbol>
+  <symbol id="i-collapse" viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M10 14l-7 7"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+  <symbol id="i-sort" viewBox="0 0 24 24"><path d="M3 7h11M3 12h8M3 17h5M17 5v14M14 16l3 3 3-3"/></symbol>
+  <symbol id="i-reset" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v4.5h-4.5"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3.5 12.3V4.5a1 1 0 0 1 1-1h7.8l8.2 8.2a1.4 1.4 0 0 1 0 2l-6.8 6.8a1.4 1.4 0 0 1-2 0z"/><circle cx="8" cy="8" r="1.3"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-10z"/><path d="M14 3.5v5h5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></symbol>
+  <symbol id="i-done" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-4.9"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+  <symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></symbol>
+  <symbol id="i-bug" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="13" rx="5"/><path d="M12 11v9M4 12h3M17 12h3M4.5 18l2.7-1.5M19.5 18l-2.7-1.5M4.5 6l2.8 2M19.5 6l-2.8 2M9 7l-1-3M15 7l1-3"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5 13.8 10l6.7 2-6.7 2L12 20.5 10.2 14l-6.7-2 6.7-2z"/></symbol>
+  <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 12V6.5a1.5 1.5 0 0 1 3 0V11M11 10.5v-6a1.5 1.5 0 0 1 3 0V11M14 7.5a1.5 1.5 0 0 1 3 0V13M8 12a1.5 1.5 0 0 0-3 0v1.5a7.5 7.5 0 0 0 7.5 7.5h.5a6 6 0 0 0 6-6V10a1.5 1.5 0 0 0-3 0"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 24 24"><path d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3.5 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 4 2.4 5 5.4.6-4 3.7 1.1 5.4L12 16l-4.9 2.7 1.1-5.4-4-3.7 5.4-.6z"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M16.5 3.6a2.1 2.1 0 1 1 3 3L8 18.1l-4 1 1-4z"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.2"/></symbol>
+</svg>
+
+<div class="app" id="app">
+  <aside class="side" id="side" aria-label="Sidebar">
+    <div class="side-inner">
+      <div class="side-head">
+        <button class="board-pick" id="board-pick" aria-haspopup="menu" title="Switch board">
+          <span class="mark" id="board-mark">W</span>
+          <span class="name"><span id="board-pick-name">WorkBoard</span><span class="sub" id="board-pick-sub">Preview</span></span>
+          <svg class="i sm faint"><use href="#i-down"/></svg>
+        </button>
+        <button class="btn icon sm" id="side-toggle" title="Hide sidebar" aria-label="Hide sidebar"><svg class="i"><use href="#i-sidebar"/></svg></button>
+      </div>
+      <button class="btn new-card-btn" id="new-card"><svg class="i"><use href="#i-new"/></svg>New card<span class="kbd" style="margin-left:auto">C</span></button>
+      <div class="side-scroll">
+        <nav class="nav" id="nav" aria-label="Views">
+          <button class="nav-item" data-view="board"><svg class="i"><use href="#i-board"/></svg>Board<span class="count" data-count="total"></span></button>
+          <button class="nav-item" data-view="ready"><svg class="i"><use href="#i-ready"/></svg>Ready now<span class="count" data-count="ready"></span></button>
+          <button class="nav-item" data-view="rework"><svg class="i"><use href="#i-rework"/></svg>Rework<span class="count" data-count="rework"></span></button>
+          <button class="nav-item" data-view="canceled"><svg class="i"><use href="#i-canceled"/></svg>Canceled<span class="count" data-count="canceled"></span></button>
+          <button class="nav-item" data-view="insights"><svg class="i"><use href="#i-insights"/></svg>Insights</button>
+          <button class="nav-item" data-view="git"><svg class="i"><use href="#i-git"/></svg>Git</button>
+          <button class="nav-item" data-view="calendar"><svg class="i"><use href="#i-calendar"/></svg>Calendar</button>
+        </nav>
+        <div class="side-section">
+          <div class="side-label">Saved views<button class="btn icon xs" id="save-view" title="Save current view" aria-label="Save current view"><svg class="i sm"><use href="#i-plus"/></svg></button></div>
+          <div class="nav" id="saved-views"></div>
+        </div>
+      </div>
+      <div class="side-foot">
+        <button class="btn actor-btn" id="actor-btn" title="Change the attribution label for your edits"><span class="avatar" id="actor-avatar">U</span><span class="who" id="actor-name">user</span></button>
+        <button class="btn icon sm" id="theme-btn" title="Theme" aria-label="Theme"><svg class="i"><use href="#i-monitor"/></svg></button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <header class="top">
+      <button class="btn icon sm" id="side-open" title="Show sidebar" aria-label="Show sidebar" hidden><svg class="i"><use href="#i-sidebar"/></svg></button>
+      <h1 class="title" id="title" title="Double-click to rename">WorkBoard</h1>
+      <span class="live" id="live" title="Live"></span>
+      <span class="spacer"></span>
+      <button class="search-trigger" id="search-open" aria-label="Search"><svg class="i"><use href="#i-search"/></svg><span class="label">Search cards…</span><span class="kbd">Ctrl K</span></button>
+      <button class="btn icon" id="filter-btn" title="Filter" aria-label="Filter" aria-haspopup="menu"><svg class="i"><use href="#i-filter"/></svg></button>
+      <button class="btn icon" id="board-menu" title="Board options" aria-label="Board options" aria-haspopup="menu"><svg class="i"><use href="#i-more"/></svg></button>
+    </header>
+    <div id="banner-slot"></div>
+    <div class="filterbar" id="filterbar"></div>
+    <div class="content" id="content">
+      <div class="board" id="board" aria-label="Board"></div>
+      <div id="view-host"></div>
+    </div>
+  </main>
+</div>
+
+<aside class="panel" id="panel" aria-label="Card details" role="dialog" aria-modal="false"></aside>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<script>
+'use strict';
+// ═════════════════════════════════════════════════════════════════════
+// WorkBoard core — state, server sync, board rendering, drag and drop,
+// dialogs/menus/toasts and app chrome. Modules (panel.js, views.js) use the
+// WB API defined here; see the module contract.
+// ═════════════════════════════════════════════════════════════════════
+const WB = window.WB = {};
+(() => {
+  const NS = 'http://www.w3.org/2000/svg';
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const CORE = ['backlog', 'task', 'inprogress', 'done', 'blocked'];
+  const store = {
+    get(key, fallback = null) { try { const v = localStorage.getItem(key); return v === null ? fallback : v; } catch { return fallback; } },
+    set(key, value) { try { value === null ? localStorage.removeItem(key) : localStorage.setItem(key, value); } catch { /* storage unavailable */ } },
+    json(key, fallback) { try { return JSON.parse(store.get(key)) ?? fallback; } catch { return fallback; } },
+  };
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+  // ── State ──────────────────────────────────────────────────────────
+  const S = WB.state = {
+    doc: null, rev: 0, actor: store.get('workboard.previewActor', 'user'),
+    view: 'board', selectedId: null, live: 'connecting', missing: false,
+    filters: { status: new Set(), priority: new Set(), owner: new Set(), outcome: new Set(), tags: new Set(), rework: '' },
+    search: '', zoom: Number(store.get('workboard.ui.zoom', '1')) || 1,
+  };
+  let byId = new Map(), byNum = new Map();
+  const listeners = new Map();
+  WB.on = (event, fn) => {
+    if (!listeners.has(event)) listeners.set(event, new Set());
+    listeners.get(event).add(fn);
+    return () => listeners.get(event).delete(fn);
+  };
+  const emit = (event, data) => { for (const fn of listeners.get(event) || []) { try { fn(data); } catch (err) { console.error(err); } } };
+
+  WB.card = ref => {
+    if (ref == null) return null;
+    if (typeof ref === 'number') return byNum.get(ref) || null;
+    const s = String(ref).trim().replace(/^#/, '');
+    return byId.get(s) || (/^\d+$/.test(s) ? byNum.get(Number(s)) : null) || null;
+  };
+  WB.cards = () => (S.doc ? S.doc.cards : []);
+  WB.columns = () => (S.doc ? S.doc.columns : []);
+  WB.colName = id => (WB.columns().find(c => c.id === id)?.name) || ({ backlog: 'Backlog', task: 'Task', inprogress: 'In Progress', done: 'Done', blocked: 'Blocked' })[id] || id;
+  const boardKey = suffix => `workboard.ui.${suffix}::${S.doc?.name || location.port}`;
+
+  function setDoc(doc, meta = {}) {
+    const prev = S.doc;
+    S.doc = doc; S.rev = doc.rev; S.missing = false;
+    byId = new Map(); byNum = new Map();
+    for (const c of doc.cards) { byId.set(c.id, c); byNum.set(c.num, c); }
+    if (S.selectedId && !byId.has(S.selectedId) && WB.panel) WB.panel.update();
+    emit('doc', { doc, prev, meta });
+    scheduleRender(meta);
+  }
+
+  // ── Derived facts ──────────────────────────────────────────────────
+  const depsSatisfied = card => (card.dependsOn || []).every(id => {
+    const d = byId.get(id);
+    return d && d.column === 'done' && d.outcome === 'completed';
+  });
+  const isReady = c => c.column === 'task' && !c.activeOwner && depsSatisfied(c);
+  const inRework = c => !!c.reworkReason && c.column !== 'done';
+  const subtaskStats = card => {
+    let done = 0, total = 0;
+    const walk = list => { for (const s of list || []) { total++; if (s.done) done++; walk(s.children); } };
+    walk(card.subtasks);
+    return { done, total };
+  };
+  WB.facts = { depsSatisfied, isReady, inRework, subtaskStats };
+
+  WB.matches = card => {
+    const f = S.filters;
+    if (f.status.size && !f.status.has(card.column)) return false;
+    if (f.priority.size && !f.priority.has(card.priority || 'none')) return false;
+    if (f.owner.size && !f.owner.has(card.activeOwner || '__unowned')) return false;
+    if (f.outcome.size && !f.outcome.has(card.outcome || 'open')) return false;
+    if (f.rework === 'yes' && !inRework(card)) return false;
+    if (f.rework === 'no' && inRework(card)) return false;
+    if (f.tags.size && !(card.tags || []).some(t => f.tags.has(t))) return false;
+    if (S.search) {
+      const q = S.search.toLowerCase();
+      if (!searchText(card).includes(q)) return false;
+    }
+    return true;
+  };
+  const searchCache = new WeakMap();
+  function searchText(card) {
+    let s = searchCache.get(card);
+    if (!s) {
+      const parts = [`#${card.num}`, card.title, card.code, card.origin, card.notes, card.writeup, ...(card.tags || [])];
+      const walk = list => { for (const t of list || []) { parts.push(t.text); walk(t.children); } };
+      walk(card.subtasks);
+      for (const m of card.comments || []) parts.push(m.text);
+      s = parts.filter(Boolean).join('\n').toLowerCase();
+      searchCache.set(card, s);
+    }
+    return s;
+  }
+  const filtersActive = () => S.search || S.filters.rework || ['status', 'priority', 'owner', 'outcome', 'tags'].some(k => S.filters[k].size);
+
+  // ── DOM helpers ────────────────────────────────────────────────────
+  function h(tag, props, ...children) {
+    const el = document.createElement(tag);
+    if (props) {
+      for (const [k, v] of Object.entries(props)) {
+        if (v == null || v === false) continue;
+        if (k === 'class') el.className = v;
+        else if (k === 'text') el.textContent = v;
+        else if (k === 'attrs') for (const [a, b] of Object.entries(v)) { if (b != null && b !== false) el.setAttribute(a, b === true ? '' : b); }
+        else if (k === 'dataset') Object.assign(el.dataset, v);
+        else if (k === 'style') Object.assign(el.style, v);
+        else if (k === 'on') for (const [e, fn] of Object.entries(v)) el.addEventListener(e, fn);
+        else if (k in el) el[k] = v;
+        else el.setAttribute(k, v);
+      }
+    }
+    append(el, children);
+    return el;
+  }
+  function append(el, children) {
+    for (const child of children) {
+      if (child == null || child === false) continue;
+      if (Array.isArray(child)) append(el, child);
+      else el.append(child instanceof Node ? child : String(child));
+    }
+  }
+  function icon(name, cls = '') {
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', cls ? `i ${cls}` : 'i');
+    svg.setAttribute('aria-hidden', 'true');
+    const use = document.createElementNS(NS, 'use');
+    use.setAttribute('href', `#i-${name}`);
+    svg.append(use);
+    return svg;
+  }
+  const TONES = ['#e5484d', '#e38b18', '#1e9e5a', '#0091b3', '#3b82f6', '#6e56cf', '#c2298a', '#7c7f86'];
+  const toneFor = label => { let n = 0; for (const ch of String(label)) n = (n * 31 + ch.charCodeAt(0)) >>> 0; return TONES[n % TONES.length]; };
+  const initials = label => {
+    const words = String(label || '?').replace(/([a-z])([A-Z])/g, '$1 $2').split(/[\s._-]+/).filter(Boolean);
+    return ((words[0]?.[0] || '?') + (words.length > 1 ? words[1][0] : '')).toUpperCase();
+  };
+  const avatar = (label, cls = '') => h('span', { class: `avatar ${cls}`.trim(), style: { '--tone': toneFor(label) }, title: label, text: initials(label) });
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function relTime(iso) {
+    if (!iso) return '';
+    const t = Date.parse(iso); if (Number.isNaN(t)) return '';
+    const s = (Date.now() - t) / 1000;
+    if (s < 45) return 'now';
+    if (s < 3600) return `${Math.round(s / 60)}m`;
+    if (s < 86400) return `${Math.round(s / 3600)}h`;
+    if (s < 86400 * 30) return `${Math.round(s / 86400)}d`;
+    const d = new Date(t), y = new Date().getFullYear();
+    return `${MONTHS[d.getMonth()]} ${d.getDate()}${d.getFullYear() === y ? '' : `, ${d.getFullYear()}`}`;
+  }
+  const fmtDate = iso => { const d = new Date(iso); return Number.isNaN(+d) ? '' : `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`; };
+  const fmtDateTime = iso => { const d = new Date(iso); return Number.isNaN(+d) ? '' : `${fmtDate(iso)}, ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  const statusDot = col => h('span', { class: 'dot', dataset: { status: col } });
+  const prio = p => h('span', { class: 'prio', dataset: { p: p || 'none' }, title: p ? `Priority: ${p}` : 'No priority' }, h('i'), h('i'), h('i'));
+  const chip = (text, { onRemove, tone } = {}) => h('span', { class: 'chip', style: tone ? { '--tone': tone } : null },
+    tone ? h('span', { class: 'dot' }) : null, text,
+    onRemove ? h('button', { type: 'button', attrs: { 'aria-label': `Remove ${text}` }, on: { click: e => { e.stopPropagation(); onRemove(); } } }, icon('x', 'sm')) : null);
+  const progress = (done, total) => {
+    const bar = h('span', { class: 'progress' }, h('i', { style: { transform: `scaleX(${total ? done / total : 0})` } }));
+    if (total && done === total) bar.style.setProperty('--tone', 'var(--green)');
+    return bar;
+  };
+
+  // ── Layers (menus, dialogs, palette) and toasts ────────────────────
+  const layers = [];
+  const pushLayer = layer => { layers.push(layer); return () => { const i = layers.indexOf(layer); if (i >= 0) layers.splice(i, 1); }; };
+  function leave(el, then) {
+    el.classList.add('out');
+    const done = () => { el.remove(); then?.(); };
+    if (reduceMotion.matches) done(); else setTimeout(done, 130);
+  }
+
+  function toast(message, { action, error = false, ms = 3600 } = {}) {
+    const host = $('#toasts');
+    const el = h('div', { class: `toast${error ? ' error' : ''}`, attrs: { role: error ? 'alert' : 'status' } }, h('span', { text: message }));
+    let timer;
+    const close = () => { clearTimeout(timer); if (el.isConnected) leave(el); };
+    if (action) el.append(h('button', { class: 'btn xs', text: action.label, on: { click: () => { close(); action.run(); } } }));
+    host.append(el);
+    while (host.children.length > 3) host.firstElementChild.remove();
+    timer = setTimeout(close, error ? Math.max(ms, 6000) : ms);
+    el.addEventListener('mouseenter', () => clearTimeout(timer));
+    el.addEventListener('mouseleave', () => { timer = setTimeout(close, 1800); });
+    return close;
+  }
+
+  function menu(anchor, items, { align = 'start', keepOpen = false, onClose } = {}) {
+    const pop = h('div', { class: 'pop', attrs: { role: 'menu' } });
+    const buttons = [];
+    for (const item of items) {
+      if (!item) continue;
+      if (item === 'sep') { pop.append(h('div', { class: 'menu-sep' })); continue; }
+      if (item.header) { pop.append(h('div', { class: 'menu-label', text: item.header })); continue; }
+      if (item.node) { pop.append(item.node); continue; }
+      const btn = h('button', {
+        class: `menu-item${item.danger ? ' danger' : ''}`, type: 'button', disabled: item.disabled,
+        attrs: { role: item.checked === undefined ? 'menuitem' : 'menuitemcheckbox', 'aria-checked': item.checked === undefined ? null : String(!!item.checked) },
+      }, item.iconNode || (item.icon ? icon(item.icon) : null), h('span', { text: item.label }), item.hint ? h('span', { class: 'hint', text: item.hint }) : null);
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        if (item.keep || keepOpen) { item.run?.(btn); return; }
+        close(); item.run?.();
+      });
+      buttons.push(btn); pop.append(btn);
+    }
+    document.body.append(pop);
+    const vw = innerWidth, vh = innerHeight;
+    const pw = pop.offsetWidth, ph = pop.offsetHeight;
+    let x, y, origin;
+    if (anchor instanceof Element) {
+      const r = anchor.getBoundingClientRect();
+      x = align === 'end' ? r.right - pw : r.left; y = r.bottom + 6; origin = align === 'end' ? 'top right' : 'top left';
+      if (y + ph > vh - 8 && r.top - ph - 6 > 8) { y = r.top - ph - 6; origin = origin.replace('top', 'bottom'); }
+    } else { x = anchor.x; y = anchor.y; origin = 'top left'; if (y + ph > vh - 8) y = Math.max(8, vh - ph - 8); }
+    x = Math.max(8, Math.min(x, vw - pw - 8)); y = Math.max(8, y);
+    Object.assign(pop.style, { left: `${x}px`, top: `${y}px`, '--origin': origin });
+    let active = -1;
+    const focusItem = i => { active = (i + buttons.length) % buttons.length; buttons.forEach((b, j) => b.classList.toggle('active', j === active)); buttons[active]?.focus({ preventScroll: true }); };
+    const onKey = e => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); focusItem(active + 1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); focusItem(active - 1); }
+    };
+    const onDown = e => { if (!pop.contains(e.target) && !(anchor instanceof Element && anchor.contains(e.target))) close(); };
+    pop.addEventListener('keydown', onKey);
+    setTimeout(() => document.addEventListener('pointerdown', onDown, true));
+    let closed = false;
+    const unlayer = pushLayer({ close: () => close() });
+    function close() {
+      if (closed) return; closed = true;
+      unlayer(); document.removeEventListener('pointerdown', onDown, true);
+      leave(pop); onClose?.();
+      if (anchor instanceof Element) anchor.setAttribute('aria-expanded', 'false');
+    }
+    if (anchor instanceof Element) anchor.setAttribute('aria-expanded', 'true');
+    return { close, el: pop };
+  }
+
+  function dialog({ title, body, fields = [], ok = 'Confirm', danger = false, cancel = 'Cancel' }) {
+    return new Promise(resolve => {
+      const back = document.activeElement;
+      const scrim = h('div', { class: 'scrim' });
+      const inputs = {};
+      const form = h('form', { class: 'dialog', attrs: { role: 'dialog', 'aria-modal': 'true', 'aria-label': title } });
+      form.append(h('h2', { text: title }));
+      if (body) form.append(h('p', { text: body }));
+      for (const f of fields) {
+        const id = `dlg-${f.name}`;
+        let input;
+        if (f.options) input = h('select', { class: 'input', id }, f.options.map(o => h('option', { value: o.value, text: o.label, selected: o.value === f.value })));
+        else if (f.multiline) input = h('textarea', { class: 'input', id, rows: 3, placeholder: f.placeholder || '', value: f.value || '', style: { height: 'auto', padding: '8px 10px', resize: 'vertical', fieldSizing: 'content', minHeight: '72px', maxHeight: '40vh' } });
+        else input = h('input', { class: 'input', id, type: f.type || 'text', placeholder: f.placeholder || '', value: f.value || '' });
+        inputs[f.name] = input;
+        form.append(h('label', { attrs: { for: id }, text: f.label }), input);
+      }
+      const okBtn = h('button', { class: `btn ${danger ? 'danger outline' : 'primary'}`, type: 'submit', text: ok });
+      form.append(h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', text: cancel, on: { click: () => finish(null) } }), okBtn));
+      const validate = () => { okBtn.disabled = fields.some(f => f.required && !String(inputs[f.name].value).trim()); };
+      form.addEventListener('input', validate); validate();
+      form.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && e.target.tagName === 'TEXTAREA' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); }
+      });
+      form.addEventListener('submit', e => {
+        e.preventDefault();
+        if (okBtn.disabled) return;
+        const values = {};
+        for (const f of fields) values[f.name] = f.options ? inputs[f.name].value : String(inputs[f.name].value).trim();
+        finish(values);
+      });
+      scrim.addEventListener('pointerdown', () => finish(null));
+      const unlayer = pushLayer({ close: () => finish(null) });
+      let done = false;
+      function finish(value) {
+        if (done) return; done = true; unlayer();
+        leave(form); leave(scrim);
+        back?.focus?.({ preventScroll: true });
+        resolve(value);
+      }
+      document.body.append(scrim, form);
+      (Object.values(inputs)[0] || okBtn).focus();
+    });
+  }
+  const confirm = ({ title, body, ok = 'Confirm', danger = false }) => dialog({ title, body, ok, danger }).then(v => v !== null);
+  const prompt = opts => dialog(opts);
+
+  WB.ui = { h, icon, toast, menu, confirm, prompt, avatar, tone: toneFor, relTime, fmtDate, fmtDateTime, statusDot, prio, chip, progress, renderCard: card => cardElement(card, false) };
+
+  // ── Server API ─────────────────────────────────────────────────────
+  async function request(method, path, { body, headers = {}, raw = false } = {}) {
+    const init = { method, headers: { ...headers }, cache: 'no-store' };
+    if (body !== undefined) {
+      if (raw) init.body = body;
+      else { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
+    }
+    const res = await fetch(path, init);
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
+    if (!res.ok) {
+      const err = new Error(data?.error || `${res.status} ${res.statusText}`);
+      err.status = res.status; err.data = data;
+      throw err;
+    }
+    return data;
+  }
+  let writeChain = Promise.resolve();
+  const serial = fn => { const p = writeChain.then(fn, fn); writeChain = p.catch(() => {}); return p; };
+  function write(method, path, payloadFn, { raw, headers, quiet } = {}) {
+    return serial(async () => {
+      try {
+        const res = raw
+          ? await request(method, path, { body: raw, raw: true, headers: { ...headers, 'X-Board-Base-Rev': String(S.rev), 'X-WorkBoard-Actor': encodeURIComponent(S.actor) } })
+          : await request(method, path, { body: { baseRev: S.rev, actor: S.actor, ...payloadFn() } });
+        if (res?.document) setDoc(res.document, { source: 'self' });
+        return { ok: true, res };
+      } catch (err) {
+        reportWriteError(err, quiet);
+        return { ok: false, status: err.status, error: err.message, data: err.data };
+      }
+    });
+  }
+  function reportWriteError(err, quiet) {
+    if (err.status === 410) { enterMissing(); return; }
+    if (err.status === 409 && err.data?.conflict && err.data?.rev != null) {
+      toast('The board changed while you were working, so this change was not saved. Latest state loaded — try again.', { error: true, ms: 7000 });
+      refresh();
+      return;
+    }
+    if (!quiet) toast(err.message || 'Save failed', { error: true });
+    if (err.status === 409 || err.status === 422) refresh();
+  }
+  const enc = s => encodeURIComponent(s);
+  WB.api = {
+    get: path => request('GET', path),
+    patchCard: (id, fields, { position } = {}) => write('PATCH', `/api/card/${enc(id)}`, () => ({ card: fields, ...(position ? { position } : {}) })),
+    lifecycle: (id, action, details = {}) => write('PATCH', `/api/card/${enc(id)}/lifecycle`, () => ({ action, details })),
+    structure: operation => write('PATCH', '/api/structure', () => ({ operation })),
+    comment: (id, operation) => write('PATCH', `/api/card/${enc(id)}/comments`, () => ({ operation })),
+    upload: (id, file) => {
+      if (file.size > 10 * 1024 * 1024) { toast(`${file.name} is larger than 10 MiB`, { error: true }); return Promise.resolve({ ok: false, status: 413 }); }
+      const mime = /^[\w.+-]+\/[\w.+-]+$/.test(file.type) ? file.type : 'application/octet-stream';
+      return write('POST', `/api/card/${enc(id)}/attachments?name=${enc(file.name)}`, null, { raw: file, headers: { 'Content-Type': mime } });
+    },
+    detach: (id, attId) => write('DELETE', `/api/card/${enc(id)}/attachments/${enc(attId)}`, () => ({})),
+    attachmentUrl: (id, attId) => `/api/card/${enc(id)}/attachments/${enc(attId)}`,
+  };
+
+  // ── Live sync ──────────────────────────────────────────────────────
+  let refreshing = null, refreshAgain = false;
+  async function refresh() {
+    if (refreshing) { refreshAgain = true; return refreshing; }
+    refreshing = (async () => {
+      try {
+        const doc = await request('GET', '/board.json');
+        if (!S.doc || doc.rev !== S.rev || S.missing) setDoc(doc, { source: 'remote' });
+      } catch (err) {
+        if (err.status === 410) enterMissing(); else setLive('down');
+      } finally {
+        refreshing = null;
+        if (refreshAgain) { refreshAgain = false; refresh(); }
+      }
+    })();
+    return refreshing;
+  }
+  WB.refresh = refresh;
+  let events = null;
+  function connect() {
+    events?.close();
+    events = new EventSource('/events');
+    events.onopen = () => { setLive('live'); refresh(); };
+    events.addEventListener('resync-required', () => refresh());
+    events.addEventListener('board-missing', () => enterMissing());
+    events.onerror = () => setLive('stale');
+  }
+  function setLive(state) {
+    if (S.missing && state !== 'down') state = 'down';
+    S.live = state;
+    const el = $('#live');
+    el.className = `live${state === 'live' ? '' : state === 'stale' || state === 'connecting' ? ' stale' : ' down'}`;
+    el.title = state === 'live' ? 'Live — changes appear instantly' : state === 'down' ? 'Board unavailable' : 'Reconnecting…';
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+
+  // ── Card element ───────────────────────────────────────────────────
+  function cardSig(card) {
+    const st = subtaskStats(card);
+    return [card.title, card.num, card.priority, card.column, (card.tags || []).join('\u0001'), card.activeOwner, card.outcome,
+      card.reworkReason ? 1 : 0, card.blockedReason, card.unblockWhen, st.done, st.total, (card.comments || []).length,
+      (card.attachments || []).length, (card.dependsOn || []).length, depsSatisfied(card) ? 1 : 0, card.cancelReason,
+      card.updatedAt, isActiveWork(card) ? 1 : 0].join('\u0002');
+  }
+  const isActiveWork = card => S.doc && (S.doc.activeWorkId === card.id || Object.values(S.doc.activeWork || {}).includes(card.id));
+  function cardBadges(card) {
+    const out = [];
+    if (card.column === 'done' && card.outcome === 'canceled') out.push(['Canceled', 'var(--gray)']);
+    else if (inRework(card)) out.push(['Rework', 'var(--amber)']);
+    if (card.column === 'inprogress') {
+      const st = subtaskStats(card);
+      if (st.total && st.done === st.total) out.push(['Ready to close', 'var(--green)']);
+      else if (Date.now() - Date.parse(card.updatedAt) > 86400000) out.push(['Stale', 'var(--amber)']);
+    }
+    if ((card.column === 'task' || card.column === 'backlog') && (card.dependsOn || []).length && !depsSatisfied(card)) out.push(['Waiting', 'var(--violet)']);
+    return out;
+  }
+  function fillCard(el, card) {
+    const st = subtaskStats(card);
+    el.dataset.status = card.column;
+    el.classList.toggle('is-done', card.column === 'done');
+    el.classList.toggle('is-canceled', card.outcome === 'canceled');
+    el.classList.toggle('active-work', !!isActiveWork(card));
+    el.setAttribute('aria-label', `Open card #${card.num}: ${card.title}`);
+    const top = h('div', { class: 'card-top' },
+      card.priority ? prio(card.priority) : null,
+      card.column === 'done' && card.outcome === 'completed' ? icon('done', 'sm') : null,
+      h('span', { class: 'ref', text: `#${card.num}` }),
+      cardBadges(card).map(([label, tone]) => h('span', { class: 'badge', style: { '--tone': tone }, text: label })),
+      h('span', { class: 'when', title: `Updated ${fmtDateTime(card.updatedAt)}`, text: relTime(card.updatedAt) }),
+      card.activeOwner ? avatar(card.activeOwner) : null);
+    if (card.column === 'done' && card.outcome === 'completed') top.querySelector('svg').style.color = 'var(--green)';
+    const foot = h('div', { class: 'card-foot' });
+    const tags = card.tags || [];
+    for (const t of tags.slice(0, 3)) foot.append(h('span', { class: 'chip', text: t }));
+    if (tags.length > 3) foot.append(h('span', { class: 'chip', text: `+${tags.length - 3}`, title: tags.slice(3).join(', ') }));
+    if (st.total) foot.append(h('span', { class: 'meta', title: `${st.done} of ${st.total} subtasks done` }, progress(st.done, st.total), `${st.done}/${st.total}`));
+    if ((card.comments || []).length) foot.append(h('span', { class: 'meta', title: 'Comments' }, icon('comment'), card.comments.length));
+    if ((card.attachments || []).length) foot.append(h('span', { class: 'meta', title: 'Files' }, icon('clip'), card.attachments.length));
+    if ((card.dependsOn || []).length) foot.append(h('span', { class: 'meta', title: depsSatisfied(card) ? 'Prerequisites complete' : 'Waiting on prerequisites' }, icon('link'), card.dependsOn.length));
+    const parts = [top, h('div', { class: 'card-title', text: card.title || 'Untitled' }), foot];
+    if (card.column === 'blocked' && (card.blockedReason || card.unblockWhen)) {
+      parts.push(h('div', { class: 'card-note', title: `Blocked by: ${card.blockedReason || '—'}\nUnblocks when: ${card.unblockWhen || '—'}` }, h('span', { text: `${card.blockedReason || 'Blocked'}${card.unblockWhen ? ` · until ${card.unblockWhen}` : ''}` })));
+    }
+    el.replaceChildren(...parts);
+  }
+  function cardElement(card, board = true) {
+    const el = h('article', { class: 'card', tabIndex: 0, attrs: { role: 'button' }, dataset: { id: card.id } });
+    if (board) el.draggable = true;
+    else {
+      el.addEventListener('click', () => WB.openCard(card.id));
+      el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); WB.openCard(card.id); } });
+    }
+    fillCard(el, card);
+    if (card.id === S.selectedId) el.classList.add('selected');
+    return el;
+  }
+
+  // ── Board rendering (keyed, incremental) ───────────────────────────
+  const board = $('#board');
+  const lanes = new Map();      // colId -> {stack?, lane, body, count, name, empty, more, composer}
+  const cardEls = new Map();    // cardId -> {el, sig}
+  let layoutSig = '';
+  const groupCollapsed = new Set();
+  const laneLimit = new Map();  // colId -> visible cap
+
+  function buildLanes() {
+    const cols = WB.columns();
+    const roots = cols.filter(c => !c.stackUnder || !cols.some(p => p.id === c.stackUnder));
+    const nodes = [];
+    for (const root of roots) {
+      const stack = h('div', { class: 'stack', dataset: { root: root.id } });
+      for (const col of [root, ...cols.filter(c => c.stackUnder === root.id)]) {
+        let lane = lanes.get(col.id);
+        if (!lane) lane = createLane(col);
+        lane.name.textContent = col.name;
+        stack.append(lane.lane);
+      }
+      nodes.push(stack);
+    }
+    board.replaceChildren(...nodes);
+  }
+  function createLane(col) {
+    const name = h('span', { class: 'name' });
+    const count = h('span', { class: 'count num' });
+    const grip = h('button', { class: 'btn icon xs grip', draggable: true, title: 'Drag to reorder · drop on the lower part of another column to stack', attrs: { 'aria-label': 'Move column' }, dataset: { laneGrip: col.id } }, icon('grip', 'sm'));
+    const add = h('button', { class: 'btn icon xs', title: 'Add card', attrs: { 'aria-label': 'Add card' }, dataset: { laneAdd: col.id } }, icon('plus', 'sm'));
+    const body = h('div', { class: 'lane-body', dataset: { col: col.id } });
+    const lane = h('section', { class: 'lane', dataset: { col: col.id, status: col.id }, attrs: { 'aria-label': col.name } },
+      h('header', { class: 'lane-head' }, h('span', { class: col.id === 'task' || col.id === 'backlog' ? 'ring' : 'dot', dataset: { status: col.id } }), name, count,
+        h('span', { class: 'tools' }, CORE.slice(0, 3).includes(col.id) ? add : null, grip)),
+      body);
+    const entry = { lane, body, name, count, empty: h('div', { class: 'lane-empty', text: 'No cards' }), more: null, composer: null };
+    lanes.set(col.id, entry);
+    return entry;
+  }
+
+  function doneGroupLabel(iso) {
+    if (!iso) return 'Earlier';
+    const d = new Date(iso), today = new Date();
+    const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const diff = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()) - day) / 86400000);
+    if (diff === 0) return 'Today';
+    if (diff === 1) return 'Yesterday';
+    if (diff < 7) return `${diff} days ago`;
+    return fmtDate(iso);
+  }
+  const groupHeads = new Map(); // key -> element
+
+  let renderQueued = false, pendingMeta = null;
+  function scheduleRender(meta) {
+    pendingMeta = meta?.source === 'remote' || pendingMeta?.source === 'remote' ? { source: 'remote' } : meta;
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(() => { renderQueued = false; const m = pendingMeta; pendingMeta = null; renderAll(m); });
+  }
+  function renderAll(meta) {
+    if (!S.doc) return;
+    renderChrome();
+    if (S.view === 'board') renderBoard(meta); else WB.views?.update(S.view, viewInner);
+    if (S.selectedId && WB.panel) WB.panel.update();
+  }
+
+  function renderBoard(meta = {}) {
+    const cols = WB.columns();
+    const sig = JSON.stringify(cols.map(c => [c.id, c.name, c.stackUnder || null]));
+    if (sig !== layoutSig) { buildLanes(); layoutSig = sig; }
+    const animate = meta.source === 'remote' && !reduceMotion.matches;
+    const before = animate ? captureRects() : null;
+    const groups = new Map(cols.map(c => [c.id, []]));
+    const seen = new Set();
+    for (const card of WB.cards()) {
+      seen.add(card.id);
+      if (WB.matches(card)) groups.get(card.column)?.push(card);
+    }
+    const changed = [];
+    for (const col of cols) {
+      const lane = lanes.get(col.id);
+      const list = groups.get(col.id) || [];
+      const total = WB.cards().filter(c => c.column === col.id).length;
+      lane.count.textContent = list.length === total ? String(total) : `${list.length}/${total}`;
+      const wip = col.wipLimit;
+      lane.count.classList.toggle('over', !!wip && total > wip);
+      if (wip) lane.count.textContent += ` / ${wip}`;
+      reconcile(lane.body, laneNodes(col, list, changed, meta));
+    }
+    for (const [id, entry] of cardEls) if (!seen.has(id)) { cardEls.delete(id); entry.el.remove(); }
+    if (before) playFlip(before, changed);
+  }
+  function laneNodes(col, list, changed, meta) {
+    const lane = lanes.get(col.id);
+    const nodes = [];
+    const cap = laneLimit.get(col.id) || (col.id === 'done' ? 40 : 150);
+    let items = list;
+    if (col.id === 'done') items = [...list].sort((a, b) => String(b.doneAt || b.updatedAt).localeCompare(String(a.doneAt || a.updatedAt)));
+    const shown = items.slice(0, cap);
+    if (col.id === 'done') {
+      let current = null, groupIndex = -1;
+      const counts = new Map();
+      for (const c of shown) { const k = doneGroupLabel(c.doneAt); counts.set(k, (counts.get(k) || 0) + 1); }
+      for (const c of shown) {
+        const key = doneGroupLabel(c.doneAt);
+        if (key !== current) {
+          current = key; groupIndex++;
+          let head = groupHeads.get(key);
+          if (!head) {
+            head = h('button', { class: 'group-head', type: 'button', dataset: { group: key } }, icon('down', 'sm'), h('span', { text: key }), h('span', { class: 'count' }));
+            groupHeads.set(key, head);
+          }
+          head.setAttribute('aria-expanded', String(!groupCollapsed.has(key)));
+          head.lastChild.textContent = counts.get(key);
+          nodes.push(head);
+        }
+        if (!groupCollapsed.has(key)) nodes.push(cardNode(c, changed, meta));
+      }
+    } else {
+      for (const c of shown) nodes.push(cardNode(c, changed, meta));
+    }
+    if (items.length > shown.length) {
+      lane.more = lane.more || h('button', { class: 'btn more-btn', type: 'button', dataset: { laneMore: col.id } });
+      lane.more.textContent = `Show ${Math.min(60, items.length - shown.length)} more`;
+      nodes.push(lane.more);
+    }
+    if (!list.length) nodes.push(lane.empty);
+    if (lane.composer) nodes.push(lane.composer);
+    return nodes;
+  }
+  function cardNode(card, changed, meta) {
+    const sig = cardSig(card);
+    let entry = cardEls.get(card.id);
+    if (!entry) {
+      entry = { el: cardElement(card), sig };
+      cardEls.set(card.id, entry);
+      if (meta.source === 'remote' && layoutSig) entry.el.classList.add('enter');
+      changed.push(entry.el);
+    } else if (entry.sig !== sig) {
+      fillCard(entry.el, card);
+      entry.sig = sig;
+      if (meta.source === 'remote') { entry.el.classList.remove('flash'); void entry.el.offsetWidth; entry.el.classList.add('flash'); }
+    }
+    return entry.el;
+  }
+  function reconcile(parent, nodes) {
+    let cursor = parent.firstChild;
+    for (const node of nodes) {
+      if (node === cursor) { cursor = cursor.nextSibling; continue; }
+      parent.insertBefore(node, cursor);
+    }
+    while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
+  }
+  function captureRects() {
+    const rects = new Map();
+    const vh = innerHeight;
+    for (const [id, { el }] of cardEls) {
+      if (!el.isConnected) continue;
+      const r = el.getBoundingClientRect();
+      if (r.bottom > -200 && r.top < vh + 200) rects.set(el, r);
+    }
+    return rects;
+  }
+  function playFlip(before, changed) {
+    let n = 0;
+    for (const [el, r] of before) {
+      if (!el.isConnected || n > 80) continue;
+      const a = el.getBoundingClientRect();
+      const dx = r.left - a.left, dy = r.top - a.top;
+      if (Math.abs(dx) + Math.abs(dy) < 2) continue;
+      n++;
+      el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 320, easing: 'cubic-bezier(.65,0,.35,1)' });
+    }
+    for (const el of changed) el.addEventListener('animationend', () => el.classList.remove('enter', 'flash'), { once: true });
+  }
+  // Optimistic local move with FLIP, before the server confirms.
+  function localMove(cardId, colId, beforeId) {
+    const entry = cardEls.get(cardId); const lane = lanes.get(colId);
+    if (!entry || !lane) return;
+    const rects = reduceMotion.matches ? null : captureRects();
+    const target = beforeId ? cardEls.get(beforeId)?.el : null;
+    lane.body.insertBefore(entry.el, target && target.parentNode === lane.body ? target : lane.composer || lane.empty.parentNode === lane.body && lane.empty || null);
+    lane.empty.remove();
+    if (rects) playFlip(rects, []);
+  }
+
+  // Live relative times.
+  setInterval(() => {
+    for (const [id, { el }] of cardEls) {
+      const card = byId.get(id); const when = el.querySelector('.when');
+      if (card && when) { const t = relTime(card.updatedAt); if (when.textContent !== t) when.textContent = t; }
+    }
+  }, 60000);
+
+  // ── Selection / panel ──────────────────────────────────────────────
+  WB.openCard = id => {
+    const card = WB.card(id);
+    if (!card) return;
+    if (S.selectedId && S.selectedId !== card.id) cardEls.get(S.selectedId)?.el.classList.remove('selected');
+    S.selectedId = card.id;
+    cardEls.get(card.id)?.el.classList.add('selected');
+    WB.panel?.open(card.id);
+    history.replaceState(null, '', `#${card.num}`);
+    emit('select', card.id);
+  };
+  WB.closeCard = () => {
+    if (!S.selectedId) return;
+    cardEls.get(S.selectedId)?.el.classList.remove('selected');
+    S.selectedId = null;
+    WB.panel?.close();
+    history.replaceState(null, '', location.pathname + location.search);
+    emit('select', null);
+  };
+
+  // ── Lifecycle flows (dialogs) ──────────────────────────────────────
+  const ref = card => `#${card.num}`;
+  async function flow(id, run) { const card = WB.card(id); if (!card) return { ok: false }; return run(card); }
+  const A = WB.actions = {
+    start: id => flow(id, c => WB.api.lifecycle(c.id, 'start')),
+    complete: id => flow(id, async c => {
+      const v = await prompt({ title: `Complete ${ref(c)}`, body: c.title, ok: 'Complete', fields: [
+        { name: 'summary', label: 'What shipped', multiline: true, required: true, placeholder: 'The change and why it matters' },
+        { name: 'verification', label: 'How it was verified', multiline: true, required: true, placeholder: 'Checks, tests, or evidence' }] });
+      if (!v) return { ok: false };
+      if (c.column !== 'inprogress') { const s = await WB.api.lifecycle(c.id, 'start'); if (!s.ok) return s; }
+      const r = await WB.api.lifecycle(c.id, 'submit', v);
+      if (r.ok) toast(`Completed ${ref(c)}`);
+      return r;
+    }),
+    block: id => flow(id, async c => {
+      const v = await prompt({ title: `Block ${ref(c)}`, body: c.title, ok: 'Block', fields: [
+        { name: 'reason', label: 'What is blocking it', required: true, multiline: true },
+        { name: 'until', label: 'Unblocks when', required: true, placeholder: 'An observable condition' }] });
+      return v ? WB.api.lifecycle(c.id, 'block', v) : { ok: false };
+    }),
+    resume: id => flow(id, async c => {
+      const v = await prompt({ title: `Resume ${ref(c)}`, body: c.blockedReason ? `Blocked by: ${c.blockedReason}` : c.title, ok: 'Resume', fields: [
+        { name: 'note', label: 'How it was resolved', required: true, multiline: true },
+        { name: 'to', label: 'Continue in', value: 'inprogress', options: [{ value: 'inprogress', label: 'In Progress' }, { value: 'task', label: 'Task' }] }] });
+      return v ? WB.api.lifecycle(c.id, 'resume', v) : { ok: false };
+    }),
+    reasoned: (id, action, title, label, ok, extra = {}) => flow(id, async c => {
+      const v = await prompt({ title: `${title} ${ref(c)}`, body: c.title, ok, fields: [{ name: action === 'improve' ? 'text' : 'reason', label, required: true, multiline: true }] });
+      return v ? WB.api.lifecycle(c.id, action, { ...v, ...extra }) : { ok: false };
+    }),
+    cancel: id => A.reasoned(id, 'cancel', 'Cancel', 'Why is it being canceled?', 'Cancel card'),
+    rework: id => A.reasoned(id, 'rework', 'Return', 'What needs another pass?', 'Return for rework'),
+    bug: id => A.reasoned(id, 'bug', 'Reopen', 'What is broken?', 'Reopen as bug'),
+    improve: id => A.reasoned(id, 'improve', 'Improve', 'What should be improved?', 'Reopen'),
+    takeover: id => A.reasoned(id, 'takeover', 'Take over', 'Why are you taking over?', 'Take over'),
+    reopen: id => flow(id, async c => {
+      const v = await prompt({ title: `Reopen ${ref(c)}`, body: c.title, ok: 'Reopen', fields: [
+        { name: 'reason', label: 'Why reopen it?', required: true, multiline: true },
+        { name: 'to', label: 'Reopen into', value: 'task', options: [{ value: 'task', label: 'Task' }, { value: 'inprogress', label: 'In Progress' }] }] });
+      return v ? WB.api.lifecycle(c.id, 'reopen', { reason: v.reason, to: v.to, as: 'task' }) : { ok: false };
+    }),
+    followUp: id => flow(id, async c => {
+      const v = await prompt({ title: `Follow-up to ${ref(c)}`, body: c.title, ok: 'Create', fields: [{ name: 'title', label: 'Title', required: true }] });
+      if (!v) return { ok: false };
+      const r = await WB.api.structure({ type: 'create-follow-up', sourceCardId: c.id, card: { id: newCardId(v.title), title: v.title, column: 'task' } });
+      if (r.ok && r.res.card) WB.openCard(r.res.card.id);
+      return r;
+    }),
+    workpad: id => flow(id, c => WB.api.lifecycle(c.id, 'workpad')),
+    del: id => flow(id, async c => {
+      const yes = await confirm({ title: `Delete ${ref(c)}?`, body: `“${c.title}” will be removed from the board. It can only be recovered from a board backup.`, ok: 'Delete', danger: true });
+      if (!yes) return { ok: false };
+      const r = await WB.api.structure({ type: 'delete-card', cardId: c.id });
+      if (r.ok) { if (S.selectedId === c.id) WB.closeCard(); toast(`Deleted ${ref(c)}`); }
+      return r;
+    }),
+    copyRef: id => flow(id, async c => {
+      const text = `#${c.num} ${c.title}`;
+      try { await navigator.clipboard.writeText(text); toast(`Copied ${ref(c)}`); } catch { toast(text); }
+      return { ok: true };
+    }),
+    primaryFor: card => {
+      if (!card) return null;
+      if (card.column === 'backlog' || card.column === 'task') return { label: 'Start', icon: 'play', run: () => A.start(card.id) };
+      if (card.column === 'inprogress') {
+        if (card.activeOwner && card.activeOwner !== S.actor) return { label: 'Take over', icon: 'hand', run: () => A.takeover(card.id) };
+        return { label: 'Complete', icon: 'check', run: () => A.complete(card.id) };
+      }
+      if (card.column === 'blocked') return { label: 'Resume', icon: 'play', run: () => A.resume(card.id) };
+      if (card.column === 'done') return { label: 'Reopen', icon: 'rework', run: () => A.reopen(card.id) };
+      return null;
+    },
+    menuFor: card => {
+      const id = card.id, col = card.column, items = [];
+      if (col === 'backlog' || col === 'task') items.push({ label: 'Start', icon: 'play', run: () => A.start(id) });
+      if (col === 'inprogress') items.push({ label: 'Complete…', icon: 'check', run: () => A.complete(id) });
+      if (col === 'inprogress' && card.activeOwner && card.activeOwner !== S.actor) items.push({ label: 'Take over…', icon: 'hand', run: () => A.takeover(id) });
+      if (col === 'blocked') items.push({ label: 'Resume…', icon: 'play', run: () => A.resume(id) });
+      if (col !== 'done' && col !== 'blocked') items.push({ label: 'Block…', icon: 'blocked', run: () => A.block(id) });
+      if (col === 'done') {
+        items.push({ label: 'Reopen…', icon: 'rework', run: () => A.reopen(id) },
+          { label: 'Reopen as bug…', icon: 'bug', run: () => A.bug(id) },
+          { label: 'Improve…', icon: 'spark', run: () => A.improve(id) },
+          { label: 'Create follow-up…', icon: 'plus', run: () => A.followUp(id) });
+      } else {
+        items.push({ label: 'Return for rework…', icon: 'rework', run: () => A.rework(id) },
+          { label: 'Cancel card…', icon: 'canceled', run: () => A.cancel(id) });
+      }
+      items.push('sep', { label: 'Add acceptance template', icon: 'edit', run: () => A.workpad(id) },
+        { label: 'Copy reference', icon: 'copy', hint: `#${card.num}`, run: () => A.copyRef(id) },
+        'sep', { label: 'Delete…', icon: 'trash', danger: true, run: () => A.del(id) });
+      return items;
+    },
+    statusMenuFor: card => [{ header: 'Move to' }, ...WB.columns().map(col => ({
+      label: col.name, iconNode: statusDot(col.id), checked: col.id === card.column,
+      run: () => { if (col.id !== card.column) moveCard(card.id, col.id); },
+    }))],
+  };
+
+  // Route a status change through the right lifecycle flow.
+  async function moveCard(id, to, position) {
+    const card = WB.card(id);
+    if (!card || (card.column === to && !position)) return { ok: false };
+    const from = card.column;
+    if (from === to) return reorder(card, position);
+    if (to === 'done') return A.complete(id);
+    if (to === 'blocked') return A.block(id);
+    if (from === 'blocked') {
+      if (to === 'backlog') { toast('Resume the card into Task or In Progress first'); return { ok: false }; }
+      return flow(id, async c => {
+        const v = await prompt({ title: `Resume ${ref(c)}`, body: c.blockedReason ? `Blocked by: ${c.blockedReason}` : c.title, ok: 'Resume', fields: [{ name: 'note', label: 'How it was resolved', required: true, multiline: true }] });
+        return v ? WB.api.lifecycle(c.id, 'resume', { note: v.note, to }) : { ok: false };
+      });
+    }
+    if (from === 'done') {
+      if (to === 'backlog') { toast('Reopen the card into Task or In Progress first'); return { ok: false }; }
+      return flow(id, async c => {
+        const v = await prompt({ title: `Reopen ${ref(c)}`, body: c.title, ok: 'Reopen', fields: [{ name: 'reason', label: 'Why reopen it?', required: true, multiline: true }] });
+        return v ? WB.api.lifecycle(c.id, 'reopen', { reason: v.reason, to, as: 'task' }) : { ok: false };
+      });
+    }
+    if (to === 'inprogress') {
+      localMove(id, to, position?.before);
+      const r = await WB.api.lifecycle(id, 'start');
+      if (r.ok && position) await WB.api.patchCard(id, {}, { position });
+      return r;
+    }
+    localMove(id, to, position?.before);
+    const r = await WB.api.patchCard(id, { column: to }, position ? { position } : undefined);
+    if (r.ok) pushUndo(`Moved ${ref(card)} to ${WB.colName(to)}`, () => WB.api.patchCard(id, { column: from }), () => WB.api.patchCard(id, { column: to }));
+    return r;
+  }
+  async function reorder(card, position) {
+    const cards = WB.cards().filter(c => c.column === card.column);
+    const i = cards.findIndex(c => c.id === card.id);
+    const prevPos = cards[i + 1] ? { before: cards[i + 1].id } : cards[i - 1] ? { after: cards[i - 1].id } : null;
+    localMove(card.id, card.column, position.before);
+    const r = await WB.api.patchCard(card.id, {}, { position });
+    if (r.ok && prevPos) pushUndo(`Reordered ${ref(card)}`, () => WB.api.patchCard(card.id, {}, { position: prevPos }), () => WB.api.patchCard(card.id, {}, { position }));
+    return r;
+  }
+  WB.moveCard = moveCard;
+
+  // ── Undo (inverse server writes; never snapshot saves) ─────────────
+  const undoStack = [], redoStack = [];
+  function pushUndo(label, undo, redo) {
+    undoStack.push({ label, undo, redo }); redoStack.length = 0;
+    if (undoStack.length > 50) undoStack.shift();
+    toast(label, { action: { label: 'Undo', run: () => runUndo() } });
+  }
+  async function runUndo() {
+    const item = undoStack.pop();
+    if (!item) { toast('Nothing to undo'); return; }
+    const r = await item.undo();
+    if (r?.ok) { redoStack.push(item); toast(`Undid: ${item.label}`); }
+  }
+  async function runRedo() {
+    const item = redoStack.pop();
+    if (!item) { toast('Nothing to redo'); return; }
+    const r = await item.redo();
+    if (r?.ok) { undoStack.push(item); toast(`Redid: ${item.label}`); }
+  }
+  WB.undo = { push: pushUndo, run: runUndo, redo: runRedo };
+
+  // ── Card creation ──────────────────────────────────────────────────
+  function newCardId(title) {
+    const slug = String(title).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32).replace(/-+$/, '');
+    const hex = crypto.randomUUID().replace(/-/g, '');
+    return slug ? `${slug}-${hex}` : hex;
+  }
+  async function createCard({ title, column = 'task', priority = null, open = false }) {
+    const card = { id: newCardId(title), title: title.trim(), column };
+    if (priority) card.priority = priority;
+    const r = await WB.api.structure({ type: 'create-card', card });
+    if (r.ok && open && r.res.card) WB.openCard(r.res.card.id);
+    return r;
+  }
+  WB.createCard = createCard;
+  function openComposer(colId) {
+    if (S.view !== 'board') WB.setView('board');
+    const lane = lanes.get(colId);
+    if (!lane) return;
+    if (!lane.composer) {
+      const input = h('textarea', { class: 'field', rows: 1, placeholder: 'Card title…', attrs: { 'aria-label': `New card in ${WB.colName(colId)}` }, style: { fontWeight: '500' } });
+      const box = h('div', { class: 'card', style: { cursor: 'text', padding: '6px' } }, input,
+        h('div', { style: { display: 'flex', gap: '6px', justifyContent: 'flex-end', marginTop: '4px' } },
+          h('button', { class: 'btn xs', type: 'button', text: 'Cancel', on: { click: () => closeComposer(colId) } }),
+          h('button', { class: 'btn xs primary', type: 'button', text: 'Add', on: { click: () => submit() } })));
+      const submit = async () => {
+        const title = input.value.trim();
+        if (!title) return;
+        input.value = '';
+        const r = await createCard({ title, column: colId });
+        if (!r.ok) input.value = title;
+        input.focus();
+      };
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeComposer(colId); }
+      });
+      lane.composer = box;
+    }
+    lane.body.append(lane.composer);
+    lane.composer.classList.add('enter');
+    lane.composer.querySelector('textarea').focus();
+    lane.composer.scrollIntoView({ block: 'nearest', behavior: reduceMotion.matches ? 'auto' : 'smooth' });
+  }
+  function closeComposer(colId) {
+    const lane = lanes.get(colId);
+    if (!lane?.composer) return;
+    lane.composer.remove(); lane.composer = null;
+    if (!lane.body.querySelector('.card')) lane.body.append(lane.empty);
+  }
+  async function newCardDialog() {
+    const v = await prompt({ title: 'New card', ok: 'Create card', fields: [
+      { name: 'title', label: 'Title', required: true, placeholder: 'What needs doing?' },
+      { name: 'column', label: 'Column', value: 'task', options: [{ value: 'task', label: 'Task' }, { value: 'backlog', label: 'Backlog' }, { value: 'inprogress', label: 'In Progress' }] },
+      { name: 'priority', label: 'Priority', value: '', options: [{ value: '', label: 'No priority' }, { value: 'critical', label: 'Critical' }, { value: 'mid', label: 'Mid' }, { value: 'low', label: 'Low' }] }] });
+    if (v) createCard({ title: v.title, column: v.column, priority: v.priority || null, open: true });
+  }
+
+  // ── Board interactions (delegated) ─────────────────────────────────
+  board.addEventListener('click', e => {
+    const more = e.target.closest('[data-lane-more]');
+    if (more) { const id = more.dataset.laneMore; laneLimit.set(id, (laneLimit.get(id) || (id === 'done' ? 40 : 150)) + 60); renderBoard(); return; }
+    const group = e.target.closest('.group-head');
+    if (group) { const k = group.dataset.group; groupCollapsed.has(k) ? groupCollapsed.delete(k) : groupCollapsed.add(k); store.set(boardKey('collapsed'), JSON.stringify([...groupCollapsed])); renderBoard(); return; }
+    const add = e.target.closest('[data-lane-add]');
+    if (add) { openComposer(add.dataset.laneAdd); return; }
+    const card = e.target.closest('.card[data-id]');
+    if (card) { WB.openCard(card.dataset.id); return; }
+    if (e.target === board || e.target.classList.contains('lane-body') || e.target.classList.contains('stack')) WB.closeCard();
+  });
+  board.addEventListener('keydown', e => {
+    const card = e.target.closest?.('.card[data-id]');
+    if (card && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); WB.openCard(card.dataset.id); }
+  });
+  board.addEventListener('contextmenu', e => {
+    const el = e.target.closest('.card[data-id]');
+    if (!el) return;
+    e.preventDefault();
+    const card = WB.card(el.dataset.id);
+    menu({ x: e.clientX, y: e.clientY }, [
+      { label: 'Open', icon: 'expand', run: () => WB.openCard(card.id) },
+      ...A.statusMenuFor(card),
+      { header: 'Priority' },
+      ...['critical', 'mid', 'low', null].map(p => ({ label: p ? p[0].toUpperCase() + p.slice(1) : 'None', iconNode: prio(p), checked: (card.priority || null) === p, run: () => setPriority(card, p) })),
+      'sep', ...A.menuFor(card).filter(i => i === 'sep' || ['Copy reference', 'Delete…'].includes(i.label)),
+    ]);
+  });
+  function setPriority(card, p) {
+    const before = card.priority || null;
+    if (before === p) return;
+    WB.api.patchCard(card.id, { priority: p }).then(r => {
+      if (r.ok) pushUndo(`Priority of ${ref(card)} set to ${p || 'none'}`, () => WB.api.patchCard(card.id, { priority: before }), () => WB.api.patchCard(card.id, { priority: p }));
+    });
+  }
+  WB.setPriority = setPriority;
+
+  // Board pan: drag empty board space to scroll horizontally.
+  board.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || !(e.target === board || e.target.classList.contains('stack'))) return;
+    const x0 = e.clientX, s0 = board.scrollLeft;
+    board.setPointerCapture(e.pointerId); board.style.cursor = 'grabbing';
+    const move = ev => { board.scrollLeft = s0 - (ev.clientX - x0); };
+    const up = () => { board.style.cursor = ''; board.removeEventListener('pointermove', move); board.removeEventListener('pointerup', up); };
+    board.addEventListener('pointermove', move); board.addEventListener('pointerup', up);
+  });
+
+  // ── Drag and drop: cards ───────────────────────────────────────────
+  let drag = null; // {kind:'card'|'lane', id}
+  const dropLine = h('div', { style: { height: '2px', margin: '-4px 6px 2px', borderRadius: '2px', background: 'var(--accent)', pointerEvents: 'none' } });
+  let trash = null;
+  board.addEventListener('dragstart', e => {
+    const grip = e.target.closest?.('[data-lane-grip]');
+    if (grip) {
+      drag = { kind: 'lane', id: grip.dataset.laneGrip };
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', `lane:${drag.id}`);
+      const lane = lanes.get(drag.id).lane;
+      e.dataTransfer.setDragImage(lane, 24, 20);
+      requestAnimationFrame(() => lane.classList.add('dragging'));
+      return;
+    }
+    const el = e.target.closest?.('.card[data-id]');
+    if (!el) return;
+    drag = { kind: 'card', id: el.dataset.id };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', `#${WB.card(drag.id)?.num}`);
+    requestAnimationFrame(() => el.classList.add('dragging'));
+    trash = h('div', { class: 'trash' }, icon('trash'), 'Drop here to delete');
+    trash.addEventListener('dragover', ev => { ev.preventDefault(); ev.dataTransfer.dropEffect = 'move'; trash.classList.add('over'); clearDropMarks(); });
+    trash.addEventListener('dragleave', () => trash.classList.remove('over'));
+    trash.addEventListener('drop', ev => { ev.preventDefault(); const id = drag?.id; endDrag(); if (id) A.del(id); });
+    document.body.append(trash);
+  });
+  function clearDropMarks() {
+    dropLine.remove();
+    for (const { lane } of lanes.values()) lane.classList.remove('drop', 'stack-target');
+    for (const s of board.querySelectorAll('.insert-before, .insert-after')) s.classList.remove('insert-before', 'insert-after');
+  }
+  function endDrag() {
+    if (drag?.kind === 'card') cardEls.get(drag.id)?.el.classList.remove('dragging');
+    if (drag?.kind === 'lane') lanes.get(drag.id)?.lane.classList.remove('dragging');
+    drag = null; clearDropMarks(); trash?.remove(); trash = null;
+  }
+  board.addEventListener('dragend', endDrag);
+  let lastOver = 0;
+  board.addEventListener('dragover', e => {
+    if (!drag) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const now = performance.now();
+    if (now - lastOver < 16) return;
+    lastOver = now;
+    if (drag.kind === 'card') cardOver(e); else laneOver(e);
+  });
+  function cardDropTarget(e) {
+    const laneEl = e.target.closest?.('.lane');
+    if (!laneEl) return null;
+    const col = laneEl.dataset.col;
+    const body = lanes.get(col).body;
+    const cards = [...body.querySelectorAll(':scope > .card[data-id]')].filter(c => c.dataset.id !== drag.id);
+    let before = null;
+    for (const c of cards) { const r = c.getBoundingClientRect(); if (e.clientY < r.top + r.height / 2) { before = c; break; } }
+    return { col, body, before };
+  }
+  function cardOver(e) {
+    const t = cardDropTarget(e);
+    clearDropMarks();
+    if (!t) return;
+    lanes.get(t.col).lane.classList.add('drop');
+    if (t.col !== 'done') t.body.insertBefore(dropLine, t.before || lanes.get(t.col).composer || null);
+  }
+  board.addEventListener('drop', e => {
+    if (!drag) return;
+    e.preventDefault();
+    const d = drag;
+    if (d.kind === 'card') {
+      const t = cardDropTarget(e);
+      endDrag();
+      if (!t) return;
+      const card = WB.card(d.id);
+      if (!card) return;
+      let position;
+      if (t.col !== 'done') {
+        if (t.before) position = { before: t.before.dataset.id };
+        else { const inCol = WB.cards().filter(c => c.column === t.col && c.id !== d.id); if (inCol.length) position = { after: inCol[inCol.length - 1].id }; }
+      }
+      if (card.column === t.col) {
+        if (!position) return;
+        const cards = WB.cards().filter(c => c.column === t.col);
+        const i = cards.findIndex(c => c.id === d.id);
+        if ((position.before && cards[i + 1]?.id === position.before) || (position.after && cards[i - 1]?.id === position.after) || (position.after && i === cards.length - 1)) return;
+      }
+      moveCard(d.id, t.col, position);
+    } else {
+      const target = laneTarget(e);
+      endDrag();
+      if (target) moveLane(d.id, target);
+    }
+  });
+
+  // ── Drag and drop: columns (reorder + bottom-zone stacking) ────────
+  function laneTarget(e) {
+    const laneEl = e.target.closest?.('.lane');
+    const stackEl = e.target.closest?.('.stack');
+    if (!stackEl) return null;
+    if (laneEl && laneEl.dataset.col !== drag.id) {
+      const r = laneEl.getBoundingClientRect();
+      if (e.clientY > r.bottom - Math.min(80, r.height * 0.4)) return { stackUnder: laneEl.dataset.col, lane: laneEl };
+    }
+    const r = stackEl.getBoundingClientRect();
+    return { root: stackEl.dataset.root, side: e.clientX < r.left + r.width / 2 ? 'before' : 'after', stack: stackEl };
+  }
+  function laneOver(e) {
+    clearDropMarks();
+    const t = laneTarget(e);
+    if (!t) return;
+    if (t.stackUnder) t.lane.classList.add('stack-target');
+    else t.stack.classList.add(t.side === 'before' ? 'insert-before' : 'insert-after');
+  }
+  async function moveLane(id, target) {
+    const cols = WB.columns().map(c => ({ ...c }));
+    const before = WB.columns().map(c => ({ ...c }));
+    const src = cols.find(c => c.id === id);
+    const rootOf = c => (c.stackUnder && cols.some(p => p.id === c.stackUnder) ? c.stackUnder : c.id);
+    let moving = [src];
+    if (!src.stackUnder) moving = [src, ...cols.filter(c => c.stackUnder === src.id)];
+    let rest = cols.filter(c => !moving.includes(c));
+    if (target.stackUnder) {
+      const tgt = cols.find(c => c.id === target.stackUnder);
+      const root = rootOf(tgt);
+      if (root === id) return;
+      src.stackUnder = root;
+      for (const child of moving.slice(1)) child.stackUnder = root;
+      const lastInStack = rest.reduce((idx, c, i) => (c.id === root || c.stackUnder === root ? i : idx), -1);
+      rest.splice(lastInStack + 1, 0, ...moving);
+    } else {
+      if (target.root === id) return;
+      src.stackUnder = null;
+      const members = rest.filter(c => c.id === target.root || c.stackUnder === target.root);
+      const first = rest.indexOf(members[0]), last = rest.indexOf(members[members.length - 1]);
+      rest.splice(target.side === 'before' ? first : last + 1, 0, ...moving);
+    }
+    const payload = rest.map(c => ({ id: c.id, name: c.name, kind: c.kind, stackUnder: c.stackUnder || null, ...(c.wipLimit != null ? { wipLimit: c.wipLimit } : {}) }));
+    if (JSON.stringify(payload.map(c => [c.id, c.stackUnder])) === JSON.stringify(before.map(c => [c.id, c.stackUnder || null]))) return;
+    const toPayload = list => list.map(c => ({ id: c.id, name: c.name, kind: c.kind, stackUnder: c.stackUnder || null, ...(c.wipLimit != null ? { wipLimit: c.wipLimit } : {}) }));
+    const r = await WB.api.structure({ type: 'update-columns', columns: payload });
+    if (r.ok) pushUndo(target.stackUnder ? `Stacked ${WB.colName(id)} under ${WB.colName(target.stackUnder)}` : `Moved ${WB.colName(id)}`,
+      () => WB.api.structure({ type: 'update-columns', columns: toPayload(before) }),
+      () => WB.api.structure({ type: 'update-columns', columns: payload }));
+  }
+  async function resetColumns() {
+    const byIdCol = new Map(WB.columns().map(c => [c.id, c]));
+    const before = WB.columns().map(c => ({ id: c.id, name: c.name, kind: c.kind, stackUnder: c.stackUnder || null, ...(c.wipLimit != null ? { wipLimit: c.wipLimit } : {}) }));
+    const cols = CORE.map(id => { const c = byIdCol.get(id); return { id, name: c.name, kind: c.kind, stackUnder: null, ...(c.wipLimit != null ? { wipLimit: c.wipLimit } : {}) }; });
+    const r = await WB.api.structure({ type: 'update-columns', columns: cols });
+    if (r.ok) pushUndo('Reset column layout', () => WB.api.structure({ type: 'update-columns', columns: before }), () => WB.api.structure({ type: 'update-columns', columns: cols }));
+  }
+  async function setWip() {
+    const col = WB.columns().find(c => c.id === 'inprogress');
+    const v = await prompt({ title: 'In Progress limit', body: 'Starting work fails when In Progress already holds this many cards. Leave empty for no limit.', ok: 'Save', fields: [{ name: 'limit', label: 'Maximum cards', type: 'number', value: col.wipLimit ? String(col.wipLimit) : '' }] });
+    if (!v) return;
+    const n = v.limit === '' ? null : Math.max(0, Math.floor(Number(v.limit)));
+    if (n !== null && !Number.isFinite(n)) return;
+    const cols = WB.columns().map(c => ({ id: c.id, name: c.name, kind: c.kind, stackUnder: c.stackUnder || null, ...(c.id === 'inprogress' ? { wipLimit: n || null } : c.wipLimit != null ? { wipLimit: c.wipLimit } : {}) }));
+    WB.api.structure({ type: 'update-columns', columns: cols });
+  }
+
+  // ── Chrome: title, nav, filters, saved views, theme, actor ─────────
+  const titleEl = $('#title');
+  function renderChrome() {
+    const doc = S.doc;
+    if (titleEl.contentEditable !== 'true') titleEl.textContent = doc.name || 'WorkBoard';
+    document.title = `${doc.name || 'WorkBoard'} · WorkBoard`;
+    $('#board-pick-name').textContent = doc.name || 'WorkBoard';
+    $('#board-mark').textContent = initials(doc.name || 'W').slice(0, 1);
+    const cards = doc.cards;
+    const counts = { total: cards.length, ready: cards.filter(isReady).length, rework: cards.filter(inRework).length, canceled: cards.filter(c => c.outcome === 'canceled').length };
+    for (const el of document.querySelectorAll('[data-count]')) el.textContent = counts[el.dataset.count] || '';
+    renderFilterbar();
+  }
+  titleEl.addEventListener('dblclick', () => {
+    titleEl.contentEditable = 'true'; titleEl.focus();
+    getSelection().selectAllChildren(titleEl);
+  });
+  titleEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); titleEl.blur(); }
+    if (e.key === 'Escape') { e.stopPropagation(); titleEl.textContent = S.doc.name; titleEl.blur(); }
+  });
+  titleEl.addEventListener('blur', () => {
+    if (titleEl.contentEditable !== 'true') return;
+    titleEl.contentEditable = 'false';
+    const name = titleEl.textContent.trim();
+    if (name && name !== S.doc.name) WB.api.structure({ type: 'update-document', changes: { name } });
+    else titleEl.textContent = S.doc.name;
+  });
+
+  function renderFilterbar() {
+    const bar = $('#filterbar');
+    const f = S.filters, chips = [];
+    const add = (label, clear) => chips.push(h('span', { class: 'filter-chip' }, label, h('button', { type: 'button', attrs: { 'aria-label': `Remove filter ${label}` }, on: { click: () => { clear(); applyFilters(); } } }, icon('x', 'sm'))));
+    if (S.search) add(`Search: ${S.search}`, () => { S.search = ''; });
+    const names = { status: v => WB.colName(v), priority: v => (v === 'none' ? 'No priority' : v[0].toUpperCase() + v.slice(1)), owner: v => (v === '__unowned' ? 'Unowned' : v), outcome: v => ({ open: 'Open', completed: 'Completed', canceled: 'Canceled' })[v], tags: v => v };
+    const titles = { status: 'Status', priority: 'Priority', owner: 'Owner', outcome: 'Outcome', tags: 'Tag' };
+    for (const k of Object.keys(names)) if (f[k].size) add(`${titles[k]}: ${[...f[k]].map(names[k]).join(', ')}`, () => f[k].clear());
+    if (f.rework) add(f.rework === 'yes' ? 'In rework' : 'Not in rework', () => { f.rework = ''; });
+    if (chips.length > 1) chips.push(h('button', { class: 'btn xs', type: 'button', text: 'Clear all', on: { click: () => clearFilters() } }));
+    bar.replaceChildren(...chips);
+    $('#filter-btn').classList.toggle('on', !!filtersActive());
+  }
+  function applyFilters() {
+    store.set(boardKey('filters'), JSON.stringify(serializeFilters()));
+    renderChrome();
+    if (S.view === 'board') renderBoard(); else WB.views?.update(S.view, viewInner);
+  }
+  function clearFilters() { for (const k of ['status', 'priority', 'owner', 'outcome', 'tags']) S.filters[k].clear(); S.filters.rework = ''; S.search = ''; applyFilters(); }
+  const serializeFilters = () => ({ ...Object.fromEntries(['status', 'priority', 'owner', 'outcome', 'tags'].map(k => [k, [...S.filters[k]]])), rework: S.filters.rework, search: S.search });
+  function loadFilters(obj) {
+    if (!obj) return;
+    for (const k of ['status', 'priority', 'owner', 'outcome', 'tags']) S.filters[k] = new Set(Array.isArray(obj[k]) ? obj[k] : []);
+    S.filters.rework = obj.rework || ''; S.search = obj.search || '';
+  }
+  $('#filter-btn').addEventListener('click', e => {
+    const f = S.filters;
+    const toggle = (set, v) => btn => { set.has(v) ? set.delete(v) : set.add(v); btn.setAttribute('aria-checked', String(set.has(v))); applyFilters(); };
+    const owners = [...new Set(WB.cards().map(c => c.activeOwner).filter(Boolean))].sort();
+    const tagCounts = new Map();
+    for (const c of WB.cards()) for (const t of c.tags || []) tagCounts.set(t, (tagCounts.get(t) || 0) + 1);
+    const tags = [...tagCounts].sort((a, b) => b[1] - a[1]).slice(0, 24);
+    menu(e.currentTarget, [
+      { header: 'Status' }, ...WB.columns().map(c => ({ label: c.name, iconNode: statusDot(c.id), checked: f.status.has(c.id), keep: true, run: toggle(f.status, c.id) })),
+      { header: 'Priority' }, ...['critical', 'mid', 'low', 'none'].map(p => ({ label: p === 'none' ? 'No priority' : p[0].toUpperCase() + p.slice(1), iconNode: prio(p === 'none' ? null : p), checked: f.priority.has(p), keep: true, run: toggle(f.priority, p) })),
+      { header: 'Owner' }, { label: 'Unowned', icon: 'user', checked: f.owner.has('__unowned'), keep: true, run: toggle(f.owner, '__unowned') },
+      ...owners.map(o => ({ label: o, iconNode: avatar(o), checked: f.owner.has(o), keep: true, run: toggle(f.owner, o) })),
+      { header: 'Outcome' }, ...[['open', 'Open'], ['completed', 'Completed'], ['canceled', 'Canceled']].map(([v, l]) => ({ label: l, icon: v === 'open' ? 'clock' : v === 'completed' ? 'done' : 'canceled', checked: f.outcome.has(v), keep: true, run: toggle(f.outcome, v) })),
+      { header: 'Rework' }, { label: 'In rework', icon: 'rework', checked: f.rework === 'yes', keep: true, run: btn => { f.rework = f.rework === 'yes' ? '' : 'yes'; btn.setAttribute('aria-checked', String(f.rework === 'yes')); applyFilters(); } },
+      tags.length ? { header: 'Tags' } : null, ...tags.map(([t, n]) => ({ label: t, icon: 'tag', hint: String(n), checked: f.tags.has(t), keep: true, run: toggle(f.tags, t) })),
+    ], { align: 'end' });
+  });
+
+  $('#board-menu').addEventListener('click', e => {
+    menu(e.currentTarget, [
+      { label: 'New card', icon: 'new', hint: 'C', run: newCardDialog },
+      'sep',
+      { label: 'Sort cards by newest', icon: 'sort', run: async () => { if (await confirm({ title: 'Sort every column by newest first?', body: 'This replaces the manual card order in each column. Column positions stay the same.', ok: 'Sort cards' })) WB.api.structure({ type: 'sort-cards', mode: 'created-desc' }); } },
+      { label: 'Reset column layout', icon: 'reset', run: resetColumns },
+      { label: 'In Progress limit…', icon: 'layers', run: setWip },
+      'sep',
+      { label: 'Zoom in', icon: 'plus', hint: 'Ctrl +scroll', keep: true, run: () => setZoom(S.zoom + 0.1) },
+      { label: 'Zoom out', icon: 'filter', keep: true, run: () => setZoom(S.zoom - 0.1) },
+      { label: 'Actual size', icon: 'reset', hint: 'Ctrl 0', run: () => setZoom(1) },
+      'sep',
+      { label: 'Refresh', icon: 'rework', run: () => refresh() },
+    ], { align: 'end' });
+  });
+
+  function setZoom(z, announce = true) {
+    S.zoom = Math.round(Math.min(1.6, Math.max(0.6, z)) * 100) / 100;
+    board.style.zoom = S.zoom === 1 ? '' : String(S.zoom);
+    store.set('workboard.ui.zoom', String(S.zoom));
+    if (announce) toast(`Zoom ${Math.round(S.zoom * 100)}%`, { ms: 1200 });
+  }
+  document.addEventListener('wheel', e => {
+    if (!(e.ctrlKey || e.metaKey) || S.view !== 'board' || !board.contains(e.target)) return;
+    e.preventDefault();
+    setZoom(S.zoom * Math.exp(-e.deltaY * 0.0015), false);
+  }, { passive: false });
+
+  // Saved views
+  function renderSavedViews() {
+    const host = $('#saved-views');
+    const views = store.json(boardKey('views'), []);
+    if (!views.length) { host.replaceChildren(h('div', { class: 'side-empty', text: 'Save filters and views for later.' })); return; }
+    host.replaceChildren(...views.map((v, i) => h('button', { class: 'nav-item view-item', type: 'button', on: { click: () => applySaved(v) } },
+      icon('star'), h('span', { text: v.name, style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }),
+      h('span', { class: 'btn icon xs del', attrs: { role: 'button', 'aria-label': `Delete saved view ${v.name}` }, on: { click: ev => { ev.stopPropagation(); views.splice(i, 1); store.set(boardKey('views'), JSON.stringify(views)); renderSavedViews(); } } }, icon('x', 'sm')))));
+  }
+  function applySaved(v) { loadFilters(v.filters); WB.setView(v.view || 'board'); applyFilters(); }
+  $('#save-view').addEventListener('click', async () => {
+    const v = await prompt({ title: 'Save view', body: 'Saves the current view, filters and search.', ok: 'Save', fields: [{ name: 'name', label: 'Name', required: true }] });
+    if (!v) return;
+    const views = store.json(boardKey('views'), []);
+    views.unshift({ name: v.name.slice(0, 60), view: S.view, filters: serializeFilters() });
+    store.set(boardKey('views'), JSON.stringify(views.slice(0, 20)));
+    renderSavedViews();
+  });
+
+  // Theme
+  const THEMES = ['os', 'light', 'dark'];
+  const osDark = matchMedia('(prefers-color-scheme: dark)');
+  function applyTheme() {
+    const mode = store.get('wbTheme', 'os');
+    const dark = mode === 'dark' || (mode === 'os' && osDark.matches);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    const btn = $('#theme-btn');
+    btn.replaceChildren(icon(mode === 'os' ? 'monitor' : mode === 'dark' ? 'moon' : 'sun'));
+    btn.title = `Theme: ${mode === 'os' ? 'System' : mode === 'dark' ? 'Dark' : 'Light'}`;
+    btn.setAttribute('aria-label', btn.title);
+  }
+  $('#theme-btn').addEventListener('click', () => {
+    const next = THEMES[(THEMES.indexOf(store.get('wbTheme', 'os')) + 1) % THEMES.length];
+    store.set('wbTheme', next); applyTheme();
+  });
+  osDark.addEventListener('change', applyTheme);
+
+  // Actor
+  function renderActor() {
+    $('#actor-name').textContent = S.actor;
+    const av = $('#actor-avatar');
+    av.textContent = initials(S.actor); av.style.setProperty('--tone', toneFor(S.actor));
+  }
+  $('#actor-btn').addEventListener('click', async () => {
+    const v = await prompt({ title: 'Acting as', body: 'This label is recorded on your edits, comments and claims. It is attribution, not an account.', ok: 'Save', fields: [{ name: 'actor', label: 'Label', required: true, value: S.actor }] });
+    if (!v) return;
+    if (v.actor.length > 80 || /[\u0000-\u001f\u007f]/.test(v.actor)) { toast('Use at most 80 characters without control characters', { error: true }); return; }
+    S.actor = v.actor; store.set('workboard.previewActor', S.actor); renderActor(); emit('actor', S.actor);
+  });
+
+  // Sidebar collapse
+  const app = $('#app');
+  function setSide(collapsed, persist = true) {
+    app.classList.toggle('side-collapsed', collapsed);
+    $('#side-open').hidden = !collapsed;
+    if (persist) store.set('workboard.ui.side', collapsed ? 'collapsed' : 'open');
+  }
+  $('#side-toggle').addEventListener('click', () => { if (matchMedia('(max-width: 820px)').matches) app.classList.remove('side-open'); else setSide(true); });
+  $('#side-open').addEventListener('click', () => { if (matchMedia('(max-width: 820px)').matches) app.classList.add('side-open'); else setSide(false); });
+  document.addEventListener('pointerdown', e => {
+    if (app.classList.contains('side-open') && !e.target.closest('.side, #side-open')) app.classList.remove('side-open');
+  });
+
+  // Views
+  const viewHost = $('#view-host');
+  let viewInner = null;
+  WB.setView = name => {
+    if (!['board', 'ready', 'rework', 'canceled', 'insights', 'git', 'calendar'].includes(name)) name = 'board';
+    const changed = name !== S.view;
+    S.view = name;
+    for (const el of document.querySelectorAll('.nav-item[data-view]')) { if (el.dataset.view === name) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current'); }
+    board.hidden = name !== 'board';
+    app.classList.remove('side-open');
+    if (name === 'board') { viewHost.replaceChildren(); viewInner = null; if (changed && S.doc) renderBoard(); }
+    else if (changed || !viewInner) {
+      viewInner = h('div', { class: 'view-inner' });
+      viewHost.replaceChildren(h('div', { class: 'view' }, viewInner));
+      if (WB.views) WB.views.render(name, viewInner);
+      else viewInner.append(h('div', { class: 'empty' }, icon('info'), 'This view is not available.'));
+    }
+    store.set(boardKey('view'), name);
+  };
+  $('#nav').addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b) WB.setView(b.dataset.view); });
+  $('#new-card').addEventListener('click', newCardDialog);
+
+  // ── Board picker (same-tab switching) ──────────────────────────────
+  async function openBoardPicker(anchor) {
+    const search = h('input', { class: 'input ghost', placeholder: 'Find a board…', attrs: { 'aria-label': 'Find a board' } });
+    const list = h('div', {}, h('div', { class: 'side-empty', text: 'Loading boards…' }));
+    const m = menu(anchor, [{ node: h('div', { style: { padding: '4px 4px 6px' } }, search) }, { node: list }], { keepOpen: true });
+    m.el.style.width = '360px';
+    setTimeout(() => search.focus());
+    let boards = [];
+    try { boards = (await WB.api.get('/viewers')).boards || []; } catch (err) { list.replaceChildren(h('div', { class: 'side-empty', text: `Could not list boards: ${err.message}` })); return; }
+    const draw = () => {
+      const q = search.value.trim().toLowerCase();
+      const rows = boards.filter(b => !q || b.name.toLowerCase().includes(q) || String(b.board).toLowerCase().includes(q));
+      if (!rows.length) { list.replaceChildren(h('div', { class: 'side-empty', text: boards.length ? 'No boards match.' : 'No boards are registered yet. Create one with the new command.' })); return; }
+      list.replaceChildren(...rows.map(b => {
+        const row = h('button', { class: 'menu-item', type: 'button', attrs: { 'aria-current': b.current ? 'true' : null }, style: { alignItems: 'flex-start' } },
+          h('span', { class: 'mark', style: { display: 'grid', placeItems: 'center', width: '22px', height: '22px', borderRadius: '6px', background: b.current ? 'var(--primary)' : 'var(--fill-2)', color: b.current ? 'var(--on-primary)' : 'var(--fg-2)', fontSize: '11px', fontWeight: 700, flex: 'none', marginTop: '1px' }, text: initials(b.name).slice(0, 1) }),
+          h('span', { style: { minWidth: 0, flex: 1 } },
+            h('span', { style: { display: 'flex', alignItems: 'center', gap: '6px' } }, h('b', { text: b.name, style: { fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }),
+              b.current ? h('span', { class: 'badge', text: 'Current' }) : b.live ? h('span', { class: 'badge', style: { '--tone': 'var(--green)' }, text: 'Live' }) : null),
+            h('span', { class: 'faint', style: { display: 'block', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, text: b.board })),
+          h('span', { class: 'btn icon xs', attrs: { role: 'button', 'aria-label': `Delete board ${b.name}` }, title: 'Delete board…', on: { click: ev => { ev.stopPropagation(); m.close(); deleteBoard(b); } } }, icon('trash', 'sm')));
+        row.addEventListener('click', () => { m.close(); if (!b.current) switchBoard(b); });
+        return row;
+      }));
+    };
+    search.addEventListener('input', draw);
+    search.addEventListener('keydown', e => { if (e.key === 'Enter') list.querySelector('.menu-item:not([aria-current])')?.click(); });
+    draw();
+  }
+  async function switchBoard(b) {
+    const close = toast(`Opening ${b.name}…`, { ms: 20000 });
+    try {
+      const res = await request('POST', '/viewers/start', { body: { name: b.name } });
+      location.assign(res.url);
+    } catch (err) { close(); toast(`Could not open ${b.name}: ${err.message}`, { error: true }); }
+  }
+  async function deleteBoard(b) {
+    const yes = await confirm({ title: `Delete “${b.name}”?`, body: 'Its board.json is renamed to a recoverable board.deleted-*.json file and the board is removed from the list. Cards, attachments and backups stay on disk.', ok: 'Delete board', danger: true });
+    if (!yes) return;
+    try {
+      const res = await request('POST', '/viewers/delete', { body: { name: b.name, board: b.board, baseRev: b.current ? (S.missing ? null : S.rev) : (b.rev ?? null) } });
+      toast(`Deleted ${b.name}${res.recoveryPath ? ' — recoverable' : ''}`);
+      if (res.current) enterMissing();
+    } catch (err) { toast(`Could not delete ${b.name}: ${err.message}`, { error: true }); }
+  }
+  $('#board-pick').addEventListener('click', e => openBoardPicker(e.currentTarget));
+
+  // ── Missing board → chooser ────────────────────────────────────────
+  function enterMissing() {
+    S.missing = true; setLive('down');
+    WB.closeCard();
+    board.hidden = true;
+    const list = h('div', { class: 'list', style: { textAlign: 'left', marginTop: '8px' } }, h('div', { class: 'list-row faint', text: 'Loading boards…' }));
+    viewHost.replaceChildren(h('div', { class: 'setup' }, h('div', { class: 'setup-card' },
+      h('div', { class: 'empty', style: { padding: '0' } }, icon('board')),
+      h('h1', { text: 'This board isn’t available' }),
+      h('p', { text: 'It was deleted, moved, or its file cannot be read. Choose another board or retry.' }),
+      list,
+      h('div', { style: { marginTop: '16px' } }, h('button', { class: 'btn outline', type: 'button', text: 'Retry', on: { click: () => location.reload() } })))));
+    viewInner = null;
+    WB.api.get('/viewers').then(res => {
+      const boards = (res.boards || []).filter(b => !b.current);
+      list.replaceChildren(...(boards.length ? boards.map(b => h('button', { class: 'list-row menu-item', type: 'button', style: { borderRadius: 0 }, on: { click: () => switchBoard(b) } },
+        h('b', { text: b.name, style: { fontWeight: 500 } }), h('span', { class: 'faint', text: b.board, style: { marginLeft: 'auto', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' } })))
+        : [h('div', { class: 'list-row faint', text: 'No other registered boards.' })]));
+    }).catch(() => list.replaceChildren(h('div', { class: 'list-row faint', text: 'Could not list boards.' })));
+  }
+
+  // ── Command palette ────────────────────────────────────────────────
+  let paletteOpen = null;
+  function openPalette(initial = '') {
+    if (paletteOpen) { paletteOpen.input.focus(); return; }
+    const input = h('input', { placeholder: 'Search cards or type a command…', value: initial, attrs: { 'aria-label': 'Search', role: 'combobox', 'aria-expanded': 'true', 'aria-controls': 'palette-list' } });
+    const list = h('div', { class: 'palette-list', id: 'palette-list', attrs: { role: 'listbox' } });
+    const scrim = h('div', { class: 'scrim', style: { background: 'rgb(0 0 0 / .12)' } });
+    const panel = h('div', { class: 'palette', attrs: { role: 'dialog', 'aria-label': 'Command palette' } },
+      h('div', { class: 'palette-input' }, icon('search', 'lg'), input, h('span', { class: 'kbd', text: 'Esc' })), list,
+      h('div', { class: 'palette-foot' }, h('span', {}, h('span', { class: 'kbd', text: '↑↓' }), 'navigate'), h('span', {}, h('span', { class: 'kbd', text: 'Enter' }), 'open'), h('span', {}, h('span', { class: 'kbd', text: 'Esc' }), 'close')));
+    let items = [], active = 0;
+    const commands = () => [
+      { label: 'New card', icon: 'new', hint: 'C', run: newCardDialog },
+      ...[['board', 'Board'], ['ready', 'Ready now'], ['rework', 'Rework'], ['canceled', 'Canceled'], ['insights', 'Insights'], ['git', 'Git'], ['calendar', 'Calendar']].map(([v, l]) => ({ label: `Go to ${l}`, icon: v === 'board' ? 'board' : v, run: () => WB.setView(v) })),
+      { label: 'Switch board…', icon: 'layers', run: () => openBoardPicker($('#board-pick')) },
+      { label: 'Toggle theme', icon: 'sun', run: () => $('#theme-btn').click() },
+      filtersActive() ? { label: 'Clear filters', icon: 'x', run: clearFilters } : null,
+    ].filter(Boolean);
+    const draw = () => {
+      const q = input.value.trim(), ql = q.toLowerCase();
+      const groups = [];
+      const numMatch = q.match(/^#?(\d+)$/);
+      let cards = [];
+      if (q) {
+        const scored = [];
+        for (const c of WB.cards()) {
+          const t = c.title.toLowerCase();
+          let s = numMatch && c.num === Number(numMatch[1]) ? 100 : t.startsWith(ql) ? 60 : t.includes(ql) ? 40 : (c.tags || []).some(x => x.toLowerCase().includes(ql)) ? 25 : searchText(c).includes(ql) ? 10 : 0;
+          if (s) scored.push([s - (c.column === 'done' ? 5 : 0), c]);
+        }
+        cards = scored.sort((a, b) => b[0] - a[0] || b[1].num - a[1].num).slice(0, 30).map(x => x[1]);
+      } else {
+        cards = [...WB.cards()].filter(c => c.column !== 'done').sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 8);
+      }
+      if (cards.length) groups.push([q ? 'Cards' : 'Recent', cards.map(c => ({ card: c, run: () => WB.openCard(c.id) }))]);
+      if (q) groups.push(['Board', [{ label: `Filter board by “${q}”`, icon: 'filter', run: () => { S.search = q; WB.setView('board'); applyFilters(); } }]]);
+      const cmds = commands().filter(c => !ql || c.label.toLowerCase().includes(ql));
+      if (cmds.length) groups.push(['Commands', cmds]);
+      items = []; const nodes = [];
+      for (const [label, group] of groups) {
+        nodes.push(h('div', { class: 'menu-label', text: label }));
+        for (const it of group) {
+          const i = items.length;
+          const row = it.card
+            ? h('button', { class: 'menu-item', type: 'button', id: `pal-${i}`, attrs: { role: 'option' } }, statusDot(it.card.column), h('span', { class: 'mono faint', text: `#${it.card.num}`, style: { flex: 'none' } }), h('span', { text: it.card.title, style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }), h('span', { class: 'hint', text: WB.colName(it.card.column) }))
+            : h('button', { class: 'menu-item', type: 'button', id: `pal-${i}`, attrs: { role: 'option' } }, icon(it.icon), h('span', { text: it.label }), it.hint ? h('span', { class: 'hint', text: it.hint }) : null);
+          row.addEventListener('mousemove', () => { if (active !== i) setActive(i, false); });
+          row.addEventListener('click', () => choose(i));
+          items.push({ ...it, row }); nodes.push(row);
+        }
+      }
+      if (!items.length) nodes.push(h('div', { class: 'empty', style: { padding: '28px' } }, 'No matches'));
+      list.replaceChildren(...nodes);
+      setActive(0, true);
+    };
+    const setActive = (i, scroll) => {
+      if (!items.length) return;
+      active = (i + items.length) % items.length;
+      items.forEach((it, j) => it.row.classList.toggle('active', j === active));
+      input.setAttribute('aria-activedescendant', `pal-${active}`);
+      if (scroll) items[active].row.scrollIntoView({ block: 'nearest' });
+    };
+    const choose = i => { const it = items[i]; if (!it) return; close(); it.run(); };
+    input.addEventListener('input', draw);
+    input.addEventListener('keydown', e => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setActive(active + 1, true); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(active - 1, true); }
+      else if (e.key === 'Enter') { e.preventDefault(); choose(active); }
+      else if (e.key === 'Tab') e.preventDefault();
+    });
+    scrim.addEventListener('pointerdown', () => close());
+    const unlayer = pushLayer({ close: () => close() });
+    function close() { if (!paletteOpen) return; paletteOpen = null; unlayer(); leave(panel); leave(scrim); }
+    document.body.append(scrim, panel);
+    paletteOpen = { input, close };
+    draw();
+    input.focus(); input.select();
+  }
+  WB.openPalette = openPalette;
+  $('#search-open').addEventListener('click', () => openPalette());
+
+  // ── Keyboard ───────────────────────────────────────────────────────
+  const typing = t => t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+  document.addEventListener('keydown', e => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
+    if (e.key === 'Escape') {
+      if (layers.length) { e.preventDefault(); layers[layers.length - 1].close(); return; }
+      if (typing(e.target) && $('#panel').contains(e.target)) { e.target.blur(); $('#panel').focus({ preventScroll: true }); return; }
+      if (S.selectedId) { e.preventDefault(); WB.closeCard(); cardEls.get(S.selectedId)?.el.focus(); return; }
+      if (app.classList.contains('side-open')) app.classList.remove('side-open');
+      return;
+    }
+    if (typing(e.target) || layers.length) return;
+    if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? runRedo() : runUndo(); return; }
+    if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); runRedo(); return; }
+    if (mod && e.key === '0' && S.view === 'board') { e.preventDefault(); setZoom(1); return; }
+    if (mod || e.altKey) return;
+    if (e.key === '/') { e.preventDefault(); openPalette(); }
+    else if (e.key === 'c') { e.preventDefault(); newCardDialog(); }
+    else if (e.key === '[') { e.preventDefault(); setSide(!app.classList.contains('side-collapsed')); }
+  });
+
+  // ── Boot ───────────────────────────────────────────────────────────
+  WB._boot = async () => {
+    applyTheme(); renderActor(); setZoom(S.zoom, false);
+    const side = store.get('workboard.ui.side');
+    // No saved choice: hide the sidebar where five lanes would not otherwise fit.
+    setSide(side ? side === 'collapsed' : innerWidth < 1400, false);
+    setLive('connecting');
+    try {
+      const doc = await request('GET', '/board.json');
+      loadFilters(store.json(`workboard.ui.filters::${doc.name}`, null));
+      for (const k of store.json(`workboard.ui.collapsed::${doc.name}`, [])) groupCollapsed.add(k);
+      setDoc(doc, { source: 'boot' });
+      renderSavedViews();
+      WB.setView(store.get(`workboard.ui.view::${doc.name}`, 'board'));
+      const m = location.hash.match(/^#(\d+)$/);
+      if (m) requestAnimationFrame(() => WB.openCard(Number(m[1])));
+    } catch (err) {
+      if (err.status === 410) enterMissing();
+      else { setLive('down'); toast(`Could not load the board: ${err.message}`, { error: true, ms: 10000 }); }
+    }
+    connect();
+  };
+})();
+
+// ═════════════════════════════════════════════════════════════════════
+// Card panel — the floating detail peek for one card (#panel). Opening builds
+// the body once; live updates re-render only the parts whose data changed and
+// never replace a control that is focused or holds unsaved text.
+// ═════════════════════════════════════════════════════════════════════
+(() => {
+  const { ui, api, actions: A } = WB;
+  const { h, icon } = ui;
+  const SUB_CAP = 60, HIST_CAP = 8, MSG_CAP = 50;
+  const PRIORITIES = [['critical', 'Critical'], ['mid', 'Mid'], ['low', 'Low'], [null, 'None']];
+
+  let panel = null, body, barStatus, refBtn, primaryBtn, expandBtn, composer, sendBtn, who, fileInput;
+  let cur = null;               // {id, card, slots, title, gone} for the card on show
+  let primaryRun = null, sending = false, closeTimer = 0, prepFrame = 0;
+  const drafts = new Map();     // card id -> unsent comment
+  const bases = new WeakMap();  // text control -> the card value it was last synced with
+
+  // ── Helpers ─────────────────────────────────────────────────────────
+  const json = v => JSON.stringify(v ?? null);
+  const now = () => new Date().toISOString();
+  const isEnter = e => e.key === 'Enter' && !e.shiftKey && !e.isComposing;
+  const isDirty = el => bases.has(el) && el.value !== bases.get(el);
+  const setBase = (el, v) => { el.value = v ?? ''; bases.set(el, el.value); };
+  const put = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter(k => k != null && k !== false));
+  const iconBtn = (name, label, run, cls = 'btn icon xs', size = 'sm') =>
+    h('button', { class: cls, type: 'button', title: label, attrs: { 'aria-label': label }, on: { click: run } }, icon(name, size));
+  const inline = (placeholder, label) => h('input', { class: 'add-inline', placeholder, attrs: { 'aria-label': label } });
+  const moreBtn = run => h('button', { class: 'btn more-btn', type: 'button', hidden: true, on: { click: run } });
+  const counter = () => h('span', { class: 'count' });
+  const when = iso => h('time', { dateTime: iso || '', title: ui.fmtDateTime(iso), text: ui.relTime(iso) });
+  const fmtSize = n => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+  const section = (title, count, tool, ...kids) => h('section', { class: 'section' },
+    h('div', { class: 'section-head' }, h('h3', { text: title }), count, tool && h('div', { class: 'tools' }, tool)), kids);
+
+  // ── Slots ───────────────────────────────────────────────────────────
+  // Each independently rendered part is a slot that re-renders only when its signature changes.
+  // A busy slot (focus or unsaved text inside) is skipped and retried on the next flush/update.
+  const slot = (sig, fill, opts) => { cur.slots.push({ sig, fill, last: undefined, ...opts }); };
+  function render(card, crossOnly = false) {
+    for (const s of cur.slots) {
+      if (crossOnly && !s.cross) continue;
+      const k = s.sig(card);
+      if (k === s.last || s.busy?.()) continue;
+      s.last = k;
+      s.fill(card);
+    }
+  }
+  function flush() {
+    const card = cur && !cur.gone && WB.card(cur.id);
+    if (card) render(card);
+  }
+
+  // ── Writes ──────────────────────────────────────────────────────────
+  // Read-modify-write edits (tags, links, dependencies, subtasks) run one at a time against the
+  // latest card, so quick successive edits never overwrite each other.
+  let chain = Promise.resolve();
+  function edit(id, build) {
+    const p = chain.then(() => { const c = WB.card(id); return c ? build(c) || { ok: true } : { ok: false }; });
+    chain = p.catch(() => {});
+    return p;
+  }
+  const editTree = (id, change) => edit(id, c => {
+    const tree = structuredClone(c.subtasks || []);
+    return change(tree) === false ? null : api.patchCard(id, { subtasks: tree });
+  });
+  const setRefs = (id, key, change) => edit(id, c => {
+    const next = change(c[key] || []);
+    if (!next) return null;
+    return key === 'dependsOn' ? api.lifecycle(id, 'dependencies', { ids: next }) : api.patchCard(id, { links: next });
+  });
+  function addRef(id, key, raw) {
+    const d = WB.card(raw);
+    if (!d || d.id === id) { ui.toast(d ? 'A card cannot point at itself' : `No card matches “${raw}”`, { error: true }); return { ok: false }; }
+    return setRefs(id, key, list => (list.includes(d.id) ? null : [...list, d.id]));
+  }
+
+  // Text saves on blur (and on Enter when `enter`) only when it differs from the card; a failed save
+  // keeps the draft and marks the control. Core's Esc blurs, which saves too.
+  function bindText(el, save, { enter = false, required = false } = {}) {
+    el.addEventListener('blur', async () => {
+      if (required && !el.value.trim()) el.value = bases.get(el) ?? '';
+      if (isDirty(el)) {
+        const v = el.value;
+        el.removeAttribute('aria-invalid');
+        const r = await save(v);
+        if (!r.ok) { el.setAttribute('aria-invalid', 'true'); return; }
+        bases.set(el, v);
+      }
+      flush();
+    });
+    if (enter) el.addEventListener('keydown', e => { if (isEnter(e)) { e.preventDefault(); el.blur(); } });
+    return el;
+  }
+  // A text control bound to one card field.
+  function field(el, get, save, opts) {
+    slot(get, c => setBase(el, get(c)), { busy: () => el === document.activeElement || isDirty(el) });
+    return bindText(el, save, opts);
+  }
+  // Inline "add" inputs: Enter adds and keeps focus; the text comes back if the add fails.
+  function onEnterAdd(input, add) {
+    input.addEventListener('keydown', async e => {
+      if (!isEnter(e)) return;
+      e.preventDefault();
+      const v = input.value.trim();
+      if (!v) return;
+      input.value = '';
+      input.removeAttribute('aria-invalid');
+      const r = await add(v);
+      if (!r.ok) { if (!input.value) input.value = v; input.setAttribute('aria-invalid', 'true'); }
+    });
+    return input;
+  }
+
+  // ── Subtask tree ────────────────────────────────────────────────────
+  function locate(list, sid) {
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id === sid) return { node: list[i], list, i };
+      const hit = locate(list[i].children || [], sid);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  const nodeOf = (tree, sid) => locate(tree, sid)?.node;
+  function nextSubId(tree) {
+    let max = 0;
+    const walk = list => { for (const s of list || []) { const m = /(\d+)$/.exec(s.id); if (m) max = Math.max(max, Number(m[1])); walk(s.children); } };
+    walk(tree);
+    return `s-${max + 1}`;
+  }
+  const newSub = (tree, text) => ({ id: nextSubId(tree), text, done: false, createdAt: now(), doneAt: null, collapsed: false, children: [] });
+  function countTree(list, visible = true, n = { done: 0, total: 0, shown: 0 }) {
+    for (const s of list || []) {
+      n.total++;
+      if (s.done) n.done++;
+      if (visible) n.shown++;
+      countTree(s.children, visible && !s.collapsed, n);
+    }
+    return n;
+  }
+
+  // ── Activity wording ────────────────────────────────────────────────
+  const EVENTS = {
+    created: 'created the card',
+    'follow-up': e => `created follow-up ${String(e.note || '').replace(/^Created /, '')}`.trim(),
+    start: 'started work',
+    move: e => `moved it to ${WB.colName(e.to)}`,
+    complete: 'completed it',
+    blocked: 'blocked it',
+    unblocked: e => `resumed it in ${WB.colName(e.to)}`,
+    cancel: 'canceled it',
+    rework: 'returned it for rework',
+    reopened: 'reopened it',
+    bug: 'reopened it as a bug',
+    improve: 'reopened it to improve',
+    takeover: 'took over',
+    dependencies: e => (!e.note || e.note === 'cleared' ? 'cleared its dependencies'
+      : `set dependencies to ${e.note.split(', ').map(r => { const d = WB.card(r); return d ? `#${d.num}` : r; }).join(', ')}`),
+    workpad: 'added the acceptance template',
+    'comment-add': 'commented',
+    'comment-edit': 'edited a comment',
+    'comment-delete': 'deleted a comment',
+    'attachment-added': e => `attached ${e.note || 'a file'}`,
+    'attachment-removed': e => `removed ${e.note || 'a file'}`,
+    'column-consolidated': e => `moved it to ${WB.colName(e.to)}`,
+    'subtask-add': 'added subtasks',
+    'subtask-done': 'checked off subtasks',
+    'subtask-undone': 'reopened subtasks',
+    'subtask-rm': 'removed subtasks',
+    note: 'added a note',
+  };
+  // Events whose note is a human-written reason worth showing.
+  const REASONED = new Set(['start', 'move', 'blocked', 'unblocked', 'cancel', 'rework', 'reopened', 'bug', 'improve', 'takeover']);
+  function describe(e) {
+    // Legacy entries carry only from/to: a null origin is creation, anything else a move.
+    const ev = e.ev || (e.to ? (e.from == null ? 'created' : 'move') : null);
+    const d = EVENTS[ev];
+    const what = typeof d === 'function' ? d(e) : d || ev || 'updated it';
+    const who = e.by || (e.via === 'agent' ? 'An agent' : 'Someone');
+    return `${who} ${what}${e.note && (REASONED.has(ev) || !d) ? ` — ${e.note}` : ''}`;
+  }
+
+  // ── Skeleton (built once) ───────────────────────────────────────────
+  function statusButton() {
+    const btn = h('button', { class: 'btn sm', type: 'button', attrs: { 'aria-haspopup': 'menu' },
+      on: { click: () => { const c = cur && WB.card(cur.id); if (c) ui.menu(btn, A.statusMenuFor(c)); } } });
+    return btn;
+  }
+  function fillStatus(btn, c) {
+    const name = WB.colName(c.column);
+    put(btn, ui.statusDot(c.column), name, icon('down', 'sm'));
+    btn.setAttribute('aria-label', `Status: ${name}`);
+  }
+  function skeleton() {
+    panel = document.getElementById('panel');
+    panel.tabIndex = -1;
+    barStatus = statusButton();
+    refBtn = h('button', { class: 'btn xs ref', type: 'button', title: 'Copy reference', on: { click: () => cur && A.copyRef(cur.id) } });
+    primaryBtn = h('button', { class: 'btn sm primary pill', type: 'button', hidden: true, on: { click: () => primaryRun?.() } });
+    const more = iconBtn('more', 'More actions', () => { const c = cur && WB.card(cur.id); if (c) ui.menu(more, A.menuFor(c), { align: 'end' }); }, 'btn icon sm', '');
+    expandBtn = iconBtn('expand', 'Wide view', toggleWide, 'btn icon sm', '');
+    expandBtn.setAttribute('aria-pressed', 'false');
+    body = h('div', { class: 'panel-body' });
+    composer = h('textarea', { rows: 1, attrs: { 'aria-label': 'Comment' },
+      on: { input: syncSend, keydown: e => { if (isEnter(e)) { e.preventDefault(); send(); } } } });
+    sendBtn = h('button', { class: 'btn icon send', type: 'button', disabled: true, title: 'Send', attrs: { 'aria-label': 'Send comment' }, on: { click: send } }, icon('up'));
+    who = h('span', { class: 'who' });
+    fileInput = h('input', { type: 'file', multiple: true, hidden: true,
+      on: { change: () => { const files = [...fileInput.files]; fileInput.value = ''; upload(files); } } });
+    panel.append(
+      h('div', { class: 'panel-bar' }, barStatus, refBtn, h('span', { class: 'spacer' }), primaryBtn, more, expandBtn,
+        iconBtn('x', 'Close', () => WB.closeCard(), 'btn icon sm', '')),
+      body,
+      h('div', { class: 'panel-foot' }, h('div', { class: 'composer' }, composer,
+        h('div', { class: 'composer-bar' }, iconBtn('clip', 'Attach files', () => fileInput.click(), 'btn icon sm', ''), who, sendBtn))),
+      fileInput);
+    setActor(WB.state.actor);
+    WB.on('actor', label => { setActor(label); flush(); });
+    panel.addEventListener('transitionend', e => { if (e.target === panel && !panel.classList.contains('open')) endClose(); });
+    const hasFiles = e => !!e.dataTransfer?.types.includes('Files');
+    panel.addEventListener('dragover', e => {
+      if (!hasFiles(e) || !cur) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      panel.classList.add('drop-files');
+    });
+    panel.addEventListener('dragleave', e => { if (!panel.contains(e.relatedTarget)) panel.classList.remove('drop-files'); });
+    panel.addEventListener('drop', e => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      panel.classList.remove('drop-files');
+      upload([...e.dataTransfer.files]);
+    });
+  }
+  function setActor(label) {
+    composer.placeholder = `Comment as ${label}…`;
+    who.textContent = label;
+  }
+  function toggleWide() {
+    const wide = panel.classList.toggle('wide');
+    expandBtn.setAttribute('aria-pressed', String(wide));
+    put(expandBtn, icon(wide ? 'collapse' : 'expand'));
+  }
+  const syncSend = () => { sendBtn.disabled = sending || !composer.value.trim(); };
+  async function send() {
+    const id = cur?.id, text = composer.value.trim();
+    if (!id || !text || sending) return;
+    sending = true;
+    syncSend();
+    const r = await api.comment(id, { type: 'add', text });
+    sending = false;
+    if (r.ok) {
+      if (drafts.get(id)?.trim() === text) drafts.delete(id);
+      if (cur?.id === id && composer.value.trim() === text) composer.value = '';
+    }
+    syncSend();
+  }
+  async function upload(files) {
+    const id = cur?.id;
+    if (!id) return;
+    for (const file of files) await api.upload(id, file);
+  }
+
+  // ── Body ────────────────────────────────────────────────────────────
+  function build(card) {
+    const id = card.id;
+    slot(c => json([c.column, c.num, c.title, c.activeOwner, WB.colName(c.column), WB.state.actor]), fillBar, { cross: true });
+    const title = field(h('textarea', { class: 'panel-title', rows: 1, placeholder: 'Untitled', attrs: { 'aria-label': 'Title' } }),
+      c => c.title || '', v => api.patchCard(id, { title: v.trim() }), { enter: true, required: true });
+    cur.title = title;
+    return [title, props(id),
+      textSection(id, 'Description', 'origin', 'Add a description…'),
+      subtasks(id),
+      textSection(id, 'Notes', 'notes', 'Add notes…',
+        h('button', { class: 'btn xs', type: 'button', on: { click: () => A.workpad(id) } }, icon('edit', 'sm'), 'Add acceptance template')),
+      textSection(id, 'Write-up', 'writeup', 'What shipped and how it was verified…'),
+      attachments(id), activity(), discussion(id)];
+  }
+  function fillBar(c) {
+    fillStatus(barStatus, c);
+    refBtn.textContent = `#${c.num}`;
+    refBtn.setAttribute('aria-label', `Copy reference #${c.num}`);
+    const p = A.primaryFor(c);
+    primaryRun = p ? p.run : null;
+    primaryBtn.hidden = !p;
+    if (p) put(primaryBtn, icon(p.icon, 'sm'), p.label);
+    panel.setAttribute('aria-label', `Card #${c.num}: ${c.title}`);
+  }
+
+  function props(id) {
+    const label = text => h('div', { class: 'prop-label', text });
+    const value = (...kids) => h('div', { class: 'prop-value' }, kids);
+    const status = statusButton();
+    slot(c => c.column + WB.colName(c.column), c => fillStatus(status, c), { cross: true });
+
+    const prio = h('button', { class: 'btn sm', type: 'button', attrs: { 'aria-haspopup': 'menu' }, on: { click: () => {
+      const c = WB.card(id);
+      if (c) ui.menu(prio, PRIORITIES.map(([p, text]) => ({ label: text, iconNode: ui.prio(p), checked: (c.priority || null) === p,
+        run: () => { if ((c.priority || null) !== p) api.patchCard(id, { priority: p }); } })));
+    } } });
+    slot(c => c.priority || '', c => {
+      const text = (PRIORITIES.find(([p]) => p === (c.priority || null)) || PRIORITIES[3])[1];
+      put(prio, ui.prio(c.priority), text);
+      prio.setAttribute('aria-label', `Priority: ${text}`);
+    });
+
+    const owner = value();
+    slot(c => json([c.activeOwner, c.claimedAt]), c => put(owner, c.activeOwner
+      ? [ui.avatar(c.activeOwner), h('span', { text: c.activeOwner }),
+        c.claimedAt ? h('span', { class: 'faint', title: ui.fmtDateTime(c.claimedAt), text: `since ${ui.relTime(c.claimedAt)}` }) : null]
+      : h('span', { class: 'faint', text: 'Unowned' })));
+
+    const tags = h('span', { style: { display: 'contents' } });
+    slot(c => json(c.tags), c => put(tags, (c.tags || []).map(t => {
+      const chip = ui.chip(t, { onRemove: () => edit(id, x => api.patchCard(id, { tags: (x.tags || []).filter(y => y !== t) })) });
+      chip.classList.add('lg');
+      return chip;
+    })));
+    const tagInput = onEnterAdd(inline('Add tag', 'Add tag'),
+      t => edit(id, x => ((x.tags || []).includes(t) ? null : api.patchCard(id, { tags: [...(x.tags || []), t] }))));
+
+    // Depends on / Links: pills for the referenced cards plus an inline "#42" input.
+    const refs = (key, text) => {
+      const list = h('span', { style: { display: 'contents' } });
+      const sig = r => { const d = WB.card(r); return d ? [d.num, d.title, d.column, d.outcome] : r; };
+      slot(c => json((c[key] || []).map(sig)),
+        c => put(list, (c[key] || []).map(r => pill(r, key === 'dependsOn', () => setRefs(id, key, l => l.filter(x => x !== r))))), { cross: true });
+      return [list, onEnterAdd(inline(key === 'dependsOn' ? 'Add #card' : 'Link #card', text), raw => addRef(id, key, raw))];
+    };
+
+    const code = field(h('input', { class: 'add-inline mono', placeholder: 'Add code', attrs: { 'aria-label': 'Code' } }),
+      c => c.code || '', v => api.patchCard(id, { code: v.trim() }), { enter: true });
+
+    const blockedLabel = label('Blocked'), blocked = value();
+    slot(c => json([c.blockedReason, c.unblockWhen]), c => {
+      blockedLabel.hidden = blocked.hidden = !c.blockedReason;
+      put(blocked, h('span', { text: c.blockedReason || '' }), c.unblockWhen ? h('span', { class: 'faint', text: `until ${c.unblockWhen}` }) : null);
+    });
+
+    const outcomeLabel = label('Outcome'), outcome = value();
+    slot(c => json([c.column, c.outcome, c.cancelReason, c.doneAt]), c => {
+      const shown = c.column === 'done' && !!c.outcome;
+      outcomeLabel.hidden = outcome.hidden = !shown;
+      if (!shown) return;
+      const done = c.outcome === 'completed';
+      const mark = icon(done ? 'done' : 'canceled', 'sm');
+      if (done) mark.style.color = 'var(--green)';
+      put(outcome, mark, h('span', { text: done ? 'Completed' : 'Canceled' }),
+        done ? (c.doneAt ? h('span', { class: 'faint' }, when(c.doneAt)) : null) : (c.cancelReason ? h('span', { class: 'faint', text: c.cancelReason }) : null));
+    });
+
+    const created = h('div', { class: 'prop-value faint' }), updated = h('div', { class: 'prop-value faint' });
+    slot(c => json([c.createdAt, c.updatedAt]), c => { put(created, when(c.createdAt)); put(updated, when(c.updatedAt)); });
+
+    return h('div', { class: 'props' },
+      label('Status'), value(status),
+      label('Priority'), value(prio),
+      label('Owner'), owner,
+      label('Tags'), value(tags, tagInput),
+      label('Depends on'), value(refs('dependsOn', 'Add dependency')),
+      label('Links'), value(refs('links', 'Add link')),
+      label('Code'), value(code),
+      blockedLabel, blocked,
+      outcomeLabel, outcome,
+      label('Created'), created,
+      label('Updated'), updated);
+  }
+  function pill(ref, showDone, onRemove) {
+    const d = WB.card(ref);
+    const ok = showDone && !!d && d.column === 'done' && d.outcome === 'completed';
+    const name = d ? `#${d.num}` : ref;
+    return h('span', { class: ok ? 'dep ok' : 'dep', title: d ? `${name} ${d.title} · ${ok ? 'complete' : WB.colName(d.column)}` : 'Card not found' },
+      h('span', { class: 'ref mono', text: d ? name : '?' }),
+      h('span', { class: 't', text: d ? d.title : ref }),
+      ok ? icon('check', 'sm') : null,
+      iconBtn('x', `Remove ${name}`, onRemove));
+  }
+
+  function textSection(id, title, key, placeholder, tool = null) {
+    const el = field(h('textarea', { class: 'field', rows: 1, placeholder, attrs: { 'aria-label': title } }),
+      c => c[key] || '', v => api.patchCard(id, { [key]: v }));
+    return section(title, null, tool, el);
+  }
+
+  function subtasks(id) {
+    const count = counter();
+    const list = h('div', { class: 'checklist' });
+    let all = false;
+    const more = moreBtn(() => { all = true; flush(); });
+    const add = onEnterAdd(h('input', { class: 'field', placeholder: 'Add subtask…', attrs: { 'aria-label': 'Add subtask' } }),
+      text => editTree(id, tree => { tree.push(newSub(tree, text)); }));
+    slot(c => json(c.subtasks) + all, c => {
+      const tree = c.subtasks || [];
+      const n = countTree(tree);
+      put(count, n.total ? [ui.progress(n.done, n.total), `${n.done}/${n.total}`] : null);
+      const a = document.activeElement;
+      const keep = list.contains(a) && a.classList.contains('box') ? a.parentNode.dataset.sid : null;
+      let left = all ? Infinity : SUB_CAP;
+      const rows = items => {
+        const out = [];
+        for (const s of items) {
+          if (left-- <= 0) break;
+          out.push(row(s));
+          if (s.children?.length && !s.collapsed) out.push(h('div', { class: 'check-children' }, rows(s.children)));
+        }
+        return out;
+      };
+      put(list, rows(tree));
+      if (keep) list.querySelector(`[data-sid="${CSS.escape(keep)}"] > .box`)?.focus({ preventScroll: true });
+      more.hidden = all || n.shown <= SUB_CAP;
+      more.textContent = `Show all ${n.shown}`;
+    }, { busy: () => {
+      const a = document.activeElement;
+      return (list.contains(a) && a.tagName === 'TEXTAREA') || [...list.querySelectorAll('textarea')].some(isDirty);
+    } });
+    list.addEventListener('focusout', e => { if (!list.contains(e.relatedTarget)) flush(); });
+
+    function row(s) {
+      const kids = s.children || [];
+      const text = h('textarea', { class: 'text', rows: 1, attrs: { 'aria-label': 'Subtask' } });
+      setBase(text, s.text);
+      bindText(text, v => editTree(id, tree => { const node = nodeOf(tree, s.id); if (!node) return false; node.text = v; }), { enter: true, required: true });
+      const box = h('button', { class: 'box', type: 'button', attrs: { role: 'checkbox', 'aria-checked': String(!!s.done), 'aria-label': s.text || 'Subtask' },
+        on: { click: () => toggle(s.id, el, box) } }, icon('check'));
+      const el = h('div', { class: s.done ? 'check-row done' : 'check-row', dataset: { sid: s.id } }, box, text,
+        kids.length ? iconBtn(s.collapsed ? 'right' : 'down', s.collapsed ? `Show ${kids.length} sub-items` : 'Hide sub-items',
+          () => editTree(id, tree => { const node = nodeOf(tree, s.id); if (!node) return false; node.collapsed = !node.collapsed; })) : null,
+        h('span', { class: 'row-tools' },
+          iconBtn('plus', 'Add sub-item', () => addChild(s.id, el)),
+          iconBtn('trash', 'Delete subtask', () => remove(s))));
+      return el;
+    }
+    function toggle(sid, el, box) {
+      const done = !el.classList.contains('done');
+      const show = on => { el.classList.toggle('done', on); box.setAttribute('aria-checked', String(on)); };
+      show(done);
+      editTree(id, tree => { const node = nodeOf(tree, sid); if (!node) return false; node.done = done; node.doneAt = done ? now() : null; })
+        .then(r => { if (!r.ok) show(!done); });
+    }
+    // A local draft row under the parent; it becomes a real subtask once it has text.
+    function addChild(sid, el) {
+      let kids = el.nextElementSibling;
+      if (!kids?.classList.contains('check-children')) el.after(kids = h('div', { class: 'check-children' }));
+      const text = h('textarea', { class: 'text', rows: 1, placeholder: 'Sub-item', attrs: { 'aria-label': 'New sub-item' } });
+      bases.set(text, '');
+      const draft = h('div', { class: 'check-row' }, h('span', { class: 'box' }), text);
+      kids.append(draft);
+      text.focus();
+      text.addEventListener('keydown', e => { if (isEnter(e)) { e.preventDefault(); text.blur(); } });
+      text.addEventListener('blur', async () => {
+        const v = text.value.trim();
+        if (!v) { draft.remove(); flush(); return; }
+        text.removeAttribute('aria-invalid');
+        const r = await editTree(id, tree => {
+          const node = nodeOf(tree, sid);
+          if (!node) return false;
+          (node.children ||= []).push(newSub(tree, v));
+          node.collapsed = false;
+        });
+        if (!r.ok) { text.setAttribute('aria-invalid', 'true'); return; }
+        draft.remove();
+        flush();
+      });
+    }
+    async function remove(s) {
+      const n = countTree(s.children).total;
+      if (n && !await ui.confirm({ title: 'Delete subtask?', body: `“${s.text}” and its ${n} sub-item${n === 1 ? '' : 's'} will be removed.`, ok: 'Delete', danger: true })) return;
+      editTree(id, tree => { const hit = locate(tree, s.id); if (!hit) return false; hit.list.splice(hit.i, 1); });
+    }
+    return section('Subtasks', count, null, list, more, add);
+  }
+
+  function attachments(id) {
+    const count = counter();
+    const list = h('div', {});
+    slot(c => json(c.attachments), c => {
+      const files = c.attachments || [];
+      count.textContent = files.length || '';
+      put(list, files.map(a => h('div', { class: 'file-row' },
+        h('span', { class: 'ic' }, icon('file')),
+        h('div', { class: 'main' },
+          h('a', { class: 'name', href: api.attachmentUrl(id, a.id), download: a.name, title: a.name, text: a.name }),
+          h('div', { class: 'meta', text: [fmtSize(a.size || 0), a.by, ui.relTime(a.createdAt)].filter(Boolean).join(' · ') })),
+        iconBtn('x', `Remove ${a.name}`, async () => {
+          if (await ui.confirm({ title: `Remove ${a.name}?`, body: 'The file will be detached from this card.', ok: 'Remove', danger: true })) api.detach(id, a.id);
+        }))));
+    });
+    return section('Attachments', count,
+      h('button', { class: 'btn xs', type: 'button', on: { click: () => fileInput.click() } }, icon('clip', 'sm'), 'Attach'), list);
+  }
+
+  function activity() {
+    const count = counter();
+    const list = h('ul', { class: 'activity' });
+    let all = false;
+    const more = moreBtn(() => { all = true; flush(); });
+    slot(c => json(c.history) + all, c => {
+      const events = (c.history || []).slice().reverse();
+      count.textContent = events.length || '';
+      put(list, (all ? events : events.slice(0, HIST_CAP)).map(e => h('li', {}, when(e.at), h('span', { text: describe(e) }))));
+      more.hidden = all || events.length <= HIST_CAP;
+      more.textContent = `Show all ${events.length}`;
+    });
+    return section('Activity', count, null, list, more);
+  }
+
+  function discussion(id) {
+    const count = counter();
+    const thread = h('div', { class: 'thread' });
+    let all = false;
+    const more = moreBtn(() => { all = true; flush(); });
+    slot(c => json(c.comments) + all, c => {
+      const list = c.comments || [];
+      count.textContent = list.length || '';
+      put(thread, (all ? list : list.slice(-MSG_CAP)).map(m => message(m)));
+      more.hidden = all || list.length <= MSG_CAP;
+      more.textContent = `Show all ${list.length}`;
+    }, { busy: () => !!thread.querySelector('textarea') });
+
+    function message(m) {
+      const text = h('div', { class: 'msg-text', text: m.text });
+      return h('div', { class: 'msg' }, ui.avatar(m.by || '?'),
+        h('div', { class: 'msg-body' },
+          h('div', { class: 'msg-head' },
+            h('b', { text: m.by || 'Unknown' }), when(m.at),
+            m.updatedAt ? h('span', { title: `Edited ${ui.fmtDateTime(m.updatedAt)}${m.updatedBy ? ` by ${m.updatedBy}` : ''}`, text: 'edited' }) : null,
+            h('span', { class: 'msg-tools' },
+              iconBtn('edit', 'Edit comment', () => editMessage(m, text)),
+              iconBtn('trash', 'Delete comment', async () => {
+                if (await ui.confirm({ title: 'Delete comment?', body: 'It will be removed for everyone.', ok: 'Delete', danger: true })) api.comment(id, { type: 'delete', id: m.id });
+              }))),
+          text));
+    }
+    function editMessage(m, textEl) {
+      if (textEl.hidden) return;
+      const input = h('textarea', { class: 'field', attrs: { 'aria-label': 'Edit comment' } });
+      input.value = m.text;
+      const close = () => { box.remove(); textEl.hidden = false; flush(); };
+      const save = async () => {
+        const text = input.value.trim();
+        if (!text) return;
+        if (text === m.text) { close(); return; }
+        ok.disabled = true;
+        const r = await api.comment(id, { type: 'edit', id: m.id, text });
+        ok.disabled = false;
+        if (r.ok) close(); else input.setAttribute('aria-invalid', 'true');
+      };
+      const ok = h('button', { class: 'btn xs primary', type: 'button', text: 'Save', on: { click: save } });
+      const box = h('div', {}, input, h('div', { class: 'msg-actions' }, h('button', { class: 'btn xs', type: 'button', text: 'Cancel', on: { click: close } }), ok));
+      input.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); } });
+      textEl.hidden = true;
+      textEl.after(box);
+      input.focus();
+    }
+    return section('Discussion', count, null, more, thread);
+  }
+
+  // ── Public API ──────────────────────────────────────────────────────
+  function open(id) {
+    const card = WB.card(id);
+    if (!card) return;
+    if (!panel) skeleton();
+    const wasOpen = panel.classList.contains('open');
+    clearTimeout(closeTimer);
+    panel.classList.remove('closing');
+    if (cur?.id === card.id) update();
+    else {
+      const a = document.activeElement;
+      if (body.contains(a)) a.blur(); // commits an edit in progress to the card it belongs to
+      if (cur) { if (composer.value.trim()) drafts.set(cur.id, composer.value); else drafts.delete(cur.id); }
+      composer.value = drafts.get(card.id) || '';
+      syncSend();
+      cur?.gone?.remove();
+      cur = { id: card.id, card, slots: [], title: null, gone: null };
+      // A fresh body element: scroll starts at the top without a layout read, and `.swap` replays its fade.
+      const next = h('div', { class: wasOpen ? 'panel-body swap' : 'panel-body' }, build(card));
+      render(card);
+      body.replaceWith(next);
+      body = next;
+    }
+    cancelAnimationFrame(prepFrame);
+    if (wasOpen) panel.classList.add('open');
+    else {
+      // Frame N lays out and paints the new content off-screen; frame N+1 starts a compositor-only slide.
+      panel.classList.add('preparing');
+      prepFrame = requestAnimationFrame(() => {
+        prepFrame = requestAnimationFrame(() => { panel.classList.remove('preparing'); panel.classList.add('open'); });
+      });
+    }
+    // ponytail: a 5 s createdAt window stands in for a "just created" flag (the new-card and follow-up
+    // flows open the card at once); pass an explicit flag from core if others' fresh cards steal focus.
+    const fresh = Date.now() - Date.parse(card.createdAt) < 5000;
+    const target = fresh ? cur.title : panel;
+    // Focusing forces a synchronous layout of the new content; do it after the slide-in so the
+    // animation's first frames only composite.
+    setTimeout(() => {
+      if (cur?.id !== card.id || !panel.classList.contains('open')) return;
+      target.focus({ preventScroll: true });
+      if (fresh) target.setSelectionRange(target.value.length, target.value.length);
+    }, wasOpen ? 0 : 340);
+  }
+
+  const endClose = () => { clearTimeout(closeTimer); panel.classList.remove('closing'); };
+  function close() {
+    if (!panel) return;
+    const a = document.activeElement;
+    if (panel.contains(a)) a.blur(); // saves a field being edited
+    cancelAnimationFrame(prepFrame);
+    panel.classList.remove('preparing');
+    if (!panel.classList.contains('open')) return;
+    panel.classList.remove('open', 'drop-files');
+    panel.classList.add('closing');
+    clearTimeout(closeTimer);
+    closeTimer = setTimeout(endClose, 300);
+  }
+
+  function update() {
+    if (!cur) return;
+    const card = WB.card(cur.id);
+    if (!card) { showGone(); return; }
+    if (cur.gone) { cur.gone.remove(); cur.gone = null; cur.card = null; }
+    if (card === cur.card) return;
+    // Unchanged card content (same changedRev): only parts that show other cards can differ.
+    const crossOnly = card.changedRev != null && card.changedRev === cur.card?.changedRev;
+    cur.card = card;
+    render(card, crossOnly);
+  }
+  // Shown between the bar and the body so it stays visible at any scroll position.
+  function showGone() {
+    if (cur.gone) return;
+    cur.gone = h('div', { class: 'banner panel-msg', attrs: { role: 'status' } },
+      h('span', { text: 'This card was deleted or is no longer on this board.' }),
+      h('button', { class: 'btn sm outline', type: 'button', text: 'Close', on: { click: () => WB.closeCard() } }));
+    body.before(cur.gone);
+  }
+
+  WB.panel = { open, close, update };
+})();
+
+/* ── Secondary views: Ready now · Rework · Canceled · Insights · Git · Calendar ── */
+(() => {
+  const h = (...a) => WB.ui.h(...a);
+  const icon = (name, cls) => WB.ui.icon(name, cls);
+
+  // Server-backed data survives view switches; `cur` is the one mounted view.
+  const PATHS = {ready: '/api/ready', insights: '/api/stats', git: '/api/git'};
+  const VALID = {
+    ready: d => Array.isArray(d && d.cards),
+    insights: d => !!d && !!d.stats && typeof d.stats === 'object',
+    git: d => !!d && typeof d.state === 'string',
+  };
+  const store = {ready: {}, insights: {}, git: {}};   // {data, error, busy, again, timer, at}
+  const cal = {month: null, filter: 'all'};           // calendar state lives in memory only
+  let cur = null;                                     // {name, host, body, head, sig, …}
+
+  const active = kind => !!cur && cur.name === kind && cur.host.isConnected;
+  const errText = e => (e && e.message) || 'Request failed';
+  const tone = (el, value) => { el.style.setProperty('--tone', value); return el; };
+  const rev = c => c.changedRev ?? c.updatedAt;
+  const dayKey = d => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  const toDate = iso => { const t = Date.parse(iso); return Number.isFinite(t) ? new Date(t) : null; };
+  const pct = (n, max) => `${Math.round(n / max * 1000) / 10}%`;
+  const fmt = n => (n == null ? '—' : String(n));
+
+  // ── Server data: fetch on render, throttle refetch after doc events (≥ 1 s) ──
+  function load(kind) {
+    const s = store[kind];
+    clearTimeout(s.timer); s.timer = 0;
+    if (s.busy) { s.again = true; return; }
+    s.busy = true; s.again = false;
+    if (active(kind)) VIEWS[kind].paint();
+    Promise.resolve()
+      .then(() => WB.api.get(PATHS[kind]))
+      .then(d => {
+        if (!VALID[kind](d)) throw new Error(`Unexpected response from ${PATHS[kind]}`);
+        s.data = d; s.error = null; s.at = new Date();
+      })
+      .catch(e => { s.error = e; })
+      .then(() => {
+        s.busy = false;
+        if (!active(kind)) return;
+        if (s.again) load(kind); else VIEWS[kind].paint();
+      });
+  }
+  function schedule(kind) {
+    const s = store[kind];
+    if (!s.timer) s.timer = setTimeout(() => { s.timer = 0; if (active(kind)) load(kind); }, 1000);
+  }
+
+  // ── Shared building blocks ──
+  function mount(title, desc, tools) {
+    const h1 = h('h1', {text: title}), p = h('p', {text: desc});
+    const el = h('div', {class: 'view-head'}, h('div', {}, h1, p), tools ? h('div', {class: 'tools'}, tools) : null);
+    cur.head = {el, h1, p};
+    cur.body = h('div', {});
+    cur.host.replaceChildren(el, cur.body);
+  }
+  // Replace the body only when its signature changed; keep keyboard focus on the same card.
+  function show(sig, build) {
+    if (sig === cur.sig) return;
+    cur.sig = sig;
+    const body = cur.body, a = document.activeElement;
+    const holder = a && a !== body && body.contains(a) ? a.closest('[data-vid]') : null;
+    body.replaceChildren(...[].concat(build()).filter(Boolean));
+    if (holder) body.querySelector(`[data-vid="${CSS.escape(holder.dataset.vid)}"]`)?.focus({preventScroll: true});
+  }
+  const empty = (ic, title, msg, action) =>
+    h('div', {class: 'empty'}, icon(ic), h('b', {text: title}), msg ? h('span', {text: msg}) : null, action || null);
+  const retry = kind => h('button', {class: 'btn sm outline', type: 'button', on: {click: () => load(kind)}}, 'Retry');
+  const staleNote = (kind, e) => h('div', {class: 'banner error', attrs: {role: 'alert'}},
+    icon('info'), h('span', {text: `Couldn't refresh, showing the last result. ${errText(e)}`}), retry(kind));
+  // Loading / failed states while a server-backed view has no data yet. Returns true when it painted one.
+  function noData(kind, failTitle) {
+    const s = store[kind];
+    if (s.data) return false;
+    if (s.error && !s.busy) show(`fail:${errText(s.error)}`, () => empty(kind, failTitle, errText(s.error), retry(kind)));
+    else show('loading', () => h('div', {class: 'empty', attrs: {'aria-busy': 'true'}}, h('span', {text: 'Loading…'})));
+    return true;
+  }
+  const block = (title, aside, ...content) => h('section', {class: 'card-block'},
+    h('h2', {}, title, aside ? h('span', {class: 'aside', text: aside}) : null), content);
+  const note = text => h('p', {class: 'view-note', text});
+
+  // ── Card grids: Ready now · Rework · Canceled ──
+  function cardGrid(cards, reason) {
+    const sel = WB.state.selectedId;
+    return h('div', {class: 'grid-cards'}, cards.map(c => {
+      const el = WB.ui.renderCard(c);
+      el.dataset.vid = c.id;
+      el.classList.toggle('selected', c.id === sel);
+      const text = reason && c[reason.field];
+      if (text) el.append(tone(h('div', {class: 'card-note', title: text, text}), reason.tone));
+      return el;
+    }));
+  }
+  function cardList(all, def, kind) {
+    const shown = all.filter(c => WB.matches(c)), err = kind && store[kind].error;
+    const sig = `${err ? errText(err) : ''}|${all.length}|${shown.map(c => `${c.id}:${rev(c)}`).join(',')}`;
+    show(sig, () => [
+      err && staleNote(kind, err),
+      shown.length ? cardGrid(shown, def.reason)
+        : all.length ? empty('filter', 'No matching cards',
+          `${all.length} ${all.length === 1 ? 'card is' : 'cards are'} hidden by the current filters or search.`)
+        : empty(def.icon, def.none, def.hint),
+    ]);
+  }
+
+  const READY = {icon: 'ready', none: 'Nothing is ready', hint: 'Unowned Task cards whose prerequisites are complete will appear here.'};
+  function paintReady() {
+    if (noData('ready', "Couldn't load ready cards")) return;
+    // Server order; drop cards the live document says are gone, claimed or moved (refetch follows).
+    const all = store.ready.data.cards.map(c => WB.card(c && c.id)).filter(c => c && c.column === 'task' && !c.activeOwner);
+    cardList(all, READY, 'ready');
+  }
+
+  const LISTS = {
+    rework: {
+      title: 'Rework', desc: 'Cards sent back for another pass, with the reason on each.',
+      pick: c => !!c.reworkReason && c.column !== 'done', reason: {field: 'reworkReason', tone: 'var(--amber)'},
+      icon: 'rework', none: 'No rework', hint: 'Cards returned for another pass will appear here.',
+    },
+    canceled: {
+      title: 'Canceled', desc: "Closed without completion. Canceled prerequisites don't unlock dependent work.",
+      pick: c => c.outcome === 'canceled', reason: {field: 'cancelReason', tone: 'var(--fg-2)'},
+      icon: 'canceled', none: 'Nothing canceled', hint: 'Cards closed without completion will be listed here.',
+    },
+  };
+  function listView(kind) {
+    const def = LISTS[kind], paint = () => cardList(WB.cards().filter(def.pick), def);
+    return {render() { mount(def.title, def.desc); paint(); }, paint, update: paint};
+  }
+
+  // ── Insights ──
+  const KPIS = [
+    ['total', 'Total'], ['open', 'Open'], ['ready', 'Ready now'], ['inprogress', 'In progress', 'var(--amber)'],
+    ['blocked', 'Blocked', 'var(--red)'], ['completed', 'Completed', 'var(--green)'], ['canceled', 'Canceled'],
+    ['rework', 'In rework'], ['completedLast7Days', 'Completed · 7 days'],
+  ];
+  const PRIOS = [['critical', 'Critical', 'var(--red)'], ['mid', 'Mid', 'var(--amber)'], ['low', 'Low', 'var(--fg-2)'], ['unset', 'No priority', 'var(--fg-4)']];
+
+  function bars(rows, still) {
+    const max = Math.max(1, ...rows.map(r => r.n));
+    return h('div', {class: 'bars'}, rows.map(r => {
+      const fill = h('div', {class: 'fill', style: {width: pct(r.n, max)}});
+      if (still) fill.style.animation = 'none';
+      if (r.status) fill.dataset.status = r.status; else if (r.tone) tone(fill, r.tone);
+      return h('div', {class: 'bar-row'},
+        h('div', {class: 'l', title: r.label}, r.avatar ? WB.ui.avatar(r.label) : null, h('span', {text: r.label})),
+        h('div', {class: 'track'}, fill),
+        h('div', {class: 'n', text: String(r.n)}));
+    }));
+  }
+  function last14() {
+    const now = new Date(), days = [], index = new Map();
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      index.set(dayKey(d), days.length);
+      days.push(d);
+    }
+    const counts = days.map(() => 0);
+    for (const c of WB.cards()) {
+      if (c.outcome !== 'completed') continue;
+      const d = toDate(c.doneAt), i = d && index.get(dayKey(d));
+      if (i != null) counts[i]++;
+    }
+    return {days, counts, total: counts.reduce((a, b) => a + b, 0), today: dayKey(now)};
+  }
+  function histogram({days, counts, total}, still) {
+    const max = Math.max(1, ...counts);
+    return h('div', {class: 'hist', attrs: {role: 'img', 'aria-label': `${total} completed in the last 14 days`}}, days.map((d, i) => {
+      const bar = h('div', {class: counts[i] ? 'hist-bar' : 'hist-bar zero', style: {height: pct(counts[i], max)}});
+      if (still) bar.style.animation = 'none';
+      const label = d.toLocaleDateString('en-US', {weekday: 'short', month: 'short', day: 'numeric'});
+      return h('div', {class: i === 13 ? 'hist-col today' : 'hist-col', title: `${label} · ${counts[i]} completed`},
+        h('div', {class: 'hist-track'}, bar), h('span', {class: 'd', text: String(d.getDate())}));
+    }));
+  }
+  function paintInsights() {
+    if (noData('insights', "Couldn't load insights")) return;
+    const s = store.insights, st = s.data.stats, hist = last14(), cols = WB.columns();
+    const names = cols.map(c => WB.colName(c.id));
+    const sig = JSON.stringify([st, hist.counts, hist.today, names, s.error ? errText(s.error) : '']);
+    show(sig, () => {
+      const still = !!cur.painted;   // bars grow on first paint only; live refreshes just snap
+      cur.painted = true;
+      const owners = Object.entries(st.byOwner || {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      const owned = owners.reduce((n, o) => n + o[1], 0);
+      return [
+        s.error && staleNote('insights', s.error),
+        h('div', {class: 'kpis'}, KPIS.map(([k, label, t]) => {
+          const el = h('div', {class: 'kpi'}, h('div', {class: 'v', text: fmt(st[k])}), h('div', {class: 'l', text: label}));
+          return t ? tone(el, t) : el;
+        })),
+        h('div', {class: 'vgrid'},
+          block('Workflow', `${fmt(st.total)} cards`,
+            bars(cols.map((c, i) => ({label: names[i], n: (st.byColumn || {})[c.id] || 0, status: c.id})), still)),
+          block('Priority', null,
+            bars(PRIOS.map(([k, label, t]) => ({label, n: (st.byPriority || {})[k] || 0, tone: t})), still)),
+          block('Owners', owners.length ? `${owned} in progress` : null,
+            owners.length
+              ? bars(owners.slice(0, 8).map(([label, n]) => ({label, n, avatar: true})), still)
+              : h('p', {class: 'block-note', text: 'Nobody owns an in-progress card right now.'}),
+            owners.length > 8 ? h('p', {class: 'block-note', text: `+${owners.length - 8} more owners`}) : null),
+          block('Completed · last 14 days', `${hist.total} completed`, histogram(hist, still))),
+      ];
+    });
+  }
+
+  // ── Git (fetched on render and on Refresh only) ──
+  const GIT_DESC = 'Read-only working tree status of the project repository.';
+  const GIT_BAD = {not_repo: 'Not a Git repository', unavailable: 'Git is unavailable', error: "Couldn't read Git status"};
+
+  function renderGit() {
+    cur.refreshLabel = h('span', {text: 'Refresh'});
+    mount('Git', GIT_DESC, h('button', {class: 'btn sm outline', type: 'button', on: {click: () => store.git.busy || load('git')}},
+      icon('reset', 'sm'), cur.refreshLabel));
+    paintGit();
+    load('git');
+  }
+  function aheadBehind(g) {
+    if (g.ahead == null) return 'No upstream';
+    return g.ahead || g.behind ? `${g.ahead} ahead · ${g.behind} behind` : 'Up to date';
+  }
+  function gitSummary(g) {
+    const state = tone(h('span', {class: 'badge', text: g.state === 'clean' ? 'Clean' : 'Uncommitted changes'}),
+      g.state === 'clean' ? 'var(--green)' : 'var(--amber)');
+    return h('section', {class: 'card-block'},
+      h('div', {class: 'git-line'},
+        h('span', {class: 'chip lg', title: 'Branch'}, icon('branch', 'sm'), g.branch || 'Detached HEAD'),
+        g.head ? h('span', {class: 'mono faint', title: g.head, text: g.head.slice(0, 7)}) : h('span', {class: 'faint', text: 'No commits yet'}),
+        g.subject ? h('span', {class: 'git-subject', title: g.subject, text: g.subject}) : null,
+        h('span', {class: 'faint', text: aheadBehind(g)}),
+        state),
+      g.root ? h('div', {class: 'git-root mono faint', title: g.root, text: g.root}) : null,
+      h('div', {class: 'git-counts'}, ['staged', 'unstaged', 'untracked', 'conflicted'].map(k => {
+        const chip = h('span', {class: 'chip lg'}, `${g[k] ?? 0} ${k}`);
+        if (k === 'conflicted' && g[k] > 0) chip.style.color = 'var(--red)';
+        return chip;
+      })));
+  }
+  function gitFiles(g) {
+    const files = g.files || [];
+    if (!files.length) return empty('check', 'Working tree clean', 'No staged, unstaged or untracked files.');
+    return h('div', {class: 'list'}, files.map(f => h('div', {class: 'list-row'},
+      h('span', {class: 'mono git-code', title: 'index · worktree', text: `${f.index || '.'}${f.worktree || '.'}`}),
+      h('span', {class: 'git-path', title: f.path, text: f.path}))));
+  }
+  function paintGit() {
+    const s = store.git;
+    cur.refreshLabel.textContent = s.busy ? 'Refreshing…' : 'Refresh';
+    cur.head.p.textContent = s.at
+      ? `${GIT_DESC} Checked ${s.at.toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'})}.`
+      : GIT_DESC;
+    if (noData('git', "Couldn't read Git status")) return;
+    const g = s.data, err = s.error;
+    show(JSON.stringify([g, err ? errText(err) : '']), () => [
+      err && staleNote('git', err),
+      ...(GIT_BAD[g.state]
+        ? [empty('git', GIT_BAD[g.state], g.error || '')]
+        : [gitSummary(g), gitFiles(g), g.truncated && note(`Showing the first ${(g.files || []).length} changed files.`), g.warning && note(g.warning)]),
+    ]);
+  }
+
+  // ── Calendar ──
+  const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const CAL_FILTERS = [
+    ['all', 'All', () => true],
+    ['open', 'Open', c => c.column !== 'done'],
+    ['done', 'Done', c => c.column === 'done'],
+    ['critical', 'Critical', c => c.priority === 'critical'],
+  ];
+  const monthStart = d => new Date(d.getFullYear(), d.getMonth(), 1);
+
+  function renderCal() {
+    if (!cal.month) cal.month = monthStart(new Date());
+    cur.seg = h('div', {class: 'seg', attrs: {role: 'group', 'aria-label': 'Show cards'}}, CAL_FILTERS.map(([k, label]) =>
+      h('button', {class: 'btn xs', type: 'button', dataset: {f: k}, on: {click: () => { cal.filter = k; paintCal(); }}}, label)));
+    const step = (ic, label, n) => h('button', {class: 'btn icon sm', type: 'button', title: label, attrs: {'aria-label': label}, on: {click: () => shift(n)}}, icon(ic));
+    mount('', '', [cur.seg, h('div', {class: 'cal-nav'},
+      step('left', 'Previous month', -1),
+      h('button', {class: 'btn sm outline', type: 'button', on: {click: () => shift(0)}}, 'Today'),
+      step('right', 'Next month', 1))]);
+    cur.head.el.classList.add('cal-head');
+    paintCal();
+  }
+  function shift(n) {
+    const m = cal.month;
+    cal.month = n ? new Date(m.getFullYear(), m.getMonth() + n, 1) : monthStart(new Date());
+    paintCal();
+  }
+  function calEvent(c) {
+    const canceled = c.outcome === 'canceled', title = c.title || 'Untitled';
+    const b = h('button', {
+      class: canceled ? 'cal-ev canceled' : 'cal-ev', type: 'button', title: `#${c.num} ${title}`,
+      dataset: {status: c.column, vid: c.id}, on: {click: () => WB.openCard(c.id)},
+    }, h('span', {class: 'ref', text: `#${c.num}`}), h('span', {class: 't', text: title}));
+    return canceled ? tone(b, 'var(--gray)') : b;
+  }
+  function calMore(cards) {
+    const items = () => cards.map(c => ({label: c.title || 'Untitled', hint: `#${c.num}`, run: () => WB.openCard(c.id)}));
+    return h('button', {class: 'cal-more', type: 'button', attrs: {'aria-haspopup': 'menu'}, on: {click: e => WB.ui.menu(e.currentTarget, items())}},
+      `+${cards.length} more`);
+  }
+  function calDay(d, mo, today, byDay) {
+    const k = dayKey(d), evs = (byDay.get(k) || []).sort((a, b) => a[0] - b[0]);
+    return h('div', {class: `cal-day${d.getMonth() !== mo ? ' out' : ''}${k === today ? ' today' : ''}`},
+      h('span', {class: 'd', text: String(d.getDate())}),
+      evs.slice(0, 3).map(e => calEvent(e[1])),
+      evs.length > 3 ? calMore(evs.slice(3).map(e => e[1])) : null);
+  }
+  function paintCal() {
+    const m = cal.month, y = m.getFullYear(), mo = m.getMonth();
+    const offset = (m.getDay() + 6) % 7;                                   // Monday-first
+    const cells = Math.ceil((offset + new Date(y, mo + 1, 0).getDate()) / 7) * 7;
+    const first = new Date(y, mo, 1 - offset), after = new Date(y, mo, 1 - offset + cells);
+    const pass = (CAL_FILTERS.find(f => f[0] === cal.filter) || CAL_FILTERS[0])[2];
+    const today = dayKey(new Date()), byDay = new Map(), sig = [y, mo, cal.filter, today];
+    let created = 0, shipped = 0;
+    for (const c of WB.cards()) {
+      if (!pass(c)) continue;
+      const born = toDate(c.createdAt), done = c.column === 'done' ? toDate(c.doneAt) : null, at = done || born;
+      if (born && born.getFullYear() === y && born.getMonth() === mo) created++;
+      if (done && c.outcome === 'completed' && done.getFullYear() === y && done.getMonth() === mo) shipped++;
+      if (!at || at < first || at >= after) continue;
+      const k = dayKey(at), list = byDay.get(k);
+      if (list) list.push([at, c]); else byDay.set(k, [[at, c]]);
+      sig.push(c.id, rev(c));
+    }
+    sig.push(created, shipped);
+    show(sig.join('|'), () => {
+      cur.head.h1.textContent = m.toLocaleDateString('en-US', {month: 'long', year: 'numeric'});
+      cur.head.p.textContent = `${created} created · ${shipped} shipped`;
+      for (const b of cur.seg.children) b.setAttribute('aria-pressed', String(b.dataset.f === cal.filter));
+      return h('div', {class: 'cal-grid'},
+        DOW.map(name => h('div', {class: 'cal-dow', text: name})),
+        Array.from({length: cells}, (_, i) => calDay(new Date(y, mo, 1 - offset + i), mo, today, byDay)));
+    });
+  }
+
+  // ── Registry ──
+  const VIEWS = {
+    ready: {
+      render() { mount('Ready now', 'Unowned Task cards whose prerequisites are complete — highest priority first.'); paintReady(); load('ready'); },
+      paint: paintReady,
+      update() { paintReady(); schedule('ready'); },
+    },
+    rework: listView('rework'),
+    canceled: listView('canceled'),
+    insights: {
+      render() { mount('Insights', 'Live summary of this board.'); paintInsights(); load('insights'); },
+      paint: paintInsights,
+      update() { paintInsights(); schedule('insights'); },
+    },
+    git: {render: renderGit, paint: paintGit, update() {}},   // never refetched automatically
+    calendar: {render: renderCal, paint: paintCal, update: paintCal},
+  };
+  const viewFor = name => (Object.prototype.hasOwnProperty.call(VIEWS, name) ? VIEWS[name] : null);
+
+  function render(name, host) {
+    cur = {name, host, sig: null};
+    const v = viewFor(name);
+    if (v) v.render();
+    else host.replaceChildren(empty('info', 'Nothing to show', `There is no "${name}" view.`));
+  }
+  function update(name, host) {
+    if (!cur || cur.host !== host || cur.name !== name) return render(name, host);
+    const v = viewFor(name);
+    if (v) v.update();
+  }
+
+  // Core only marks its own board cards; keep the open card highlighted in view grids too.
+  WB.on('select', id => {
+    if (!cur || !cur.host.isConnected) return;
+    for (const el of cur.host.querySelectorAll('.card[data-vid]')) el.classList.toggle('selected', el.dataset.vid === id);
+  });
+
+  WB.views = {render, update};
+})();
+
+WB._boot();
+
+</script>
+</body>
+</html>

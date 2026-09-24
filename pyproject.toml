@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "workboard"
+dynamic = ["version"]
+description = "A local kanban board shared by people and coding agents: one CLI, one local server, every project."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Paliverse" }]
+keywords = ["kanban", "agents", "cli", "task-tracking", "claude-code", "codex"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Environment :: Web Environment",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Paliverse/workboard"
+Issues = "https://github.com/Paliverse/workboard/issues"
+Changelog = "https://github.com/Paliverse/workboard/blob/main/CHANGELOG.md"
+
+[project.scripts]
+workboard = "workboard.cli:main"
+wb = "workboard.cli:main"
+
+[project.gui-scripts]
+workboardw = "workboard.cli:main"
+
+[tool.hatch.version]
+path = "src/workboard/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/workboard"]

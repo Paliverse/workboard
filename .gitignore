@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+/build/
+/dist/
+/.venv/
+*.egg-info/
+/board/
+/.test-output/
+node_modules/
