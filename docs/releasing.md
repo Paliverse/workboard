@@ -53,15 +53,16 @@ Complete these steps before the first tag.
 2. Set `__version__` in `src/workboard/__init__.py` to `X.Y.Z`. This is the only version source; `pyproject.toml` and the npm packages read it or the tag.
 3. In `CHANGELOG.md`, move the `Unreleased` entries under `## [X.Y.Z] - YYYY-MM-DD` and update the compare links at the bottom.
 4. Commit (`Release X.Y.Z`), push, and wait for CI.
-5. Tag and push:
+5. Dry-run the release: *Actions → Release → Run workflow* on `main`. It runs the checks, the tests and all six binary builds with their smoke tests, but creates no GitHub Release and publishes nothing. Go on only when it is green.
+6. Tag and push:
 
    ```sh
    git tag -a vX.Y.Z -m "WorkBoard X.Y.Z"
    git push origin vX.Y.Z
    ```
 
-6. Follow the *Release* workflow run. If the `npm` environment has reviewers, approve it.
-7. Check the result:
+7. Follow the *Release* workflow run. If the `npm` environment has reviewers, approve it.
+8. Check the result:
    - the GitHub Release has the 6 archives, both install scripts and `SHA256SUMS`;
    - `npx workboard@X.Y.Z --version` prints `workboard X.Y.Z`;
    - `workboard version --check` on an older install reports the update.
