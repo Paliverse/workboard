@@ -9,9 +9,12 @@ per board, unknown/missing boards, Host checks, token shutdown, server.json.
 """
 from __future__ import annotations
 
+import argparse
 import concurrent.futures
+import contextlib
 import hashlib
 import http.client
+import io
 import json
 import os
 import shutil
@@ -121,14 +124,14 @@ def _readline(stream, timeout: float) -> str:
 class RunningServer:
     """`workboard serve --port 0 --json` confined to a scratch home; always stop() it."""
 
-    def __init__(self, base: Path, env: dict):
+    def __init__(self, base: Path, env: dict, port_args=("--port", "0")):
         self.home = Path(env["WORKBOARD_HOME"])
         self.info: dict = {}
         self.root = None
         self.log_path = base / f"server-{uuid.uuid4().hex[:8]}.log"
         self._log = self.log_path.open("w", encoding="utf-8")
         self.proc = subprocess.Popen(
-            [*command(), "serve", "--port", "0", "--json"], cwd=str(base), env=env,
+            [*command(), "serve", *port_args, "--json"], cwd=str(base), env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=self._log,
             text=True, encoding="utf-8", errors="replace", creationflags=CREATE_NO_WINDOW)
         line = _readline(self.proc.stdout, 30)
@@ -223,10 +226,11 @@ class MultiBoardApiTest(unittest.TestCase):
     def new_board(self, name: str | None = None) -> dict:
         name = name or f"board-{uuid.uuid4().hex[:8]}"
         proj = self.base / f"proj-{uuid.uuid4().hex[:8]}"
+        proj.mkdir()
         created = run(["init", name, "--dir", proj], cwd=self.base, env=self.env)
         self.assertEqual(created.returncode, 0, (created.stdout, created.stderr))
         encoded = urllib.parse.quote(name, safe="")
-        return {"name": name, "proj": proj, "path": proj / "board" / "board.json",
+        return {"name": name, "proj": proj, "path": core.board_file(name),
                 "port": self.server.port, "origin": self.origin, "env": self.env,
                 "prefix": f"/b/{encoded}", "url": f"{self.origin}/b/{encoded}"}
 
@@ -337,9 +341,10 @@ class MultiBoardApiTest(unittest.TestCase):
         entries = {entry["name"]: entry for entry in data["boards"]}
         for ctx in (apple, banana, gone):
             entry = entries[ctx["name"]]
-            self.assertEqual(set(entry), {"name", "board", "url", "exists", "rev", "cards", "error"})
+            self.assertEqual(set(entry), {"name", "board", "project", "url", "exists", "rev", "cards", "error"})
             self.assertEqual(entry["url"], ctx["prefix"] + "/")
-            self.assertEqual(Path(entry["board"]), ctx["path"].resolve())
+            self.assertEqual(Path(entry["board"]), ctx["path"])
+            self.assertEqual(Path(entry["project"]), ctx["proj"])
             self.assertTrue(Path(entry["board"]).is_absolute())
         self.assertEqual(entries[gone["name"]]["url"], f"/b/cherry%20{tag}/")
         self.assertEqual(
@@ -358,12 +363,7 @@ class MultiBoardApiTest(unittest.TestCase):
             b"recovery attachment bytes", {"Content-Type": "application/octet-stream",
                                           "X-Board-Base-Rev": str(board(target)["rev"])})
         self.assertEqual(status, 200, uploaded)
-        blob = target["path"].parent / "attachments" / uploaded["attachment"]["id"]
         attachment_url = target["url"] + f"/api/card/{card['id']}/attachments/{uploaded['attachment']['id']}"
-        registry = json.loads(core.registry_path().read_text(encoding="utf-8"))
-        alias = target["name"] + "-alias"
-        registry["boards"][alias] = registry["boards"][target["name"]]
-        core.registry_path().write_text(json.dumps(registry), encoding="utf-8")
         identity = self.listing()[target["name"]]["board"]
         original = target["path"].read_bytes()
         url = self.origin + "/api/boards/delete"
@@ -371,29 +371,31 @@ class MultiBoardApiTest(unittest.TestCase):
         self.assertEqual(http_req(url, "POST", payload, {"Content-Type": "text/plain"})[0], 415)
         self.assertEqual(http_req(url, "POST", payload, {"Origin": "http://evil.example"})[0], 403)
         self.assertEqual(http_req(url, "POST", payload, {"Host": "evil.example"})[0], 403)
-        self.assertEqual(http_req(url, "POST", {**payload, "board": str(keep["path"].resolve())})[0], 409)
+        self.assertEqual(http_req(url, "POST", {**payload, "board": str(keep["path"])})[0], 409)
         self.assertEqual(http_req(url, "POST", {**payload, "baseRev": uploaded["rev"] - 1})[0], 409)
         self.assertEqual(http_req(url, "POST", {key: payload[key] for key in ("name", "board")})[0], 400)
         self.assertEqual(target["path"].read_bytes(), original)
         status, data, _ = http_req(url, "POST", payload)
         self.assertEqual(status, 200, data)
         self.assertEqual((data["ok"], data["board"]), (True, identity))
-        self.assertEqual(Path(data["recoveryPath"]).read_bytes(), original)
+        recovered = Path(data["recoveryPath"])
+        self.assertEqual(recovered.parent, core.deleted_dir())
+        self.assertEqual((recovered / "board.json").read_bytes(), original)
+        self.assertTrue((recovered / ".backups").is_dir())
+        self.assertEqual((recovered / "attachments" / uploaded["attachment"]["id"]).read_bytes(),
+                         b"recovery attachment bytes")
+        self.assertFalse(target["path"].parent.exists())
         remaining = json.loads(core.registry_path().read_text(encoding="utf-8"))["boards"]
         self.assertNotIn(target["name"], remaining)
-        self.assertNotIn(alias, remaining)
         self.assertIn(keep["name"], remaining)
-        self.assertFalse(target["path"].exists())
         self.assertEqual((target["proj"] / "keep.txt").read_text(encoding="utf-8"), "keep")
-        self.assertTrue((target["path"].parent / ".backups").is_dir())
-        self.assertEqual(blob.read_bytes(), b"recovery attachment bytes")
         self.assertEqual(http_req(target["url"] + "/board.json")[1],
                          {"error": "unknown_board", "name": target["name"]})
         self.assertEqual(http_req(attachment_url)[0], 404)
         self.assertEqual(board(keep)["name"], keep["name"])
-        # A registration whose file is already gone needs an explicit null base revision.
+        # A registration whose board folder is already gone needs an explicit null base revision.
         stale = self.new_board()
-        stale["path"].unlink()
+        shutil.rmtree(stale["path"].parent)
         stale_identity = self.listing()[stale["name"]]["board"]
         stale_payload = {"name": stale["name"], "board": stale_identity}
         self.assertEqual(http_req(url, "POST", {**stale_payload, "baseRev": 1})[0], 409)
@@ -667,9 +669,9 @@ class MultiBoardApiTest(unittest.TestCase):
         assert response_headers["X-Content-Type-Options"] == "nosniff"
         assert response_headers["Content-Disposition"].startswith("attachment;")
         assert "filename*=UTF-8''" + urllib.parse.quote(name, safe="") in response_headers["Content-Disposition"]
-        blob = ctx["proj"] / "board" / "attachments" / attachment["id"]
+        blob = ctx["path"].parent / "attachments" / attachment["id"]
         assert blob.read_bytes() == content
-        assert not (ctx["proj"] / 'report "caf\u00e9".html').exists()
+        assert not (ctx["path"].parent / 'report "caf\u00e9".html').exists()
         assert http_req(ctx["url"] + f"/api/card/{other['id']}/attachments/{attachment['id']}")[0] == 404
         assert http_req(ctx["url"] + f"/api/card/{cid}/attachments/%2e%2e%2fboard.json")[0] == 404
         assert http_req(upload, "POST", content, headers)[0] == 409
@@ -943,8 +945,8 @@ class MultiBoardApiTest(unittest.TestCase):
             assert http_req(self.origin + "/health")[0] == 200
             path.write_bytes(healthy)
             registry.write_text("{broken", encoding="utf-8")
-            assert http_req(self.origin + "/api/boards")[0] == 500
-            assert http_req(ctx["url"] + "/board.json")[0] == 500
+            assert http_req(self.origin + "/api/boards")[0] == 422
+            assert http_req(ctx["url"] + "/board.json")[0] == 422
             status, health, _ = http_req(self.origin + "/health")
             assert status == 200 and health["boards"] is None and health["registryError"]
             assert registry.read_text(encoding="utf-8") == "{broken"
@@ -1035,6 +1037,49 @@ class ServerLifecycleTest(unittest.TestCase):
             self.assertFalse(self.state.exists())
             self.assertTrue(server.stop())
 
+    def test_config_port_applies_when_the_environment_sets_none(self):
+        port = free_port()
+        config = self.base / "home" / ".workboard" / "config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"port": port}), encoding="utf-8")
+        env = {key: value for key, value in self.env.items() if key != "WORKBOARD_PORT"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(server.server_url(), f"http://127.0.0.1:{port}/")
+        running = RunningServer(self.base, env, port_args=())
+        self.addCleanup(running.stop)
+        self.assertEqual((running.port, running.info["url"]), (port, f"http://127.0.0.1:{port}/"))
+
+    def test_open_uses_the_linked_board_else_the_hub_and_never_registers(self):
+        project = self.base / "linked"
+        (project / "nested").mkdir(parents=True)
+        unlinked = self.base / "unlinked"
+        unlinked.mkdir()
+        opened = []
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(server, "start_background", return_value={"port": 4567}), \
+                mock.patch("webbrowser.open", side_effect=opened.append):
+            core.create_board("Linked board", project)
+            registry = core.registry_path().read_bytes()
+
+            def open_from(cwd, board=None):
+                out = io.StringIO()
+                with contextlib.chdir(cwd), contextlib.redirect_stdout(out):
+                    server.open_board(argparse.Namespace(board=board, json=True))
+                return json.loads(out.getvalue())
+
+            hub = open_from(unlinked)
+            self.assertEqual((hub["url"], hub["name"], hub["board"]), ("http://127.0.0.1:4567/", None, None))
+            linked = open_from(project / "nested")
+            self.assertEqual((linked["url"], linked["name"], linked["board"]),
+                             ("http://127.0.0.1:4567/b/Linked%20board/", "Linked board",
+                              str(core.board_file("Linked board"))))
+            self.assertEqual(open_from(unlinked, "Linked board")["name"], "Linked board")
+            with self.assertRaises(core.WorkflowError) as missing:
+                open_from(project, "no such board")
+            self.assertEqual(missing.exception.code, "not_found")
+            self.assertEqual(opened, [hub["url"], linked["url"], linked["url"]])
+            self.assertEqual(core.registry_path().read_bytes(), registry)
+
     def test_service_mode_logs_to_rotated_file(self):
         log = self.base / "home" / ".workboard" / "logs" / "server.log"
         log.parent.mkdir(parents=True)
@@ -1076,13 +1121,9 @@ class BrowserStampTest(unittest.TestCase):
     def test_browser_changed_rev_is_server_owned(self):
         base = self.enterContext(scratch("wb-server-c26-"))
         self.enterContext(mock.patch.dict(os.environ, make_env(base / "home"), clear=True))
-        path = base / "browser-stamps" / "board" / "board.json"
-        path.parent.mkdir(parents=True)
-        doc = core.normalize_doc({"name": "Browser stamps",
-                                  "cards": [{"num": 1, "id": "x", "title": "X"},
-                                            {"num": 2, "id": "y", "title": "Y"}]})
-        core.save(path, doc, by="tester")
-        core.register_board("stamps", path)
+        path = core.create_board("stamps", base / "browser-stamps", core.normalize_doc({
+            "name": "Browser stamps", "cards": [{"num": 1, "id": "x", "title": "X"},
+                                                {"num": 2, "id": "y", "title": "Y"}]}))
         before = path.read_bytes()
         httpd = server.Server(("127.0.0.1", 0))
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -1102,7 +1143,7 @@ class BrowserStampTest(unittest.TestCase):
                 "Content-Type": "application/json", **(headers or {})})
             return status, body
 
-        rev = doc["rev"]
+        rev = json.loads(before)["rev"]
         status, _ = request("/api/card/x", {"baseRev": rev, "card": {"changedRev": 0, "title": "forged"}})
         assert status == 422 and path.read_bytes() == before
         snapshot = json.loads(before)

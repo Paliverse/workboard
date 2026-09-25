@@ -1,6 +1,6 @@
 ---
 name: workboard
-description: Shared kanban memory for people and coding agents. Use when starting, shipping or deferring substantive work in ANY project (if it has no board/ yet, run `workboard init` first; never skip for that reason), or when asked about status, progress, what shipped or what is left. Skip pure Q&A/debugging that ships nothing.
+description: Shared kanban memory for people and coding agents. Use when starting, shipping or deferring substantive work in ANY project (if it has no board yet, run `workboard init` first; never skip for that reason), or when asked about status, progress, what shipped or what is left. Skip pure Q&A/debugging that ships nothing.
 ---
 # WorkBoard protocol
 
@@ -11,7 +11,7 @@ Every command, including reads, uses the installed `workboard` CLI with your lab
 workboard --actor YOUR_LABEL digest
 ```
 
-- The board is `board/board.json` in the current directory or its nearest parent; `--board PATH` (project dir or board.json) selects another. `--actor`, `--board` and `--json` work before or after the verb. `--actor` overrides `WORKBOARD_ACTOR`; labels are attribution, not authentication.
+- The board is found from the current project folder or any git worktree of it; `--board NAME` selects another. `--actor`, `--board` and `--json` work before or after the verb. `--actor` overrides `WORKBOARD_ACTOR`; labels are attribution, not authentication.
 - No board yet: run `workboard init` once in the project root, then continue.
 - You never need the server. Board commands read and write the file under a lock and never start a server or open a browser. `workboard open` shows the board to the user; run it only when asked.
 
@@ -78,4 +78,4 @@ attachment REF remove ID
 P = critical|mid|low. Done uses `done --writeup`, never `fly`; Blocked uses `block`/`resume`.
 
 ## Operator
-`open`, `serve`, `setup`, `skills`, `service`, `upgrade`, `doctor`, `recover`, `sweep`, `columns-core` and `wip` are operator commands (`workboard --help`); run them only when asked.
+`open`, `serve`, `setup`, `link`, `skills`, `service`, `upgrade`, `doctor`, `recover`, `sweep`, `columns-core` and `wip` are operator commands (`workboard --help`); run them only when asked.

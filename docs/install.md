@@ -62,7 +62,7 @@ Each archive has a top-level `workboard/` directory. Keep the whole directory to
 
 ### From source
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup).
+See [CONTRIBUTING.md](../.github/CONTRIBUTING.md#development-setup).
 
 ## Setup
 
@@ -70,18 +70,40 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup).
 workboard setup
 ```
 
-`setup` installs the agent skill (see [agents.md](agents.md)) and the background service, then prints one line per action. Use `--no-skills` or `--no-service` to skip either part. Run it again after changing your installation; it is idempotent.
+`setup` installs the agent skill (see [agents.md](agents.md)) and the background service, lets Codex write to `~/.workboard` (see [Codex](#codex)), then prints one line per action. Use `--no-skills`, `--no-service` or `--no-codex` to skip a part. Run it again after changing your installation; it is idempotent.
 
 Then, in each project:
 
 ```sh
-workboard init     # creates board/board.json and registers the board
+workboard init     # creates the project's board in ~/.workboard/boards/ and links it
 workboard open     # opens it in the browser
 ```
 
+Boards live in `~/.workboard/boards/`, not in the project. Run `init` once per repository; its git worktrees share the board. After moving or renaming a project folder, run `workboard link NAME` in the new location.
+
+### Codex
+
+Codex's sandbox only lets commands write inside the workspace by default, so `workboard` commands run by Codex couldn't write the board. The setup step checks Codex's config (`$CODEX_HOME/config.toml`, default `~/.codex/config.toml`) and prints `codex: <state>`:
+
+| State | Meaning |
+|---|---|
+| `granted` | The WorkBoard home is in `writable_roots`. If `setup` added it, the previous file is saved as `config.toml.workboard-bak`. |
+| `absent` | There is no Codex config file, so nothing was changed. Run `workboard setup` again after you start using Codex. |
+| `full-access` | Codex runs with `sandbox_mode = "danger-full-access"` and can already write anywhere. |
+| `manual` | WorkBoard doesn't edit this config: it can't be parsed, it uses permission profiles (`default_permissions`), its `writable_roots` spans several lines, or the edit didn't verify and the original file was restored. `setup` prints the reason and the snippet to add yourself. |
+
+When `setup` edits the file, it adds your WorkBoard home to the `[sandbox_workspace_write]` table:
+
+```toml
+[sandbox_workspace_write]
+writable_roots = ['/home/me/.workboard']
+```
+
+Restart running Codex sessions afterwards. `workboard doctor` warns with `codex-sandbox` when Codex's config exists but doesn't grant the WorkBoard home. Other harnesses that sandbox file writes need the same access.
+
 ## Background service
 
-The service runs `workboard serve --service` at login. It serves every registered board at `http://127.0.0.1:7891/` and writes its output to `~/.workboard/logs/server.log`.
+The service runs `workboard serve --service` at login. It serves every registered board at `http://127.0.0.1:7891/` (or the `port` set in `~/.workboard/config.json`) and writes its output to `~/.workboard/logs/server.log`.
 
 ```sh
 workboard service install    # register and start (safe to repeat)
@@ -120,10 +142,14 @@ workboard upgrade
 
 The `script` channel is detected by the `install-receipt.json` next to the executable. The other channels exit 1 with instructions:
 
-- `source`, a git checkout: pull it (`git pull`) and reinstall the development environment (see [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup)).
+- `source`, a git checkout: pull it (`git pull`) and reinstall the development environment (see [CONTRIBUTING.md](../.github/CONTRIBUTING.md#development-setup)).
 - `unknown`, anything else, such as a manually unpacked archive: reinstall with `npm install -g workboard` or the install script.
 
 After updating by hand, run `workboard skills install --refresh` and `workboard service restart`.
+
+## Backups
+
+Every board lives in `~/.workboard/boards/`, outside your repositories, so committing a project doesn't save its board. Include `~/.workboard` in your backups: `boards/` and `boards.json` hold every board and its project link. Each board also keeps its 10 newest revisions in `.backups/` for `workboard recover`; that protects against a bad write, not against losing the disk. Boards deleted from the board chooser stay in `~/.workboard/deleted/` until you delete them.
 
 ## Uninstall
 
@@ -134,6 +160,8 @@ workboard service remove
 workboard skills remove
 ```
 
+If `setup` gave Codex access, remove the WorkBoard home from `writable_roots` in `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`). `config.toml.workboard-bak` is the file as it was before `setup` edited it.
+
 Then remove the program:
 
 | Installed with | Remove |
@@ -143,7 +171,7 @@ Then remove the program:
 | Script (macOS, Linux) | Delete `${XDG_DATA_HOME:-~/.local/share}/workboard/` and the `~/.local/bin/workboard` and `~/.local/bin/wb` links |
 | GitHub Release archive | Delete the unpacked `workboard/` directory and remove it from your `PATH` |
 
-Boards stay in their projects (`board/`). Delete `~/.workboard` to remove the registry, logs and runtime copies.
+**Deleting `~/.workboard` deletes every board**, along with the registry, settings, logs and runtime copies. Copy the boards you want to keep first.
 
 ## Troubleshooting
 
@@ -162,11 +190,15 @@ workboard doctor --json   # full report: {"ok", "blockers", "warnings", ...}
 | `workboard: command not found` | Open a new terminal. For the POSIX script, add `~/.local/bin` to `PATH`. For npm, make sure npm's global `bin` directory is on `PATH`. |
 | `the platform package workboard-<os>-<arch> is not installed` | npm skipped optional dependencies. Reinstall without `--omit=optional` or `--no-optional`: `npm install -g workboard`. |
 | `doctor` says `workboard` on `PATH` is a different installation | You have two installations. Uninstall one, or reorder `PATH`. |
-| `port 7891 is in use by another program` | Stop that program, or choose another port with `workboard serve --port N` or the `WORKBOARD_PORT` environment variable. |
+| `port 7891 is in use by another program` | Stop that program, or choose another port with `workboard serve --port N`, the `WORKBOARD_PORT` environment variable or `port` in `~/.workboard/config.json` (the background service reads the file). |
 | Browser shows an old version after an upgrade | `workboard service restart`. `doctor` and `service status` report a version mismatch. |
 | The server doesn't start at login | Run `workboard service status`, read `~/.workboard/logs/server.log`, then `workboard service install` again. Run `workboard serve` in a terminal to see errors directly. |
-| An agent doesn't use the board | `workboard skills status`, then restart the agent session. Check that the agent runs inside the project or passes `--board`. |
-| `no board found at/above cwd` | Run the command inside the project, pass `--board PATH`, or create a board with `workboard init`. |
-| `error [lock]` | Another writer held the board for more than 5 s. Find the stuck process; don't delete `board/.board.lock` while writers are running. |
+| An agent doesn't use the board | `workboard skills status`, then restart the agent session. Check that the agent runs inside the project, a subfolder or a worktree of it, or passes `--board NAME`. |
+| Codex can't write the board (permission denied or read-only file system) | Run `workboard setup`, or add the snippet from [Codex](#codex), then restart the Codex session. `workboard doctor` warns with `codex-sandbox` while the grant is missing. |
+| `no board for <dir>` | Run the command inside a project that has a board, pass `--board NAME`, or create one with `workboard init`. If the project moved, run `workboard link NAME` in its new location; `workboard boards` lists the names. |
+| `doctor` warns `project-missing` | The linked project folder moved or was deleted. Run `workboard link NAME` in its new location. |
+| `error [lock]` | Another writer held the board for more than 5 s. Find the stuck process; don't delete the board's `.board.lock` while writers are running. |
+| `error [scope]` | A write would cross a symbolic link or junction, for example when `~/.workboard` is a link. Set `WORKBOARD_HOME` to the real folder instead. |
+| `error [invalid]` naming `config.json` | Fix or delete `~/.workboard/config.json`. It may only hold `port` (1–65535) and `actor`. See the [README](../README.md#configuration). |
 | `doctor` warns about legacy files | They are left over from the pre-release per-board viewer and are no longer used. Delete them after stopping any old viewer process. |
-| A board shows as missing | The project moved or was deleted. Delete the stale entry from the board chooser. If the project moved, run `workboard open` inside it to register it again. |
+| A board shows as missing | Its folder under `~/.workboard/boards/` was moved or deleted. Put it back, or delete the stale entry from the board chooser. |

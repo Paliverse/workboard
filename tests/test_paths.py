@@ -25,7 +25,7 @@ class LinkGuardTest(unittest.TestCase):
             (base / "real").mkdir()
             os.symlink(base / "real", base / "link")
             with self.assertRaises(core.WorkflowError) as caught:
-                core.require_write_scope(base / "link" / "board" / "board.json")
+                core.require_write_scope(base / "link" / "boards" / "demo" / "board.json")
             self.assertEqual(caught.exception.status, 403)
 
     @unittest.skipUnless(POSIX, "POSIX ownership rule")
@@ -40,7 +40,7 @@ class LinkGuardTest(unittest.TestCase):
         # On macOS the temp dir lives under /var -> /private/var, a root-owned link.
         base = Path(tempfile.mkdtemp(prefix="wb-paths-"))
         try:
-            self.assertTrue(core.require_write_scope(base / "board" / "board.json").is_absolute())
+            self.assertTrue(core.require_write_scope(base / "boards" / "demo" / "board.json").is_absolute())
         finally:
             os.rmdir(base)
 

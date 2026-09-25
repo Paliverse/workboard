@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Paliverse
-"""WorkBoard core: schema, board discovery, registry, crash-safe persistence.
+"""WorkBoard core: schema, board lookup, registry, crash-safe persistence.
 
-One board/board.json per project is the single source of truth; the per-user
-registry (home()/boards.json) lists the boards the local server serves.
+Every board lives in the per-user store, home()/boards/<dir>/board.json, and
+the registry (home()/boards.json) links each board to one project folder.
 Writes serialize on <board_dir>/.board.lock (msvcrt/fcntl), commit through an
 fsync'd temp file swapped in atomically (ReplaceFileW on Windows, os.replace
 elsewhere), and snapshot every committed rev to .backups/ (newest 10 kept).
@@ -19,6 +19,7 @@ import mimetypes
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -33,7 +34,7 @@ SCHEMA_VERSION = 3
 SUPPORTED_SCHEMA_VERSIONS = (1, 2, SCHEMA_VERSION)
 API_VERSION = 2
 CAPABILITIES = ("context", "attachment-cli", "shared-attachments", "expected-rev",
-                "schema-guard", "scoped-writes")
+                "schema-guard")
 BACKUP_KEEP = 10
 HISTORY_CAP = 40
 LOCK_NAME = ".board.lock"
@@ -69,6 +70,14 @@ def logs_dir() -> Path:
     return home() / "logs"
 
 
+def boards_dir() -> Path:
+    return home() / "boards"
+
+
+def deleted_dir() -> Path:
+    return home() / "deleted"
+
+
 DEFAULT_COLUMNS = [
     {"id": "backlog", "name": "Backlog", "kind": "todo"},
     {"id": "task", "name": "Task", "kind": "todo"},
@@ -96,9 +105,9 @@ def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def slugify(text: str, max_len: int = 32) -> str:
+def slugify(text: str, max_len: int = 32, fallback: str = "card") -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return slug[:max_len].rstrip("-") or "card"
+    return slug[:max_len].rstrip("-") or fallback
 
 
 class WorkflowError(ValueError):
@@ -146,11 +155,7 @@ def require_write_scope(path) -> Path:
     for candidate in (raw, *raw.parents):
         if _has_reparse_point(candidate):
             raise WorkflowError(f"write path crosses a link or reparse point: {raw}", 403)
-    canonical = raw.resolve(strict=False)
-    scope = os.environ.get("WORKBOARD_SCOPE_ROOT")
-    if scope and not canonical.is_relative_to(Path(scope).resolve(strict=False)):
-        raise WorkflowError(f"write outside WORKBOARD_SCOPE_ROOT is forbidden: {raw}", 403)
-    return canonical
+    return raw.resolve(strict=False)
 
 
 def runtime_info() -> dict:
@@ -165,32 +170,139 @@ def validate_actor(value) -> str:
     return value.strip()
 
 
+DEFAULT_PORT = 7891
+
+
+def config() -> dict:
+    """Optional settings in home()/config.json: {"port", "actor"}. Read per call, never written."""
+    path = home() / "config.json"
+    try:
+        with open_shared(path, "rb") as stream:
+            raw = json.loads(stream.read())
+    except FileNotFoundError:
+        return {}
+    except ValueError as exc:
+        raise WorkflowError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise WorkflowError(f"{path} must be a JSON object")
+    unknown = sorted(set(raw) - {"port", "actor"})
+    if unknown:
+        raise WorkflowError(f"{path}: unknown setting {unknown[0]!r}; supported: port, actor")
+    port = raw.get("port", DEFAULT_PORT)
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise WorkflowError(f"{path}: port must be an integer 1..65535")
+    if "actor" in raw:
+        try:
+            validate_actor(raw["actor"])
+        except WorkflowError:
+            raise WorkflowError(f"{path}: actor must be a nonempty label of at most 80 characters") from None
+    return raw
+
+
+def configured_port() -> int:
+    """$WORKBOARD_PORT, else config.json port, else 7891; `serve --port` overrides all three."""
+    port = config().get("port", DEFAULT_PORT)
+    raw = os.environ.get("WORKBOARD_PORT")
+    if not raw:
+        return port
+    try:
+        port = int(raw)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        raise WorkflowError(f"WORKBOARD_PORT must be an integer 1..65535, not {raw!r}")
+    return port
+
+
 def actor() -> str:
-    """CLI writer label: agents use the CLI, so unlabeled writes are `agent` (the browser records `user`)."""
-    return validate_actor(os.environ.get("WORKBOARD_ACTOR", "agent"))
+    """CLI writer label: --actor (the CLI sets $WORKBOARD_ACTOR) > $WORKBOARD_ACTOR > config actor > `agent`.
+
+    Agents use the CLI, so unlabeled writes are `agent`; the browser records `user`."""
+    configured = config().get("actor", "agent")
+    value = os.environ.get("WORKBOARD_ACTOR")
+    return validate_actor(configured if value is None else value)
 
 
-# ===== board discovery =====
+def _validate_board_name(value) -> str:
+    if (not isinstance(value, str) or not value.strip() or value != value.strip() or len(value) > 80
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)):
+        raise WorkflowError("board name must be nonempty text of at most 80 characters, "
+                            "without control characters or surrounding spaces")
+    return value
+
+
+# ===== board lookup =====
+
+def _project_key(path) -> str:
+    return os.path.normcase(str(Path(path).resolve()))
+
+
+def _board_path(entry: dict) -> Path:
+    return boards_dir() / entry["dir"] / "board.json"
+
+
+def board_file(name: str) -> Path:
+    entry = registry_load()["boards"].get(name)
+    if entry is None:
+        raise WorkflowError(f"no board named {name!r}", 404, "not_found")
+    return _board_path(entry)
+
+
+def _checkout(start: Path) -> tuple[Path, Path]:
+    """(folder holding the nearest .git, project root); they differ only inside a linked worktree."""
+    for candidate in (start, *start.parents):
+        marker = candidate / ".git"
+        if marker.is_dir():
+            return candidate, candidate
+        if marker.is_file():
+            try:
+                text = marker.read_text(encoding="utf-8").strip()
+                if not text.startswith("gitdir:"):
+                    return candidate, candidate
+                gitdir = candidate / text[len("gitdir:"):].strip()
+                common = (gitdir / (gitdir / "commondir").read_text(encoding="utf-8").strip()).resolve()
+            except (OSError, ValueError):  # no commondir: a submodule, not a linked worktree
+                return candidate, candidate
+            return candidate, common.parent if os.path.normcase(common.name) == ".git" else candidate
+    return start, start
+
+
+def project_root(directory) -> Path:
+    """The project a folder belongs to: its git checkout (a linked worktree's main checkout), else itself.
+
+    Pure file reads; never runs git."""
+    return _checkout(Path(directory).resolve())[1]
+
+
+def resolve_board(explicit: str | None = None) -> tuple[str, Path]:
+    """(name, board.json) for --board / $WORKBOARD_DEFAULT_BOARD (a name or a folder), else the cwd."""
+    explicit = explicit or os.environ.get("WORKBOARD_DEFAULT_BOARD")
+    boards = registry_load()["boards"]
+    if explicit in boards:
+        return explicit, _board_path(boards[explicit])
+    if explicit and not Path(explicit).is_dir():
+        raise WorkflowError(f"no board named or linked to {explicit!r}", 404, "not_found")
+    start = Path(explicit or Path.cwd()).resolve()
+    linked = {os.path.normcase(entry["project"]): name for name, entry in boards.items()}
+    worktree, root = _checkout(start)
+    # Nearest linked folder wins. Inside a linked worktree (even one kept inside the main checkout),
+    # the worktree's own folders come first, then the same spots in the main checkout, then the rest.
+    order = [start, *start.parents]
+    if root != worktree:
+        mapped = root / start.relative_to(worktree)
+        order = [start, *(p for p in start.parents if p.is_relative_to(worktree)),
+                 mapped, *(p for p in mapped.parents if p.is_relative_to(root)),
+                 *root.parents, *worktree.parents]
+    for candidate in order:
+        name = linked.get(os.path.normcase(str(candidate)))
+        if name is not None:
+            return name, _board_path(boards[name])
+    raise WorkflowError(f"no board for {start}; run `workboard init` in the project, "
+                        "or pass --board NAME", 404, "not_found")
+
 
 def find_board(explicit: str | None = None) -> Path:
-    explicit = explicit or os.environ.get("WORKBOARD_DEFAULT_BOARD")
-    if explicit:
-        p = Path(explicit).absolute()
-        if p.is_dir():
-            p = p / "board" / "board.json"
-        if not p.is_file():
-            raise FileNotFoundError(f"no board at {p}")
-        return p
-    cur = Path.cwd().resolve()
-    while True:
-        c = cur / "board" / "board.json"
-        if c.is_file():
-            return c
-        if cur.parent == cur:
-            break
-        cur = cur.parent
-    raise FileNotFoundError(
-        "no board found at/above cwd; run inside the project or pass --board /path/to/project")
+    return resolve_board(explicit)[1]
 
 
 # ===== Windows share-friendly reads + contention-tolerant atomic replace =====
@@ -1409,11 +1521,10 @@ def require_export_destination(destination, board_path: Path) -> Path:
     if path.exists() or path.is_symlink():
         raise WorkflowError(f"export destination already exists: {path}", 409)
     managed = [Path(board_path).absolute().parent, home(), Path(__file__).resolve().parent]
-    managed.extend(Path(value).absolute().parent for value in registry_load()["boards"].values())
     if any(path.is_relative_to(root.resolve(strict=False)) for root in managed):
         raise WorkflowError("exports cannot target managed board, registry, or runtime storage", 403)
     for ancestor in path.parents:
-        if os.path.normcase(ancestor.name) in ("board", ".workboard", ".git") or (ancestor / "board.json").exists():
+        if os.path.normcase(ancestor.name) in (".workboard", ".git") or (ancestor / "board.json").exists():
             raise WorkflowError("exports cannot target managed storage", 403)
     return path
 
@@ -1647,7 +1758,10 @@ def sweep(board_path: Path, days: int = 14, apply: bool = True, expected_rev=Non
         return moving
 
 
-# ===== multi-project registry =====
+# ===== registry and board lifecycle =====
+
+BOARD_DIR_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+_DELETED_STAMP = re.compile(r"-\d{8}T\d{6}Z\Z")
 
 
 class RegistryNotFound(Exception):
@@ -1658,9 +1772,6 @@ class RegistryConflict(Exception):
     pass
 
 
-class UnsafeBoardPath(Exception):
-    pass
-
 def _registry_json(path: Path, max_bytes=None):
     # Missing optional metadata is first-use, not a transient missing board swap.
     if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
@@ -1668,35 +1779,48 @@ def _registry_json(path: Path, max_bytes=None):
     with open_shared(path, "rb") as stream:
         data = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
     if max_bytes is not None and len(data) > max_bytes:
-        raise ValueError(f"registry exceeds {max_bytes} bytes: {path}")
-    return json.loads(data)
-
+        raise WorkflowError(f"registry exceeds {max_bytes} bytes: {path}")
+    try:
+        return json.loads(data)
+    except ValueError as exc:
+        raise WorkflowError(f"invalid board registry {path}: {exc}") from exc
 
 
 def registry_load(path=None, *, max_bytes=None) -> dict:
+    """{"version": 2, "boards": {name: {"dir", "project"}}}; a missing file is an empty registry."""
     path = Path(path) if path is not None else registry_path()
     try:
         reg = _registry_json(path, max_bytes)
     except FileNotFoundError:
         if path.is_symlink():
             raise
-        return {"boards": {}}
-    if (not isinstance(reg, dict) or not isinstance(reg.get("boards"), dict)
-            or any(not isinstance(name, str) or not isinstance(value, str)
-                   or not Path(value).is_absolute() or Path(value).name != "board.json"
-                   for name, value in reg["boards"].items())):
-        raise ValueError(f"invalid board registry: {path}")
+        return {"version": 2, "boards": {}}
+    boards = reg.get("boards") if isinstance(reg, dict) else None
+    if not isinstance(boards, dict) or type(reg.get("version")) is not int or reg["version"] != 2:
+        raise WorkflowError("boards.json uses an unsupported format")
+    dirs, projects = set(), set()
+    for name, entry in boards.items():
+        if (not isinstance(entry, dict) or not isinstance(entry.get("dir"), str)
+                or not BOARD_DIR_PATTERN.fullmatch(entry["dir"])
+                or not isinstance(entry.get("project"), str) or not Path(entry["project"]).is_absolute()):
+            raise WorkflowError(f"invalid board registry {path}: entry {name!r} needs a safe dir "
+                                "and an absolute project")
+        key = os.path.normcase(entry["project"])  # Lexical: validity never depends on the live filesystem.
+        if entry["dir"] in dirs or key in projects:
+            raise WorkflowError(f"invalid board registry {path}: {name!r} repeats another board's dir or project")
+        dirs.add(entry["dir"])
+        projects.add(key)
     return reg
 
 
-
-
-def registry_save(reg: dict) -> None:
+@contextlib.contextmanager
+def _registry_locked():
+    """Yield the current registry under its lock, which is always taken before any board lock."""
+    registry_load()  # Reject a malformed registry before creating the lock file.
     require_write_scope(registry_path())
-    registry_load()
     registry_path().parent.mkdir(parents=True, exist_ok=True)
     with board_lock(registry_path()):
-        _atomic_write_json(registry_path(), reg)
+        yield registry_load()
 
 
 def _has_reparse_point(path: Path) -> bool:
@@ -1711,115 +1835,130 @@ def _has_reparse_point(path: Path) -> bool:
     return bool(getattr(st, "st_file_attributes", 0) & 0x400)
 
 
-def canonical_registered_board(value) -> Path:
-    """Validate and canonicalize an authoritative registry board path."""
-    raw = Path(value)
-    if not raw.is_absolute() or raw.name != "board.json":
-        raise UnsafeBoardPath("registered board must be an absolute board.json path")
-    for candidate in (raw, *raw.parents):
-        if _has_reparse_point(candidate):
-            raise UnsafeBoardPath(f"registered board crosses a link or reparse point: {raw}")
-    lock_path = raw.parent / LOCK_NAME
-    if _has_reparse_point(lock_path):
-        raise UnsafeBoardPath(f"board lock is a link or reparse point: {lock_path}")
-    canonical = raw.resolve(strict=False)
-    lexical = os.path.normcase(os.path.normpath(str(raw)))
-    if lexical != os.path.normcase(str(canonical)):
-        raise UnsafeBoardPath(f"registered board path is not canonical: {raw}")
-    if raw.exists() and not stat.S_ISREG(os.lstat(raw).st_mode):
-        raise UnsafeBoardPath(f"registered board is not a regular file: {raw}")
-    return canonical
+def _require_unlinked(boards: dict, name: str, project: Path) -> None:
+    key = _project_key(project)
+    for other, entry in boards.items():
+        if other != name and _project_key(entry["project"]) == key:
+            raise WorkflowError(f"{project} is already linked to board {other!r}; if that project moved, "
+                                f"run `workboard link {other}` in its new folder", 409, "state")
 
 
-def _registered_target(reg: dict, name: str, expected_board: str | None = None) -> Path:
-    value = reg.get("boards", {}).get(name)
-    if not isinstance(value, str):
+def _free_board_dir(boards: dict, name: str) -> str:
+    """slugify(name), then -2, -3… past dirs in the registry, boards/ or deleted/<dir>-<stamp>/."""
+    taken = {entry["dir"] for entry in boards.values()}
+    for parent in (boards_dir(), deleted_dir()):
+        if parent.is_dir():
+            for child in parent.iterdir():
+                taken.update((child.name.lower(), _DELETED_STAMP.sub("", child.name)))
+    base = slugify(name, 48, fallback="board")
+    folder, n = base, 1
+    while folder in taken:
+        n += 1
+        folder = f"{base}-{n}"
+    return folder
+
+
+def create_board(name: str, project, doc: dict | None = None) -> Path:
+    """Create and register the board for `project`; a failure leaves no half-created board.
+
+    `doc` (default: an empty five-column board) is saved like save(): its rev becomes rev + 1."""
+    name = _validate_board_name(name)
+    project = Path(project).resolve()
+    if doc is None:
+        doc = {"name": name, "rev": 0, "nextNum": 1,
+               "columns": [dict(c) for c in DEFAULT_COLUMNS], "cards": []}
+    with _registry_locked() as reg:
+        boards = reg["boards"]
+        if name in boards:
+            raise WorkflowError(f"a board named {name!r} already exists", 409, "state")
+        _require_unlinked(boards, name, project)
+        folder = boards_dir() / _free_board_dir(boards, name)
+        require_write_scope(folder)
+        folder.mkdir(parents=True)
+        try:
+            path = folder / "board.json"
+            save(path, doc)
+            boards[name] = {"dir": folder.name, "project": str(project)}
+            _atomic_write_json(registry_path(), reg)
+        except BaseException:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+    return path
+
+
+def link_board(name: str, project) -> Path:
+    """Link board `name` to `project` (after a move or rename); returns its board.json."""
+    project = Path(project).resolve()
+    board_file(name)  # Unknown names fail before any lock file exists.
+    with _registry_locked() as reg:
+        entry = reg["boards"].get(name)
+        if entry is None:
+            raise WorkflowError(f"no board named {name!r}", 404, "not_found")
+        _require_unlinked(reg["boards"], name, project)
+        entry["project"] = str(project)
+        _atomic_write_json(registry_path(), reg)
+    return _board_path(entry)
+
+
+def _registered_target(reg: dict, name: str, expected_board: str) -> Path:
+    entry = reg["boards"].get(name)
+    if entry is None:
         raise RegistryNotFound(name)
-    target = canonical_registered_board(value)
-    if expected_board is not None and expected_board != str(target):
+    target = _board_path(entry)
+    if expected_board != str(target):
         raise RegistryConflict("registered board identity changed")
     return target
 
 
-def _without_board_aliases(reg: dict, target: Path) -> dict:
-    boards = reg.get("boards", {})
-    aliases = {}
-    for name, value in boards.items():
-        try:
-            same = isinstance(value, str) and Path(value).resolve(strict=False) == target
-        except (OSError, RuntimeError):
-            same = False
-        if not same:
-            aliases[name] = value
-    return {**reg, "boards": aliases}
-
-
-def register_board(name: str, board_path: Path) -> None:
-    """Register an existing board under the lifecycle lock, never a stale path."""
-    require_write_scope(board_path)
-    require_write_scope(registry_path())
-    registry_load()
-    load(board_path)
-    registry_path().parent.mkdir(parents=True, exist_ok=True)
-    with board_lock(registry_path()):
-        target = canonical_registered_board(board_path)
-        with board_lock(target):
-            target = canonical_registered_board(target)
-            if not target.is_file():
-                raise FileNotFoundError(target)
-            reg = registry_load()
-            reg.setdefault("boards", {})[name] = str(target)
-            _atomic_write_json(registry_path(), reg)
-
-
 def delete_registered_board(name: str, expected_board: str,
                             base_rev: int | None) -> dict:
-    """Recoverably remove one registered board under global -> board locks."""
-    require_write_scope(registry_path())
-    target = require_write_scope(_registered_target(registry_load(), name, expected_board))
+    """Recoverably delete one board: its folder moves to deleted/<dir>-<stamp>/ (registry -> board locks)."""
+    target = _registered_target(registry_load(), name, expected_board)
     if target.exists():
-        load(target)
-    with board_lock(registry_path()):
-        reg = registry_load()
+        load(target)  # Reject unsafe data before creating a lock file.
+    with _registry_locked() as reg:
         target = _registered_target(reg, name, expected_board)
-
-        if not target.parent.exists():
+        folder = target.parent
+        registered = {**reg, "boards": dict(reg["boards"])}
+        del reg["boards"][name]
+        if not folder.exists():
             if base_rev is not None:
                 raise RegistryConflict("registered board is missing")
-            _atomic_write_json(registry_path(), _without_board_aliases(reg, target))
+            _atomic_write_json(registry_path(), reg)
             return {"recoveryPath": None, "board": str(target)}
-
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        recovery = deleted_dir() / f"{folder.name}-{stamp}"
+        require_write_scope(recovery)
         with board_lock(target):
-            target = _registered_target(reg, name, expected_board)
-            target = canonical_registered_board(target)
-            if not target.exists():
-                if base_rev is not None:
-                    raise RegistryConflict("registered board is missing")
-                _atomic_write_json(registry_path(), _without_board_aliases(reg, target))
-                return {"recoveryPath": None, "board": str(target)}
-            if base_rev is None:
+            present = target.exists()
+            if present and base_rev is None:
                 raise RegistryConflict("registered board exists")
-            doc = load(target)
-            if int(doc.get("rev") or 0) != base_rev:
+            if not present and base_rev is not None:
+                raise RegistryConflict("registered board is missing")
+            if present and int(load(target).get("rev") or 0) != base_rev:
                 raise RegistryConflict("registered board revision changed")
-
-            fd, recovery_name = tempfile.mkstemp(
-                dir=str(target.parent), prefix="board.deleted-", suffix=".json")
-            os.close(fd)
-            recovery = Path(recovery_name)
+            # Unregister first: a crash before the move leaves an intact, unregistered boards/<dir>/.
+            _atomic_write_json(registry_path(), reg)
             try:
-                atomic_replace(target, recovery)
-            except Exception as e:
-                if target.exists():
-                    recovery.unlink(missing_ok=True)
-                    raise
-                raise OSError(f"board recovered at {recovery}, but rename finalization failed") from e
-            try:
-                _atomic_write_json(registry_path(), _without_board_aliases(reg, target))
-            except Exception as e:
-                raise OSError(
-                    f"board recovered at {recovery}, but registry update failed") from e
-            return {"recoveryPath": str(recovery), "board": str(target)}
+                recovery.mkdir(parents=True)
+                if present:  # The reviewed revision leaves the live path while the lock is held.
+                    atomic_replace(target, recovery / "board.json")
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    recovery.rmdir()  # Succeeds only if nothing moved.
+                _atomic_write_json(registry_path(), registered)
+                raise
+        try:
+            # Windows cannot move a folder with an open handle inside, so the rest moves after release.
+            for child in folder.iterdir():
+                if child.name != LOCK_NAME:
+                    atomic_replace(child, recovery / child.name)
+        except (OSError, WorkflowError) as e:
+            raise OSError(f"board moved to {recovery}, but finishing the delete failed: {e}") from e
+        with contextlib.suppress(OSError):  # A writer waiting on the lock may still hold it open.
+            (folder / LOCK_NAME).unlink()
+            folder.rmdir()
+        return {"recoveryPath": str(recovery), "board": str(target)}
 
 
 # ===== output =====

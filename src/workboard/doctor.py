@@ -66,12 +66,8 @@ def _safe_path(path):
 
 def _board_path(value):
     lexical = Path(value).absolute()
-    _safe_path(lexical)
-    if lexical.is_dir():
-        lexical = lexical / "board" / "board.json"
-    _safe_path(lexical)
-    canonical = wb.canonical_registered_board(lexical)
-    if not canonical.is_file():
+    canonical = _safe_path(lexical)
+    if not lexical.is_file():
         raise FileNotFoundError(f"board does not exist: {lexical}")
     return lexical, canonical
 
@@ -316,7 +312,7 @@ def _inspect_data(value, report, budget, blob_cache):
             relative = path.relative_to(lexical.parent)
             if path == lexical:
                 continue
-            recovery = relative.parts[0] in (wb.BACKUP_DIR, wb.ARCHIVE_DIR) or path.name.startswith("board.deleted-")
+            recovery = relative.parts[0] in (wb.BACKUP_DIR, wb.ARCHIVE_DIR)
             if not recovery or path.suffix.lower() != ".json":
                 continue
             entry = {"path": str(path), "ok": False}
@@ -334,7 +330,7 @@ def _inspect_data(value, report, budget, blob_cache):
                 if isinstance(exc, _LimitError):
                     raise
             result["recovery"].append(entry)
-    except (OSError, ValueError, TypeError, KeyError, RuntimeError, wb.UnsafeBoardPath) as exc:
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
         _finding(report, "board-invalid", exc, value)
     result["ok"] = len(report["blockers"]) == start
     return result
@@ -347,7 +343,7 @@ def _registry(path, report, budget):
         result["exists"] = Path(path).exists()
         if not result["exists"]:
             result["ok"] = True
-            return result, {"boards": {}}
+            return result, {"version": 2, "boards": {}}
         raw = _json_read(path, budget)
         if not isinstance(raw, dict) or wb.registry_load(path, max_bytes=MAX_JSON_BYTES) != raw:
             raise ValueError("board registry is malformed or changed during inspection")
@@ -360,7 +356,7 @@ def _registry(path, report, budget):
 
 
 def _check_data(report, board, all_registered):
-    """The current board (or every registered board with --all), the registry, and legacy files."""
+    """The current board (or every registered board with --all), the registry, the store, and legacy files."""
     budget, cache, seen, directories = _Budget(), {}, set(), {}
 
     def inspect(value):
@@ -370,40 +366,65 @@ def _check_data(report, board, all_registered):
             seen.add(os.path.normcase(result["path"]))
             directories[os.path.normcase(result["path"])] = Path(result["path"]).parent
 
-    explicit = board or os.environ.get("WORKBOARD_DEFAULT_BOARD")
-    if explicit:
-        inspect(explicit)
-    else:
-        try:
-            found = wb.find_board()
-        except FileNotFoundError:
-            found = None
-        if found is not None:
-            inspect(found)
+    try:
+        current = wb.resolve_board(board)[1]
+    except (OSError, ValueError) as exc:
+        current = None
+        if board:  # Only an explicit --board is a failure; an unlinked folder just has no board.
+            _finding(report, "board-invalid", exc, board)
+    if current is not None:
+        inspect(current)
     report["registry"], registry = _registry(wb.registry_path(), report, budget)
     entries = report["registry"]["entries"] = []
     for name, value in (registry or {}).get("boards", {}).items():
-        entry = {"name": name, "board": value, "ok": False}
+        project, path = Path(value["project"]), wb._board_path(value)
+        entry = {"name": name, "board": str(path), "project": str(project), "ok": False}
         entries.append(entry)
         try:
             budget.take()
-            canonical = wb.canonical_registered_board(value)
-            _safe_path(value)
-            if not canonical.is_file():
+            if not project.is_dir():
+                _finding(report, "project-missing",
+                         f"board '{name}' is linked to a folder that no longer exists; "
+                         f"from the project's new location run: workboard link {name}",
+                         project, category="registry", warning=True)
+            legacy = project / "board" / "board.json"
+            if legacy.is_file():
+                _finding(report, "legacy-project-board",
+                         f"left over from before boards moved to {wb.boards_dir()}; board '{name}' lives "
+                         "there now and WorkBoard never reads this copy", legacy, category="registry", warning=True)
+            canonical = _safe_path(path)
+            if not path.is_file():
                 entry["error"] = "registered board is missing"
                 _finding(report, "registered-board-missing",
-                         f"board '{name}' is registered but its board.json is gone", value,
+                         f"board '{name}' is registered but its board.json is gone", path,
                          category="registry", warning=True)
                 continue
             entry.update(ok=True, path=str(canonical))
             directories.setdefault(os.path.normcase(str(canonical)), canonical.parent)
             if all_registered and os.path.normcase(str(canonical)) not in seen:
-                inspect(value)
-        except (OSError, ValueError, TypeError, RuntimeError, wb.UnsafeBoardPath) as exc:
+                inspect(path)
+        except (OSError, ValueError, TypeError, RuntimeError) as exc:
             entry["error"] = str(exc)
-            _finding(report, "registered-board-invalid", exc, value, category="registry")
+            _finding(report, "registered-board-invalid", exc, path, category="registry")
             if isinstance(exc, _LimitError):
                 break
+    if registry is not None:
+        used = {value["dir"] for value in registry["boards"].values()}
+        store = wb.boards_dir()
+        try:
+            _safe_path(store)
+            found = sorted(item.name for item in os.scandir(store) if item.is_dir(follow_symlinks=False))
+        except FileNotFoundError:
+            found = []
+        except (OSError, ValueError) as exc:
+            found = []
+            _finding(report, "registry-invalid", exc, store, category="registry")
+        for name in found:
+            if name not in used:
+                _finding(report, "unregistered-board-dir",
+                         "no board in boards.json uses this folder, so WorkBoard never reads it; "
+                         f"if it is not needed, move it to {wb.deleted_dir()}",
+                         store / name, category="registry", warning=True)
     legacy = [wb.home() / "viewers.json", *(directory / ".viewer.port" for directory in directories.values())]
     for path in legacy:
         if path.exists():
@@ -465,6 +486,11 @@ def _check_installation(report) -> None:
     if info["skills"] and all(target["state"] == "missing" for target in info["skills"]):
         _finding(report, "skills-missing", "no agent skill is installed; run: workboard setup",
                  Path.home(), category="install", warning=True)
+    codex = info["codex"] = install.codex_sandbox_status()
+    if codex["state"] == "missing":
+        _finding(report, "codex-sandbox",
+                 f"Codex's sandbox cannot write to {wb.home()}, so Codex agents cannot update boards; "
+                 "run: workboard setup", codex["config"], category="install", warning=True)
     try:
         service = info["service"] = install.service_status()
     except (OSError, wb.WorkflowError) as exc:
@@ -512,7 +538,7 @@ def _summary(report) -> str:
         lines.append(f"  board: {board.get('path') or board['requestedPath']} · {facts}"
                      + ("ok" if board["ok"] else "problems"))
     if not report["boards"]:
-        lines.append("  board: none here (pass --board PATH, or --all for every registered board)")
+        lines.append("  board: none here (pass --board NAME, or --all for every registered board)")
     entries = report["registry"].get("entries", [])
     lines.append(f"  registry: {len(entries)} registered board{'s' if len(entries) != 1 else ''}")
     for kind in ("blockers", "warnings"):

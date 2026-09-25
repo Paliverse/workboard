@@ -1,6 +1,12 @@
 # Using WorkBoard with coding agents
 
-Agents use the `workboard` CLI on the board in the project they are working in. They don't need the server or a browser. You watch and edit the same board at `http://127.0.0.1:7891/`.
+Agents use the `workboard` CLI on the board of the project they are working in. They don't need the server or a browser. You watch and edit the same board at `http://127.0.0.1:7891/`.
+
+## Finding the board
+
+Agents never pass a path. Every board lives in `~/.workboard/boards/` and is linked to a project folder, and `workboard` finds the board linked to the current directory, its nearest linked parent, or the main checkout of a git worktree. A project without a board gets one with `workboard init`; any other board is selected with `--board NAME` or `WORKBOARD_DEFAULT_BOARD`. `workboard which` shows the board a directory resolves to. See [Board resolution](cli.md#board-resolution).
+
+Codex's default sandbox only lets commands write inside the workspace. `workboard setup` adds `~/.workboard` to Codex's writable folders (see [install.md](install.md#codex)); any other harness that sandboxes file writes needs the same access.
 
 ## Install the skill
 
@@ -33,7 +39,7 @@ Track substantive work on the WorkBoard: follow the workboard skill, starting wi
 
 ## Actors
 
-Every write records an actor label. The effective label is `--actor NAME`, else `WORKBOARD_ACTOR`, else `agent`. The browser records `user` unless you change the label in the sidebar, so unlabeled CLI work and people in the web UI stay distinguishable.
+Every write records an actor label. The effective label is `--actor NAME`, else `WORKBOARD_ACTOR`, else `actor` in `~/.workboard/config.json`, else `agent`. The browser records `user` unless you change the label in the sidebar, so unlabeled CLI work and people in the web UI stay distinguishable.
 
 - Give each concurrent agent a distinct label, such as `codex-auth` or `claude-docs`. Ownership, the digest's `MINE @actor` section and `query --mine` all depend on it.
 - Pass `--actor` on every command, including reads.
@@ -87,7 +93,7 @@ Many agents and a person can write to the same board at once. Every write is loc
    - `deps`: finish or resolve the dependencies. Missing or canceled dependencies never count as complete.
    - `wip`: the In Progress limit is reached. Finish or release work; don't raise the limit to get around it.
    - `state`: use the right action, for example `done REF --writeup` instead of `fly REF done`.
-5. **Never bypass the tools.** Don't hand-edit `board.json` or run `recover`, `sweep`, `columns-core` or `wip` unless the user asks. Never unset `WORKBOARD_SCOPE_ROOT` to make a write succeed. `lock`, `scope` and `io` errors mean something needs fixing, not retrying.
+5. **Never bypass the tools.** Don't hand-edit `board.json` or `boards.json`, and don't run `recover`, `sweep`, `columns-core` or `wip` unless the user asks. `lock`, `scope` and `io` errors mean something needs fixing, not retrying.
 
 Browser writes use a stricter, board-scoped check: a write fails if anything on the board changed since the page last synced. The page shows the conflict, reloads the latest state and never retries automatically.
 

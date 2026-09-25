@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Paliverse
-"""Per-user setup: agent skill installation and the background server service.
+"""Per-user setup: agent skills, Codex's writable folder, and the background server service.
 
-`workboard setup` copies the bundled skill into every agent harness and
-registers a per-user service that keeps the one local server running:
-Windows HKCU Run value, macOS LaunchAgent, Linux systemd --user unit (XDG
-autostart fallback). Backends take an injectable registry or command runner
-so tests exercise them in a scratch home without touching real registrations.
+`workboard setup` copies the bundled skill into every agent harness, adds
+WorkBoard's home to Codex's sandbox writable roots, and registers a per-user
+service that keeps the one local server running: Windows HKCU Run value, macOS
+LaunchAgent, Linux systemd --user unit (XDG autostart fallback). Backends take
+an injectable registry or command runner so tests exercise them in a scratch
+home without touching real registrations.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import shutil
 import sys
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 
 from . import __version__
@@ -231,6 +233,80 @@ def skills_remove() -> list[dict]:
             action = "removed"
         results.append({"path": str(path.parent), "action": action})
     return results
+
+
+# ===== Codex writable folder =====
+# Boards live in home(), outside every project, where Codex's workspace-write sandbox blocks writes.
+
+_CODEX_TABLE = re.compile(r"\s*\[\s*sandbox_workspace_write\s*\]\s*(?:#.*)?")
+_CODEX_ROOTS = re.compile(r"(\s*writable_roots\s*=\s*\[)(.*?)(\]\s*(?:#.*)?)")
+
+
+def _codex_manual(config: Path, reason: str) -> dict:
+    # A TOML basic string parses for any path; JSON escapes are TOML escapes once DEL is escaped too.
+    root = json.dumps(str(wb.home()), ensure_ascii=False).replace("\x7f", "\\u007f")
+    return {"state": "manual", "config": str(config), "reason": reason,
+            "snippet": f"[sandbox_workspace_write]\nwritable_roots = [{root}]"}
+
+
+def codex_sandbox_status() -> dict:
+    """Can Codex's sandbox write to home()? state: absent | full-access | manual | granted | missing."""
+    config = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
+    try:
+        data = tomllib.loads(config.read_bytes().decode("utf-8"))
+    except FileNotFoundError:
+        return {"state": "absent", "config": str(config)}
+    except (OSError, ValueError) as exc:
+        return _codex_manual(config, f"cannot parse it ({exc})")
+    if data.get("sandbox_mode") == "danger-full-access":
+        return {"state": "full-access", "config": str(config)}
+    if "default_permissions" in data:
+        return _codex_manual(config, "it uses permission profiles (default_permissions); "
+                                     "give the active profile write access to this folder")
+    table = data.get("sandbox_workspace_write")
+    roots = table.get("writable_roots") if isinstance(table, dict) else None
+    granted = isinstance(roots, list) and str(wb.home()) in roots
+    return {"state": "granted" if granted else "missing", "config": str(config)}
+
+
+def grant_codex_writable_root() -> dict:
+    """Add home() to Codex's writable_roots by a backed-up, re-parsed line edit; anything else is `manual`."""
+    status = codex_sandbox_status()
+    if status["state"] != "missing":
+        return status
+    config = Path(status["config"])
+    home = str(wb.home())
+    if "'" in home or any((ord(ch) < 32 and ch != "\t") or ord(ch) == 127 for ch in home):
+        return _codex_manual(config, "the WorkBoard folder's path cannot be written as a TOML literal string")
+    text = config.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    entry = f"'{home}'"  # A TOML literal string: Windows backslashes stay as written.
+    lines = text.splitlines(keepends=True)
+    header = next((i for i, line in enumerate(lines) if _CODEX_TABLE.fullmatch(line.rstrip("\r\n"))), None)
+    if header is None:
+        lines.append(f"{newline}[sandbox_workspace_write]{newline}writable_roots = [{entry}]{newline}")
+    else:
+        end = next((i for i in range(header + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+        key = next((i for i in range(header + 1, end) if re.match(r"\s*writable_roots\s*=", lines[i])), None)
+        if key is None:
+            lines[header] = lines[header].rstrip("\r\n") + newline
+            lines.insert(header + 1, f"writable_roots = [{entry}]{newline}")
+        else:
+            body = lines[key].rstrip("\r\n")
+            match = _CODEX_ROOTS.fullmatch(body)
+            if match is None:
+                return _codex_manual(config, "writable_roots spans several lines; add the folder to it by hand")
+            items = match[2].strip().rstrip(",").rstrip()
+            lines[key] = f"{match[1]}{items + ', ' if items else ''}{entry}{match[3]}{lines[key][len(body):]}"
+    backup = config.with_name(config.name + ".workboard-bak")
+    shutil.copy2(config, backup)
+    target = config.resolve()  # Edit a symlinked (dotfiles) config at its real location.
+    _write_if_changed(target, "".join(lines).encode("utf-8"))
+    status = codex_sandbox_status()
+    if status["state"] == "granted":
+        return status
+    _write_if_changed(target, backup.read_bytes())
+    return _codex_manual(config, "the edit did not verify, so the original file was restored")
 
 
 # ===== service backends =====
@@ -547,18 +623,27 @@ def _skill_line(target: dict) -> str:
     return f"{action:<9} {target['path']}{note}"
 
 
+def _codex_line(result: dict) -> str:
+    if result["state"] != "manual":
+        return f"codex: {result['state']}"
+    return f"codex: manual · {result['reason']}; add to {result['config']}:\n{result['snippet']}"
+
+
 def cmd_setup(args) -> None:
     result, lines = {"ok": True}, []
     if not args.no_skills:
         result["skills"] = skills_install()
         lines.append("skills: " + "; ".join(f"{t['action']} {t['path']}" for t in result["skills"]))
+    if not args.no_codex:
+        result["codex"] = grant_codex_writable_root()
+        lines.append(_codex_line(result["codex"]))
     if not args.no_service:
         result["service"] = service_install()
         lines.append(_service_line(result["service"]))
     if args.json:
         _print_json(result)
     else:
-        print("\n".join(lines) or "nothing to do: --no-skills and --no-service were both given")
+        print("\n".join(lines) or "nothing to do: --no-skills, --no-codex and --no-service were all given")
 
 
 def cmd_skills(args) -> None:
@@ -587,8 +672,9 @@ def cmd_service(args) -> None:
 def register(add) -> None:
     from .cli import _global_arguments
 
-    p = add("setup", cmd_setup, "install the agent skills and the background server service")
+    p = add("setup", cmd_setup, "install the agent skills, let Codex write boards, and start the background service")
     p.add_argument("--no-skills", action="store_true", help="skip the agent skill install")
+    p.add_argument("--no-codex", action="store_true", help="leave Codex's config.toml alone")
     p.add_argument("--no-service", action="store_true", help="skip the background service")
 
     p = add("skills", cmd_skills, "install, refresh, remove, or inspect the agent skill")

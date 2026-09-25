@@ -1,6 +1,6 @@
 # HTTP API
 
-The per-user server (`workboard serve`, or the background service) speaks HTTP/1.1 on `http://127.0.0.1:<port>/`. The port is `--port`, else `WORKBOARD_PORT`, else `7891`. The board UI uses exactly this API. Agents normally use the [CLI](cli.md) instead, which works without the server.
+The per-user server (`workboard serve`, or the background service) speaks HTTP/1.1 on `http://127.0.0.1:<port>/`. The port is `--port`, else `WORKBOARD_PORT`, else `port` in `~/.workboard/config.json`, else `7891`. The board UI uses exactly this API. Agents normally use the [CLI](cli.md) instead, which works without the server.
 
 - Server routes live at the root.
 - Board routes live under `/b/<enc>/`, where `<enc>` is the registered board name percent-encoded with `urllib.parse.quote(name, safe="")` (JavaScript: `encodeURIComponent`).
@@ -56,15 +56,16 @@ The board UI with no board selected. It lists the registered boards.
 ### `GET /api/boards`
 
 ```json
-{"boards": [{"name": "my-project", "board": "/home/me/src/my-project/board/board.json",
-             "url": "/b/my-project/", "exists": true, "rev": 42, "cards": 17, "error": null}]}
+{"boards": [{"name": "my-project", "board": "/home/me/.workboard/boards/my-project/board.json",
+             "project": "/home/me/src/my-project", "url": "/b/my-project/", "exists": true,
+             "rev": 42, "cards": 17, "error": null}]}
 ```
 
-Sorted case-insensitively by name. For a missing or unreadable board, `rev` and `cards` are `null` and `error` explains why.
+Sorted case-insensitively by name. `board` is the board file in the WorkBoard home and `project` the linked project folder. For a missing or unreadable board, `rev` and `cards` are `null` and `error` explains why.
 
 ### `POST /api/boards/delete`
 
-Body: `{"name", "board", "baseRev"}`. `board` must be the exact registered path. `baseRev` is required: the board revision you reviewed, or `null` if the board file is expected to be gone already. `board.json` is moved to a unique `board.deleted-*.json` recovery file next to it, and the name is unregistered. Project files, backups, archives and attachments stay. Response: `{"ok": true, "recoveryPath": "<path or null>", "board": "<path>"}`. Errors: 400 for invalid fields, 404 for an unregistered name, 409 `{"ok": false, "conflict": true, "error"}` for a stale revision or a changed registration, and 500 for a lock timeout or I/O failure.
+Body: `{"name", "board", "baseRev"}`. `board` must be the exact registered board file, as listed by `/api/boards`. `baseRev` is required: the board revision you reviewed, or `null` if the board file is expected to be gone already. The board's whole folder, with its backups, archives and attachments, moves to `~/.workboard/deleted/<dir>-<UTC timestamp>/`, and the name is unregistered. The project folder is never touched. Response: `{"ok": true, "recoveryPath": "<moved folder, or null if the board folder was already gone>", "board": "<path>"}`. Errors: 400 for invalid fields, 404 for an unregistered name, 409 `{"ok": false, "conflict": true, "error"}` for a stale revision or a changed registration, and 500 for a lock timeout or I/O failure.
 
 ### `POST /api/shutdown`
 

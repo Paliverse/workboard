@@ -2126,7 +2126,7 @@ const WB = window.WB = {};
     try { boards = (await WB.api.get(`${ROOT}api/boards`)).boards || []; } catch (err) { list.replaceChildren(h('div', { class: 'side-empty', text: `Could not list boards: ${err.message}` })); return; }
     const draw = () => {
       const q = search.value.trim().toLowerCase();
-      const rows = boards.filter(b => !q || b.name.toLowerCase().includes(q) || String(b.board).toLowerCase().includes(q));
+      const rows = boards.filter(b => !q || b.name.toLowerCase().includes(q) || String(b.project).toLowerCase().includes(q));
       if (!rows.length) { list.replaceChildren(h('div', { class: 'side-empty', text: boards.length ? 'No boards match.' : 'No boards are registered yet. Run workboard init in a project folder.' })); return; }
       list.replaceChildren(...rows.map(b => {
         const current = b.name === BOARD;
@@ -2135,7 +2135,7 @@ const WB = window.WB = {};
           h('span', { style: { minWidth: 0, flex: 1 } },
             h('span', { style: { display: 'flex', alignItems: 'center', gap: '6px' } }, h('b', { text: b.name, style: { fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }),
               current ? h('span', { class: 'badge', text: 'Current' }) : !b.exists ? h('span', { class: 'badge', style: { '--tone': 'var(--red)' }, text: 'Missing' }) : null),
-            h('span', { class: 'faint', style: { display: 'block', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, text: b.board })),
+            h('span', { class: 'faint', style: { display: 'block', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, text: b.project })),
           h('span', { class: 'btn icon xs', attrs: { role: 'button', 'aria-label': `Delete board ${b.name}` }, title: 'Delete board…', on: { click: ev => { ev.stopPropagation(); m.close(); deleteBoard(b); } } }, icon('trash', 'sm')));
         row.addEventListener('click', () => { m.close(); if (!current) switchBoard(b); });
         return row;
@@ -2149,8 +2149,8 @@ const WB = window.WB = {};
   async function deleteBoard(b) {
     const current = b.name === BOARD;
     const yes = await confirm(b.exists
-      ? { title: `Delete “${b.name}”?`, body: `${b.board} is renamed to a recoverable board.deleted-*.json file beside it and the board is removed from the list. Cards, attachments and backups stay on disk.`, ok: 'Delete board', danger: true }
-      : { title: `Remove “${b.name}”?`, body: `${b.board} no longer exists, so only the registration is removed. No file is moved.`, ok: 'Remove registration', danger: true });
+      ? { title: `Delete “${b.name}”?`, body: `The board moves to WorkBoard’s deleted folder, where it can be recovered, and is removed from the list. Cards, attachments and backups are kept.`, ok: 'Delete board', danger: true }
+      : { title: `Remove “${b.name}”?`, body: `${b.board} no longer exists, so only the registration is removed. Any leftover backups or attachments move to WorkBoard’s deleted folder.`, ok: 'Remove registration', danger: true });
     if (!yes) return;
     try {
       const res = await request('POST', `${ROOT}api/boards/delete`, { body: { name: b.name, board: b.board, baseRev: current && S.doc && !S.missing ? S.rev : (b.rev ?? null) } });
@@ -2176,7 +2176,7 @@ const WB = window.WB = {};
     redrawChooser = () => WB.api.get(`${ROOT}api/boards`).then(res => {
       const boards = (res.boards || []).filter(b => b.name !== BOARD);
       list.replaceChildren(...(boards.length ? boards.map(b => h('button', { class: 'list-row menu-item', type: 'button', style: { borderRadius: 0 }, on: { click: () => switchBoard(b) } },
-        h('b', { text: b.name, style: { fontWeight: 500 } }), h('span', { class: 'faint', text: b.exists ? b.board : `Missing · ${b.board}`, style: { marginLeft: 'auto', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' } })))
+        h('b', { text: b.name, style: { fontWeight: 500 } }), h('span', { class: 'faint', text: b.exists ? b.project : `Missing · ${b.project}`, style: { marginLeft: 'auto', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' } })))
         : [h('div', { class: 'list-row faint', text: BOARD ? 'No other registered boards.' : 'No boards are registered yet. Run workboard init in a project folder.' })]));
     }).catch(() => list.replaceChildren(h('div', { class: 'list-row faint', text: 'Could not list boards.' })));
     redrawChooser();

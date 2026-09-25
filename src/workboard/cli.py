@@ -4,9 +4,10 @@
 """WorkBoard: the concise agent/human interface for the project kanban.
 
 Every mutation prints one line and supports --json for a machine postcondition.
-Run from anywhere inside the project (walks up to board/board.json), or pass
---board <project-root-or-board.json>. `workboard open` shows the board in the
-browser; ordinary board commands never start a server or open a browser.
+Boards live in ~/.workboard, each linked to one project folder: run from
+anywhere inside the project (or one of its git worktrees), or pass
+--board NAME|DIR. `workboard open` shows the board in the browser; ordinary
+board commands never start a server or open a browser.
 """
 from __future__ import annotations
 
@@ -604,36 +605,32 @@ def cmd_digest(args):
         print(f"  sweep: {len(pending)} done cards older than 14d (operator task)")
 
 
+def _project(args) -> Path:
+    folder = Path(args.dir) if args.dir else Path.cwd()
+    if not folder.is_dir():
+        raise wb.WorkflowError(f"no such folder: {folder}", 404)
+    return wb.project_root(folder)
+
+
 def cmd_init(args):
-    if args.board:
-        raise wb.WorkflowError("init uses --dir, never --board")
-    if wb.os.environ.get("WORKBOARD_SCOPE_ROOT") and not args.dir:
-        raise wb.WorkflowError("scoped init requires an explicit --dir under WORKBOARD_SCOPE_ROOT")
-    root = wb.require_write_scope(args.dir or Path.cwd())
-    bdir = root / "board"
-    p = wb.require_write_scope(bdir / "board.json")
-    wb.require_write_scope(wb.registry_path())
-    wb.registry_load()
-    if p.exists():
-        raise wb.WorkflowError(f"board already exists at {p}", 409)
-    doc = {"name": args.name or root.name, "rev": 0,
-           "nextNum": 1, "columns": [dict(c) for c in wb.DEFAULT_COLUMNS],
-           "cards": []}
-    bdir.mkdir(parents=True, exist_ok=True)
-    wb.registry_path().parent.mkdir(parents=True, exist_ok=True)
-    with wb.board_lock(wb.registry_path()):
-        p = wb.canonical_registered_board(p)
-        with wb.board_lock(p):
-            p = wb.canonical_registered_board(p)
-            if p.exists():
-                raise wb.WorkflowError(f"board already exists at {p}", 409)
-            wb.save(p, doc)
-            wb.register_board(doc["name"], p)
+    project = _project(args)
+    name = args.name or project.name
+    p = wb.create_board(name, project)
     if args.json:
-        print(json.dumps({"ok": True, "board": str(p), "rev": doc["rev"],
-                          "actor": wb.actor(), "name": doc["name"]}))
+        print(json.dumps({"ok": True, "name": name, "board": str(p), "project": str(project),
+                          "rev": wb.load(p)["rev"], "actor": wb.actor()}, ensure_ascii=False))
     else:
-        print(f"board created: {p} — view it with: workboard open")
+        print(f"board created: {name} for {project} — view it with: workboard open")
+
+
+def cmd_link(args):
+    project = _project(args)
+    p = wb.link_board(args.name, project)
+    if args.json:
+        print(json.dumps({"ok": True, "name": args.name, "board": str(p), "project": str(project)},
+                         ensure_ascii=False))
+    else:
+        print(f"linked {args.name} → {project}")
 
 
 def cmd_serve(args):
@@ -700,7 +697,7 @@ def cmd_sweep(args):
         print(f"(nothing done-and-older-than-{args.days}d to archive)")
         return
     if args.apply:
-        print(f"archived {len(moving)} cards → board/{wb.ARCHIVE_DIR}/ "
+        print(f"archived {len(moving)} cards → {p.parent / wb.ARCHIVE_DIR} "
               f"(#{', #'.join(str(c['num']) for c in moving[:8])}"
               + (" …" if len(moving) > 8 else "") + ")")
     else:
@@ -772,32 +769,35 @@ def cmd_columns_core(args):
 
 def cmd_boards(args):
     from urllib.parse import quote
-    port = int(wb.os.environ.get("WORKBOARD_PORT") or 7891)
-    boards = wb.registry_load().get("boards", {})
-    rows = [(name, path, f"http://127.0.0.1:{port}/b/{quote(name, safe='')}/")
-            for name, path in sorted(boards.items())]
+    port = wb.configured_port()
+    rows = []
+    for name, entry in sorted(wb.registry_load()["boards"].items()):
+        board = wb._board_path(entry)
+        rows.append({"name": name, "board": str(board), "project": entry["project"],
+                     "url": f"http://127.0.0.1:{port}/b/{quote(name, safe='')}/",
+                     "exists": board.is_file(), "projectExists": Path(entry["project"]).is_dir()})
     if args.json:
-        print(json.dumps({"ok": True, "boards": [
-            {"name": name, "board": path, "url": url, "exists": Path(path).is_file()}
-            for name, path, url in rows]}, ensure_ascii=False))
+        print(json.dumps({"ok": True, "boards": rows}, ensure_ascii=False))
         return
     if not rows:
-        print("(no registered boards — create one with: workboard init <name>)")
+        print("(no registered boards — create one with: workboard init)")
         return
-    for name, path, url in rows:
-        exists = "✓" if Path(path).exists() else "✗ missing"
-        print(f"  {name:<20} {url}  {path} {exists}")
+    for row in rows:
+        missing = [label for label, present in (("✗ board missing", row["exists"]),
+                                                ("✗ project missing", row["projectExists"])) if not present]
+        print(f"  {row['name']:<20} {row['url']}  {row['project']}  {' '.join(missing) or '✓'}")
 
 
 def cmd_which(args):
-    p = wb.find_board(args.board)
+    name, p = wb.resolve_board(args.board)
+    project = wb.registry_load()["boards"][name]["project"]
     doc = wb.load(p)
     if args.json:
-        print(json.dumps({"ok": True, "board": str(p), "name": doc["name"],
+        print(json.dumps({"ok": True, "board": str(p), "name": name, "project": project,
                           "schemaVersion": doc["schemaVersion"], "rev": doc["rev"],
                           "cards": len(doc["cards"])}, ensure_ascii=False))
         return
-    print(f"{p} — '{doc['name']}' rev {doc['rev']} · {len(doc['cards'])} cards")
+    print(f"{name} — {p} (project {project}) · rev {doc['rev']} · {len(doc['cards'])} cards")
 
 
 # ===== parser =====
@@ -807,12 +807,12 @@ def cmd_which(args):
 def _global_arguments(parser, *, root=False):
     parser.add_argument("--board",
                         default=None if root else argparse.SUPPRESS,
-                        help="project root or board.json path")
+                        help="board name or project/worktree folder (default: the board linked to the cwd)")
     parser.add_argument("--json", action="store_true",
                         default=False if root else argparse.SUPPRESS,
                         help="machine-readable result")
     parser.add_argument("--actor", default=None if root else argparse.SUPPRESS,
-                        help="actor label overriding WORKBOARD_ACTOR")
+                        help="actor label overriding WORKBOARD_ACTOR and config.json")
 
 
 def _revision(value):
@@ -987,15 +987,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("terms", nargs="+")
 
     add("digest", cmd_digest, "~15-line board pulse; read this first")
-    add("boards", cmd_boards, "list registered boards")
-    add("which", cmd_which, "print resolved board path + counts")
+    add("boards", cmd_boards, "list registered boards with their projects")
+    add("which", cmd_which, "print the resolved board, its project and counts")
 
-    p = add("init", cmd_init, "create and register a board in cwd (or --dir)")
-    p.add_argument("name", nargs="?")
-    p.add_argument("--dir")
+    p = add("init", cmd_init, "create the board for this project (cwd or --dir) in ~/.workboard")
+    p.add_argument("name", nargs="?", help="board name (default: the project folder name)")
+    p.add_argument("--dir", help="a folder inside the project (default: cwd)")
+
+    p = add("link", cmd_link, "link a board to this project folder after the project moved")
+    p.add_argument("name")
+    p.add_argument("--dir", help="a folder inside the project (default: cwd)")
 
     p = add("serve", cmd_serve, "run the local board server for every registered board (foreground)")
-    p.add_argument("--port", type=int, help="TCP port on 127.0.0.1 (default: $WORKBOARD_PORT or 7891)")
+    p.add_argument("--port", type=int,
+                   help="TCP port on 127.0.0.1 (default: $WORKBOARD_PORT, config.json port, or 7891)")
     p.add_argument("--open", action="store_true", help="open this project's board in the browser")
     p.add_argument("--service", action="store_true", help="background-service mode: log to file, never open a browser")
 
@@ -1027,8 +1032,8 @@ def main(argv=None):
     if sum(token == "--board" or token.startswith("--board=") for token in options) > 1:
         ap.error("--board may be specified only once")
     args = ap.parse_args(argv)
-    if args.cmd == "init" and args.board is not None:
-        ap.error("init uses --dir as its destination; --board is not accepted")
+    if args.cmd in ("init", "link") and args.board is not None:
+        ap.error(f"{args.cmd} uses --dir for the project folder; --board is not accepted")
     if args.cmd in ("recover", "columns-core", "sweep") and args.expected_rev is not None and not args.apply:
         ap.error("--expected-rev on maintenance requires --apply")
     if args.cmd == "comment":
@@ -1046,16 +1051,15 @@ def main(argv=None):
             wb.os.environ["WORKBOARD_ACTOR"] = wb.validate_actor(args.actor)
         wb.actor()
         args.fn(args)
-    except (wb.WorkflowError, wb.RefError, wb.LockTimeout, wb.UnsafeBoardPath,
-            wb.RegistryConflict, OSError, ValueError, KeyError, TypeError, SystemExit) as exc:
+    except (wb.WorkflowError, wb.RefError, wb.LockTimeout,
+            OSError, ValueError, KeyError, TypeError, SystemExit) as exc:
         if isinstance(exc, SystemExit) and isinstance(exc.code, int):
             raise
         status = getattr(exc, "status", 404 if isinstance(exc, (FileNotFoundError, wb.RefError))
-                         else 409 if isinstance(exc, (FileExistsError, wb.RegistryConflict))
+                         else 409 if isinstance(exc, FileExistsError)
                          else 500 if isinstance(exc, (OSError, wb.LockTimeout)) else 422)
         code = (exc.code if isinstance(exc, wb.WorkflowError) else
                 "lock" if isinstance(exc, wb.LockTimeout) else
-                "scope" if isinstance(exc, wb.UnsafeBoardPath) else
                 "not_found" if isinstance(exc, wb.RefError) else
                 "io" if isinstance(exc, OSError) else "invalid")
         message = str(exc).removeprefix("error: ")

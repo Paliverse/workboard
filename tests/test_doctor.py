@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -59,7 +60,10 @@ def write_json(path, value):
 
 
 def make_board(root, name="source"):
-    board = root / name / "board" / "board.json"
+    """A registered board for project root/name, overwritten with a fixed legacy-schema document."""
+    project = root / name
+    project.mkdir()
+    board = wb.create_board(name, project)
     doc = wb.normalize_doc({"schemaVersion": 2, "name": name, "rev": 4, "nextNum": 2,
                             "columns": copy.deepcopy(wb.DEFAULT_COLUMNS),
                             "cards": [{"id": "one", "num": 1, "title": "Review input", "column": "task"}]})
@@ -102,8 +106,8 @@ class DoctorCase(unittest.TestCase):
         self.enterContext(mock.patch("shutil.which", return_value=None))
         self.board, self.doc = make_board(self.root)
 
-    def inspect(self, board=None, **kwargs):
-        return doctor.diagnose(str(board or self.board), **kwargs)
+    def inspect(self, board="source", **kwargs):
+        return doctor.diagnose(board, **kwargs)
 
     def cli(self, *argv):
         out = io.StringIO()
@@ -119,7 +123,7 @@ class DoctorCase(unittest.TestCase):
 class DataIntegrityTest(DoctorCase):
     def test_healthy_board_passes_without_writing(self):
         before = tree_state(self.root)
-        with contextlib.chdir(self.board.parent.parent):
+        with contextlib.chdir(self.root / "source"):
             code, out = self.cli("doctor", "--json")
         report = json.loads(out)
         self.assertEqual((code, report["ok"], report["blockers"]), (0, True, []), report)
@@ -128,28 +132,25 @@ class DataIntegrityTest(DoctorCase):
         self.assertEqual(codes(report, "warnings"), {"not-on-path", "skills-missing"})
         self.assertEqual(report["installation"]["channel"], "source")
         self.assertEqual(tree_state(self.root), before)
-        self.assertFalse((self.board.parent / wb.LOCK_NAME).exists())
-        self.assertFalse(self.home.exists())
 
-        code, out = self.cli("doctor", "--board", self.board.parent.parent)
+        code, out = self.cli("doctor", "--board", "source")
         self.assertEqual(code, 0)
         self.assertIn(str(self.board), out)
-        missing = self.inspect(self.root / "missing" / "board.json")
-        self.assertIn("board-invalid", codes(missing))
-        with mock.patch.dict(os.environ, {"WORKBOARD_SCOPE_ROOT": str(self.root / "uncreated-scope")}):
-            self.assertTrue(self.inspect()["ok"])
+        unlinked = doctor.diagnose()
+        self.assertEqual((unlinked["ok"], unlinked["boards"]), (True, []), "an unlinked folder has no board")
+        self.assertIn("board-invalid", codes(self.inspect("missing")))
         with mock.patch.object(doctor, "MAX_FILES", 1):
             self.assertFalse(self.inspect()["ok"])
         self.assertEqual(tree_state(self.root), before)
 
     def test_corrupted_board_json_is_a_blocker(self):
         self.board.write_text('{"rev":1,"rev":2}', encoding="utf-8")
-        code, out = self.cli("doctor", "--json", "--board", self.board)
+        code, out = self.cli("doctor", "--json", "--board", "source")
         report = json.loads(out)
         self.assertEqual((code, report["ok"]), (1, False))
         self.assertIn("board-invalid", codes(report))
         self.board.write_text("{truncated", encoding="utf-8")
-        code, out = self.cli("doctor", "--board", self.board)
+        code, out = self.cli("doctor", "--board", "source")
         self.assertEqual(code, 1)
         self.assertIn("[board-invalid]", out)
 
@@ -175,6 +176,7 @@ class DataIntegrityTest(DoctorCase):
         write_json(self.board, self.doc)
         with mock.patch.object(doctor, "MAX_JSON_BYTES", 4):
             self.assertFalse(self.inspect()["ok"])
+        shutil.rmtree(self.board.parent / wb.BACKUP_DIR)
         (self.board.parent / wb.BACKUP_DIR).write_text("not a storage directory", encoding="utf-8")
         self.assertFalse(self.inspect()["ok"])
 
@@ -183,7 +185,7 @@ class DataIntegrityTest(DoctorCase):
         write_json(self.board.parent / wb.BACKUP_DIR / "board-4.json", self.doc)
         self.assertTrue(self.inspect()["ok"])
         blob.unlink()
-        code, out = self.cli("doctor", "--json", "--board", self.board)
+        code, out = self.cli("doctor", "--json", "--board", "source")
         report = json.loads(out)
         self.assertEqual(code, 1)
         self.assertIn("attachment-integrity", codes(report))
@@ -210,11 +212,8 @@ class DataIntegrityTest(DoctorCase):
         self.assertIn("attachment-integrity", codes(self.inspect()))
 
     def test_recovery_snapshots_are_validated(self):
-        write_json(self.board.parent / "board.deleted-old.json", {"schemaVersion": 99})
-        self.assertIn("recovery-invalid", codes(self.inspect()))
-        (self.board.parent / "board.deleted-old.json").unlink()
         damaged = self.board.parent / wb.BACKUP_DIR / "board-4.json"
-        damaged.parent.mkdir()
+        damaged.parent.mkdir(exist_ok=True)
         damaged.write_text("{broken recovery JSON", encoding="utf-8")
         report = self.inspect()
         self.assertTrue(any(item["code"] == "recovery-invalid" and item["path"] == str(damaged)
@@ -295,46 +294,65 @@ class DataIntegrityTest(DoctorCase):
         os.link(self.board, external)
         self.assertFalse(self.inspect()["ok"])
         external.unlink()
-        alias = self.root / "linked-source"
-        with contextlib.suppress(OSError):  # Directory symlinks need a privilege on some Windows hosts.
-            alias.symlink_to(self.board.parent.parent, target_is_directory=True)
-            requested = alias / "board" / "board.json"
-            report = self.inspect(requested)
-            self.assertFalse(report["ok"])
-            self.assertEqual(report["boards"][0]["requestedPath"], str(requested))
-            alias.unlink()
         attachment(self.board, self.doc)
         self.doc["cards"][0]["attachments"][0]["id"] = "../board.json"
         write_json(self.board, self.doc)
         self.assertIn("attachment-integrity", codes(self.inspect()))
+        other, _ = make_board(self.root, "other")
+        shutil.rmtree(other.parent)
+        with contextlib.suppress(OSError):  # Directory symlinks need a privilege on some Windows hosts.
+            other.parent.symlink_to(self.board.parent, target_is_directory=True)
+            report = self.inspect("other")
+            self.assertLessEqual({"board-invalid", "registered-board-invalid"}, codes(report))
 
 
 class RegistryTest(DoctorCase):
     def registry(self, value):
-        write_json(self.home / ".workboard" / "boards.json", value)
+        write_json(wb.registry_path(), value)
 
     def test_registry_shape_and_registered_boards(self):
-        self.registry([])
-        report = self.inspect()
-        self.assertEqual([(item["code"], item["category"]) for item in report["blockers"]],
-                         [("registry-invalid", "registry")])
-        self.registry({"boards": {"relative": "source/board/board.json"}})
-        self.assertIn("registry-invalid", codes(self.inspect()))
-        self.registry({"boards": {"gone": str(self.root / "gone" / "board" / "board.json")}})
+        project = str(self.root / "source")
+        for broken in ([], {"boards": {"source": str(self.board)}},  # The pre-release v1 shape.
+                       {"version": 2, "boards": {"source": {"dir": "..", "project": project}}},
+                       {"version": 2, "boards": {"source": {"dir": "source", "project": "source"}}}):
+            self.registry(broken)
+            with self.subTest(registry=broken):
+                report = doctor.diagnose()
+                self.assertEqual([(item["code"], item["category"]) for item in report["blockers"]],
+                                 [("registry-invalid", "registry")])
+        self.registry({"version": 2, "boards": {"gone": {"dir": "gone", "project": project}}})
+        report = doctor.diagnose()
+        self.assertTrue(report["ok"], report)
+        self.assertLessEqual({"registered-board-missing", "unregistered-board-dir"}, codes(report, "warnings"))
+        self.registry({"version": 2, "boards": {}})
+        with mock.patch.object(wb, "registry_load", side_effect=PermissionError("registry inaccessible")):
+            self.assertIn("registry-invalid", codes(doctor.diagnose()))
+
+    def test_store_and_project_drift_are_warnings(self):
+        project = self.root / "source"
+        legacy = project / "board" / "board.json"
+        write_json(legacy, self.doc)
+        stray = wb.boards_dir() / "stray"
+        stray.mkdir()
         report = self.inspect()
         self.assertTrue(report["ok"], report)
-        self.assertIn("registered-board-missing", codes(report, "warnings"))
-        self.registry({"boards": {}})
-        with mock.patch.object(wb, "registry_load", side_effect=PermissionError("registry inaccessible")):
-            self.assertIn("registry-invalid", codes(self.inspect()))
+        found = {item["code"]: item for item in report["warnings"]}
+        self.assertEqual(found["legacy-project-board"]["path"], str(legacy))
+        self.assertEqual(found["unregistered-board-dir"]["path"], str(stray))
+        self.assertNotIn("project-missing", found)
+        shutil.rmtree(project)
+        report = self.inspect()
+        self.assertTrue(report["ok"], report)
+        missing = next(item for item in report["warnings"] if item["code"] == "project-missing")
+        self.assertEqual(missing["path"], str(project))
+        self.assertIn("workboard link source", missing["message"])
 
     def test_all_validates_every_registered_board(self):
         other, future = make_board(self.root, "other")
         future["schemaVersion"] = 99
         write_json(other, future)
-        self.registry({"boards": {"source": str(self.board), "other": str(other)}})
         self.assertTrue(self.inspect()["ok"], "without --all only the current board is validated")
-        code, out = self.cli("doctor", "--all", "--json", "--board", self.board)
+        code, out = self.cli("doctor", "--all", "--json", "--board", "source")
         report = json.loads(out)
         self.assertEqual(code, 1)
         found = [item for item in report["boards"] if item.get("path") == str(other)]
@@ -346,7 +364,6 @@ class RegistryTest(DoctorCase):
         attachment(self.board, self.doc)
         other, _ = make_board(self.root, "other")
         write_json(other, self.doc)  # Same ID/hash/size, but the bytes live only in the source board.
-        self.registry({"boards": {"source": str(self.board), "other": str(other)}})
         report = self.inspect(all_registered=True)
         self.assertTrue(any(item["code"] == "attachment-integrity" and str(other) in item["path"]
                             for item in report["blockers"]), report)
@@ -358,7 +375,7 @@ class InstallationTest(DoctorCase):
         write_json(viewers, {})
         port_file = self.board.parent / ".viewer.port"
         write_json(port_file, {"pid": 1, "port": 7911})
-        code, out = self.cli("doctor", "--json", "--board", self.board)
+        code, out = self.cli("doctor", "--json", "--board", "source")
         report = json.loads(out)
         self.assertEqual((code, report["ok"]), (0, True))
         legacy = {item["path"] for item in report["warnings"] if item["code"] == "legacy-viewer-file"}
@@ -391,6 +408,18 @@ class InstallationTest(DoctorCase):
                 self.assertIn("path-other-install", codes(self.inspect(), "warnings"))
             with mock.patch("subprocess.run", side_effect=OSError("not executable")):
                 self.assertIn("path-unverified", codes(self.inspect(), "warnings"))
+
+    def test_codex_sandbox_that_blocks_the_store_warns(self):
+        self.assertEqual(self.inspect()["installation"]["codex"]["state"], "absent")
+        config = Path(os.environ["CODEX_HOME"]) / "config.toml"
+        config.parent.mkdir()
+        config.write_text('sandbox_mode = "workspace-write"\n', encoding="utf-8")
+        report = self.inspect()
+        self.assertTrue(report["ok"], report)
+        warning = next(item for item in report["warnings"] if item["code"] == "codex-sandbox")
+        self.assertEqual(warning["path"], str(config))
+        self.assertEqual(install.grant_codex_writable_root()["state"], "granted")
+        self.assertNotIn("codex-sandbox", codes(self.inspect(), "warnings"))
 
 
 if __name__ == "__main__":

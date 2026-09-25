@@ -4,6 +4,5 @@ __pycache__/
 /dist/
 /.venv/
 *.egg-info/
-/board/
 /.test-output/
 node_modules/

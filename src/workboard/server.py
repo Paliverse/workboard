@@ -31,7 +31,6 @@ from urllib.parse import parse_qs, quote, unquote
 from . import __version__
 from . import core as wb
 
-DEFAULT_PORT = 7891
 LOG_ROTATE_BYTES = 5 * 1024 * 1024
 MAX_BODY_BYTES = 32 * 1024 * 1024
 
@@ -46,19 +45,8 @@ _ATTACHMENT_API = re.compile(r"/api/card/([^/]+)/attachments/([^/]+)\Z")
 
 # ===== ports, URLs and lifecycle helpers =====
 
-def _configured_port() -> int:
-    raw = os.environ.get("WORKBOARD_PORT") or str(DEFAULT_PORT)
-    try:
-        port = int(raw)
-    except ValueError:
-        port = 0
-    if not 1 <= port <= 65535:
-        raise wb.WorkflowError(f"WORKBOARD_PORT must be an integer 1..65535, not {raw!r}")
-    return port
-
-
 def server_url(port: int | None = None) -> str:
-    return f"http://127.0.0.1:{_configured_port() if port is None else port}/"
+    return f"http://127.0.0.1:{wb.configured_port() if port is None else port}/"
 
 
 def board_url(name: str, port: int | None = None) -> str:
@@ -105,7 +93,7 @@ def server_info(timeout: float = 1.0) -> dict | None:
     """The running server's /health, found through server.json, else the configured port."""
     port = _state().get("port")
     if type(port) is not int or not 1 <= port <= 65535:
-        port = _configured_port()
+        port = wb.configured_port()
     return _health_at(port, timeout)
 
 
@@ -155,36 +143,20 @@ def start_background(timeout: float = 10.0) -> dict:
         f"server did not start within {timeout:g}s; see {wb.logs_dir() / 'server.log'}", 503, "state")
 
 
-def _local_board(args) -> Path | None:
-    """The board named by --board (errors surface), else the one at/above cwd, else None."""
+def _open_target(args) -> tuple[str | None, Path | None]:
+    """(name, board.json) for `open`/`serve --open`: --board errors surface; no board opens the hub."""
     if getattr(args, "board", None):
-        return wb.find_board(args.board)
+        return wb.resolve_board(args.board)
     try:
-        return wb.find_board()
-    except FileNotFoundError:
-        return None
-
-
-def _board_name(board: Path, register: bool) -> str | None:
-    """Registered name for this board file; optionally register it under a free name."""
-    target = os.path.normcase(str(board.resolve()))
-    boards = wb.registry_load()["boards"]
-    for name, value in sorted(boards.items()):
-        if os.path.normcase(str(Path(value).resolve(strict=False))) == target:
-            return name
-    if not register:
-        return None
-    base = wb.load(board).get("name") or board.parent.parent.name
-    name, suffix = base, 2
-    while name in boards:
-        name, suffix = f"{base}-{suffix}", suffix + 1
-    wb.register_board(name, board.resolve())
-    return name
+        return wb.resolve_board()
+    except wb.WorkflowError as exc:
+        if exc.code != "not_found":
+            raise
+        return None, None
 
 
 def open_board(args) -> None:
-    board = _local_board(args)
-    name = _board_name(board, register=True) if board else None
+    name, board = _open_target(args)
     port = start_background()["port"]
     url = board_url(name, port) if name else server_url(port)
     import webbrowser
@@ -214,17 +186,6 @@ def _sig(board: Path) -> tuple:
         return (st.st_size, st.st_mtime_ns)
     except OSError:
         return ()
-
-
-class UnknownBoard(LookupError):
-    pass
-
-
-def _registered_board(name: str) -> Path:
-    value = wb.registry_load()["boards"].get(name)
-    if value is None:
-        raise UnknownBoard(name)
-    return wb.canonical_registered_board(value)
 
 
 # ===== browser mutation endpoints =====
@@ -819,8 +780,8 @@ def _handle_projection(handler, kind: str) -> None:
     handler._json({"rev": doc["rev"], **data})
 
 
-def _git_state(board: Path) -> dict:
-    root = board.parent.parent.resolve()
+def _git_state(root: Path) -> dict:
+    root = root.resolve()
     result = {
         "state": "error", "root": str(root), "branch": None, "head": None,
         "subject": None, "ahead": None, "behind": None, "staged": None, "unstaged": None,
@@ -841,6 +802,9 @@ def _git_state(board: Path) -> dict:
             timeout=max(0.1, deadline - time.monotonic()), shell=False,
             creationflags=0x08000000 if os.name == "nt" else 0)
 
+    if not root.is_dir():
+        result["error"] = "The linked project folder is missing; run workboard link NAME from its new location"
+        return result
     try:
         probe = run("rev-parse", "--show-toplevel")
         if probe.returncode:
@@ -974,9 +938,12 @@ def _handle_board_get(handler, path: str, query: str) -> None:
     if path in ("/api/ready", "/api/stats"):
         return _handle_projection(handler, path.rsplit("/", 1)[-1])
     if path == "/api/git":
-        if not handler.board.is_file():
-            return _send_board_missing(handler)
-        return handler._json(_git_state(handler.board))
+        try:
+            _require_board_present(handler.board)
+            project = wb.registry_load()["boards"][handler.name]["project"]
+        except (OSError, ValueError, KeyError) as e:
+            return _send_error(handler, e)
+        return handler._json(_git_state(Path(project)))
     if path == "/api/cards":
         return _handle_cards_page(handler, query)
     match = _ATTACHMENT_API.match(path)
@@ -1037,16 +1004,16 @@ def _handle_boards_list(handler) -> None:
         return _send_error(handler, exc)
     boards = []
     for name in sorted(registered, key=lambda item: (item.casefold(), item)):
-        entry = {"name": name, "board": registered[name], "url": f"/b/{quote(name, safe='')}/",
+        path = wb._board_path(registered[name])
+        entry = {"name": name, "board": str(path), "project": registered[name]["project"],
+                 "url": f"/b/{quote(name, safe='')}/",
                  "exists": False, "rev": None, "cards": None, "error": None}
         try:
-            path = wb.canonical_registered_board(registered[name])
-            entry["board"] = str(path)
             if path.is_file():
                 entry["exists"] = True
                 doc = wb.load(path)
                 entry.update(rev=int(doc.get("rev") or 0), cards=len(doc["cards"]))
-        except (wb.UnsafeBoardPath, SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
+        except (SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
             entry["error"] = str(exc)
         boards.append(entry)
     handler._json({"boards": boards})
@@ -1074,7 +1041,7 @@ def _handle_boards_delete(handler) -> None:
         return handler._json({"error": e.message}, e.status)
     except wb.RegistryNotFound:
         return handler._json({"error": f"no registered board '{name}'"}, 404)
-    except (wb.RegistryConflict, wb.UnsafeBoardPath) as e:
+    except wb.RegistryConflict as e:
         return handler._json({"ok": False, "conflict": True, "error": str(e)}, 409)
     except (wb.LockTimeout, OSError, ValueError, KeyError, TypeError) as e:
         return handler._json({"error": f"delete failed: {e}"}, 500)
@@ -1093,6 +1060,7 @@ def _handle_shutdown(handler) -> None:
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     board: Path | None = None
+    name: str | None = None
 
     def log_message(self, fmt, *args):
         pass
@@ -1160,14 +1128,14 @@ class Handler(BaseHTTPRequestHandler):
                 location = f"/b/{encoded}/" + (f"?{query}" if query else "")
                 return self._send(301, b"", "text/plain; charset=utf-8", {"Location": location})
             return self._html()
-        name = unquote(encoded)
+        self.name = unquote(encoded)
         try:
-            self.board = _registered_board(name)
-        except UnknownBoard:
-            return self._json({"error": "unknown_board", "name": name}, 404)
-        except wb.UnsafeBoardPath as e:
-            return _send_error(self, BodyError(409, str(e)))
-        except (OSError, ValueError) as e:
+            self.board = wb.board_file(self.name)
+        except wb.WorkflowError as e:
+            if e.code == "not_found":
+                return self._json({"error": "unknown_board", "name": self.name}, 404)
+            return _send_error(self, e)
+        except OSError as e:
             return _send_error(self, e)
         if method == "GET":
             return _handle_board_get(self, rest, query)
@@ -1300,12 +1268,6 @@ def _emit(args, line: str, payload: dict) -> None:
     print(json.dumps(payload) if args.json else line, flush=True)
 
 
-def _open_name(args) -> str | None:
-    """Registered name of the --board/cwd board for `serve --open`; None opens the hub."""
-    board = _local_board(args)
-    return _board_name(board, register=False) if board else None
-
-
 def _open_browser(name: str | None, port: int) -> None:
     import webbrowser
     webbrowser.open(board_url(name, port) if name else server_url(port))
@@ -1337,9 +1299,9 @@ def serve(args) -> None:
     if service or sys.stdout is None:
         _log_to_file()
     want_open = bool(getattr(args, "open", False)) and not service
-    open_name = _open_name(args) if want_open else None
+    open_name = _open_target(args)[0] if want_open else None
     count = len(wb.registry_load()["boards"])
-    port = _configured_port() if args.port is None else args.port
+    port = wb.configured_port() if args.port is None else args.port
     if not 0 <= port <= 65535:
         raise wb.WorkflowError("port must be an integer 0..65535")
     try:

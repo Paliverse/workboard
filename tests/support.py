@@ -1,9 +1,9 @@
 """Shared helpers for WorkBoard's stdlib integration tests.
 
 Every test runs against a scratch home: HOME, USERPROFILE, WORKBOARD_HOME,
-APPDATA, LOCALAPPDATA and the XDG directories all point inside a temporary
-directory, so no test can read or write the real user's registry, skills or
-service definitions.
+APPDATA, LOCALAPPDATA, CODEX_HOME and the XDG directories all point inside a
+temporary directory, so no test can read or write the real user's registry,
+boards, skills, Codex config or service definitions.
 
 Set WORKBOARD_TEST_COMMAND (for example to a built binary path) to run the
 CLI-level tests against something other than ``python -m workboard``.
@@ -26,8 +26,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-_CLEARED = ("WORKBOARD_SCOPE_ROOT", "WORKBOARD_DEFAULT_BOARD", "WORKBOARD_ACTOR",
-            "WORKBOARD_PORT", "WORKBOARD_HOME")
+_CLEARED = ("WORKBOARD_DEFAULT_BOARD", "WORKBOARD_ACTOR", "WORKBOARD_PORT", "WORKBOARD_HOME")
 
 
 def _idle_port() -> int:
@@ -57,7 +56,7 @@ def make_env(home: Path, **extra: str) -> dict:
         HOME=str(home), USERPROFILE=str(home), WORKBOARD_HOME=str(home / ".workboard"),
         APPDATA=str(home / "AppData" / "Roaming"), LOCALAPPDATA=str(home / "AppData" / "Local"),
         XDG_CONFIG_HOME=str(home / ".config"), XDG_DATA_HOME=str(home / ".local" / "share"),
-        XDG_STATE_HOME=str(home / ".local" / "state"),
+        XDG_STATE_HOME=str(home / ".local" / "state"), CODEX_HOME=str(home / ".codex"),
         PYTHONDONTWRITEBYTECODE="1", PYTHONUTF8="1", PYTHONIOENCODING="utf-8",
         WORKBOARD_ACTOR="tester", WORKBOARD_PORT=str(PORT),
     )

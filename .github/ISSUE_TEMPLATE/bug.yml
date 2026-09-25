@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for reporting. Please search [existing issues](https://github.com/Paliverse/workboard/issues) first.
-        **Security problems must not be reported here.** Follow [SECURITY.md](https://github.com/Paliverse/workboard/blob/main/SECURITY.md) instead.
+        **Security problems must not be reported here.** Follow the [security policy](https://github.com/Paliverse/workboard/security/policy) instead.
   - type: textarea
     id: version
     attributes:

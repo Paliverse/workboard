@@ -15,7 +15,6 @@ import re
 import subprocess
 import sys
 import threading
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -70,7 +69,10 @@ class BoardLifecycle(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.proj = project("proj-main")
-        cls.board = cls.proj / "board" / "board.json"
+
+    @property
+    def board(self) -> Path:
+        return core.board_file("smoke-board")
 
     def show(self, ref, *extra) -> dict:
         proc = wb(["show", ref, *extra], self.proj)
@@ -98,7 +100,9 @@ class BoardLifecycle(unittest.TestCase):
         self.assertFalse((state / "logs").exists(), "an ordinary command started a server")
 
         registry = json.loads((state / "boards.json").read_text(encoding="utf-8"))
-        self.assertEqual(Path(registry["boards"]["smoke-board"]), self.board.resolve())
+        self.assertEqual(registry["boards"]["smoke-board"], {"dir": "smoke-board", "project": str(self.proj)})
+        self.assertEqual(self.board.parent.parent, state / "boards")
+        self.assertFalse((self.proj / "board").exists(), "init wrote into the project")
         listed = wb(["boards"], self.proj)
         self.assertEqual(listed.returncode, 0, detail(listed))
         self.assertIn("smoke-board", listed.stdout)
@@ -331,7 +335,7 @@ class BoardLifecycle(unittest.TestCase):
 
     def test_c13_sweep_archive_and_recover(self):
         month = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
-        archive = self.proj / "board" / "archive" / f"board-{month}.json"
+        archive = self.board.parent / "archive" / f"board-{month}.json"
         rev_before = read_board(self.board)["rev"]
         dry = wb(["sweep", "--days", "0"], self.proj)
         self.assertEqual(dry.returncode, 0, detail(dry))
@@ -402,8 +406,9 @@ class Contracts(unittest.TestCase):
         root = project("urls")
         self.assertEqual(wb(["init", "team/α b", "--dir", root], BASE, env).returncode, 0)
         listed = last_json(wb(["boards", "--json"], BASE, env))["boards"]
-        self.assertEqual([(item["name"], item["url"], item["exists"]) for item in listed],
-                         [("team/α b", f"http://127.0.0.1:{PORT}/b/team%2F%CE%B1%20b/", True)])
+        self.assertEqual([(item["name"], item["url"], item["exists"], item["project"], item["projectExists"])
+                          for item in listed],
+                         [("team/α b", f"http://127.0.0.1:{PORT}/b/team%2F%CE%B1%20b/", True, str(root), True)])
         human = wb(["boards"], BASE, {**env, "WORKBOARD_PORT": "45678"})
         self.assertIn("http://127.0.0.1:45678/b/team%2F%CE%B1%20b/", human.stdout)
 
@@ -427,7 +432,7 @@ class Contracts(unittest.TestCase):
 
     def test_c15_concurrent_adds_lose_nothing(self):
         root = self.init("conc-board")
-        board = root / "board" / "board.json"
+        board = core.board_file("conc-board")
         initial = read_board(board)["rev"]
         results: list = []
 
@@ -449,7 +454,7 @@ class Contracts(unittest.TestCase):
 
     def test_c16_lock_timeout_is_visible(self):
         root = self.init("lock-board")
-        board = root / "board" / "board.json"
+        board = core.board_file("lock-board")
         before = board.read_bytes()
         with core.board_lock(board, timeout=8.0):
             proc = wb(["add", "--title", "lock victim"], root, timeout=30)
@@ -459,8 +464,7 @@ class Contracts(unittest.TestCase):
 
     def test_c17_consolidates_legacy_columns(self):
         root = project("proj-migrate")
-        board = root / "board" / "board.json"
-        board.parent.mkdir(parents=True)
+        board = core.create_board("legacy-migration", root)
         now = "2026-08-20T00:00:00Z"
         columns = [
             {"id": "notes", "name": "Notes", "kind": "intake"},
@@ -515,8 +519,6 @@ class Contracts(unittest.TestCase):
 
     def test_c19_dependencies_readiness_and_outcomes(self):
         root = project("dependency-contract")
-        (root / "board").mkdir()
-        path = root / "board" / "board.json"
         doc = core.normalize_doc({"cards": [
             {"num": 1, "id": "pre", "column": "done", "writeup": "verified",
              "doneAt": "2020-01-01T00:00:00Z"},
@@ -579,8 +581,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(by_id["canceled"]["cycles"][-1]["outcome"], "canceled")
         self.assertIsNone(by_id["canceled"]["cancelReason"])
 
-        with core.board_lock(path):
-            core.save(path, doc, by="tester")
+        path = core.create_board("dependency-contract", root, doc)
         before = path.read_bytes()
         backups = sorted(p.name for p in (path.parent / core.BACKUP_DIR).iterdir())
         result = wb(["next", "--limit", "2", "--json"], root)
@@ -601,12 +602,9 @@ class Contracts(unittest.TestCase):
 
     def test_c20_owner_race_workpad_and_collaboration(self):
         root = project("owner-contract")
-        (root / "board").mkdir()
-        path = root / "board" / "board.json"
         doc = core.normalize_doc({"cards": [{"id": "shared", "num": 1, "title": "Shared task",
                                              "notes": "Existing notes\n\n## Acceptance criteria\nKeep this."}]})
-        with core.board_lock(path):
-            core.save(path, doc, by="tester")
+        path = core.create_board("owner-contract", root, doc)
         envs = {label: dict(ENV, WORKBOARD_ACTOR=label) for label in ("Ada", "Grace")}
         results = {}
         barrier = threading.Barrier(2)
@@ -682,8 +680,7 @@ class Contracts(unittest.TestCase):
                          ("task", "scope restored", "scope removed"))
 
     def test_c21_normalization_identity_and_attachment_recovery(self):
-        path = project("durable-contract") / "board" / "board.json"
-        path.parent.mkdir()
+        path = core.create_board("durable-contract", project("durable-contract"))
         doc = core.normalize_doc({
             "tagTaxonomy": {"main": [{"name": "core", "color": "#123456"}]},
             "activeWork": {"agent": "durable"}, "activeWorkId": "durable",
@@ -702,6 +699,7 @@ class Contracts(unittest.TestCase):
         blob = b"\x00binary\r\nattachment\xff"
         metadata = core.attachment_store(path, "../original-name.bin", blob, "Grace")
         card["attachments"].append(metadata)
+        doc["rev"] = core.load(path)["rev"]
         with core.board_lock(path):
             core.save(path, doc, by="Ada")
         revision = doc["rev"]
@@ -746,10 +744,10 @@ class Contracts(unittest.TestCase):
         self.assertEqual(caught.exception.status, 409)
 
     def test_c22_agent_context_attachments_and_guards(self):
-        root = BASE / "agent-interface"
+        root = project("agent-interface")
         created = wb(["init", "agent", "--dir", root, "--json"], BASE)
         self.assertEqual(created.returncode, 0, detail(created))
-        path = root / "board" / "board.json"
+        path = core.board_file("agent")
         created_path = Path(last_json(created)["board"])
         self.assertTrue(created_path.is_absolute())
         self.assertEqual(created_path.resolve(), path.resolve())
@@ -857,8 +855,7 @@ class Contracts(unittest.TestCase):
         self.assertFalse((HOME / ".workboard" / "server.json").exists())
 
     def test_c23_schema_threads_and_export_boundaries(self):
-        path = project("schema-contract") / "board" / "board.json"
-        path.parent.mkdir()
+        root = project("schema-contract")
         raw = {"vendorDocument": {"keep": 1}, "columns": [
             {**column, "vendorColumn": ["keep"]} for column in core.DEFAULT_COLUMNS],
             "cards": [{"id": "subject", "num": 1, "title": "Subject", "vendorCard": {"keep": 2},
@@ -877,7 +874,7 @@ class Contracts(unittest.TestCase):
         subject["subtasks"].extend({"id": f"done-{n}", "text": f"Finished {n}", "done": True,
                                     "doneAt": f"2020-02-{n + 1:02d}T00:00:00Z"} for n in range(12))
         doc = core.normalize_doc(raw)
-        core.save(path, doc, by="Ada")
+        path = core.create_board("schema-contract", root, doc)
         actual = core.load(path)
         self.assertEqual(actual["vendorDocument"], raw["vendorDocument"])
         self.assertEqual(actual["columns"][0]["vendorColumn"], ["keep"])
@@ -894,7 +891,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(context["card"]["notes"], subject["notes"].strip())
         self.assertEqual(context["card"]["comments"], subject["comments"])
         self.assertEqual(context["card"]["history"], subject["history"][-25:])
-        full = last_json(wb(["context", "1", "--full", "--json"], path.parent.parent))
+        full = last_json(wb(["context", "1", "--full", "--json"], root))
         self.assertNotIn("omitted", full)
         self.assertEqual(full["card"], actual["cards"][0])
         self.assertEqual(core.card_context(path, "2")["dependents"], [{
@@ -950,7 +947,7 @@ class Contracts(unittest.TestCase):
                 errors.append(str(exc))
 
         with core.board_lock(path):
-            with core.board_lock(path.parent / ".." / "board" / "board.json", timeout=0.1):
+            with core.board_lock(path.parent / ".." / path.parent.name / "board.json", timeout=0.1):
                 thread = threading.Thread(target=contender)
                 thread.start()
                 self.assertTrue(entered.wait(2))
@@ -975,7 +972,7 @@ class Contracts(unittest.TestCase):
             with mock.patch.object(core, "__file__", str(runtime / "core.py")):
                 for destination in (runtime / "__PYCACHE__" / "injected.bin",
                                     runtime / "WEB" / "injected.bin",
-                                    BASE / "BOard" / "injected.bin"):
+                                    BASE / ".WorkBoard" / "injected.bin"):
                     with self.assertRaises(core.WorkflowError) as caught:
                         core.attachment_export(path, "1", metadata["id"], destination)
                     self.assertEqual(caught.exception.status, 403)
@@ -1043,62 +1040,6 @@ class Contracts(unittest.TestCase):
         committed = next(item for item in saved if item["name"] == "committed.bin")
         self.assertEqual(core.attachment_verified_bytes(path, committed), b"keep recovery bytes")
 
-    def test_c24_scope_fences_and_strict_registry(self):
-        scope = BASE / "scope"
-        outside = BASE / "outside"
-        board = outside / "board" / "board.json"
-        board.parent.mkdir(parents=True)
-        board.write_text(json.dumps({"schemaVersion": 2, "cards": [], "columns": core.DEFAULT_COLUMNS}),
-                         encoding="utf-8")
-        before = board.read_bytes()
-        env = make_env(scope / "home", WORKBOARD_SCOPE_ROOT=str(scope),
-                       WORKBOARD_DEFAULT_BOARD=str(outside))
-        read = wb(["--json", "query"], BASE, env)
-        self.assertEqual(read.returncode, 0, detail(read))
-        self.assertFalse(scope.exists())
-        self.assertFalse((board.parent / core.LOCK_NAME).exists())
-        for command in (["add", "--title", "Escape"], ["init"], ["init", "--dir", str(outside / "new")],
-                        ["attachment", "1", "get", "0" * 32, "--out", str(outside / "export.bin")]):
-            result = wb([*command, "--json"], BASE, env)
-            self.assertNotEqual(result.returncode, 0, command)
-            self.assertIn(last_json(result)["status"], (403, 422), (command, result.stdout, result.stderr))
-            self.assertEqual(board.read_bytes(), before)
-            self.assertFalse(scope.exists())
-        self.assertFalse((outside / "new").exists())
-
-        copied = scope / "copied"
-        created = wb(["init", "Scoped copy", "--dir", copied, "--json"], BASE, env)
-        self.assertEqual(created.returncode, 0, detail(created))
-        added = wb(["add", "--title", "Explicit copied board", "--board", copied, "--json"], BASE, env)
-        self.assertEqual(added.returncode, 0, detail(added))
-        self.assertEqual(board.read_bytes(), before)
-        source = outside / "input.bin"
-        source.write_bytes(b"external input is read-only task data")
-        uploaded = wb(["attachment", "1", "add", "--file", source, "--board", copied, "--json"], BASE, env)
-        self.assertEqual(uploaded.returncode, 0, detail(uploaded))
-        destination = scope / "downloads" / "input.bin"
-        exported = wb(["attachment", "1", "get", last_json(uploaded)["item"]["id"],
-                       "--out", destination, "--board", copied, "--json"], BASE, env)
-        self.assertEqual(exported.returncode, 0, detail(exported))
-        self.assertEqual(destination.read_bytes(), source.read_bytes())
-        self.assertEqual(board.read_bytes(), before)
-
-        registry = BASE / "boards-broken.json"
-        began = time.monotonic()
-        self.assertEqual(core.registry_load(registry), {"boards": {}})
-        self.assertFalse(registry.exists())
-        self.assertLess(time.monotonic() - began, 2, "missing optional registry blocked first use")
-        for broken in ("{", "[]", "null", '{"boards": []}'):
-            registry.write_text(broken, encoding="utf-8")
-            with self.assertRaises((OSError, ValueError), msg=f"corrupt registry treated as empty: {broken}"):
-                core.registry_load(registry)
-            self.assertEqual(registry.read_text(encoding="utf-8"), broken)
-        encoded = json.dumps({"boards": {}}).encode()
-        registry.write_bytes(encoded)
-        self.assertEqual(core.registry_load(registry, max_bytes=len(encoded)), {"boards": {}})
-        with self.assertRaises(ValueError):
-            core.registry_load(registry, max_bytes=len(encoded) - 1)
-
     def test_c25_card_scoped_reviewed_revision(self):
         root = self.init("card guards", "card-scoped-guards")
         x = last_json(wb(["--actor", "Agent-X", "add", "--title", "X", "--json"], root))
@@ -1114,7 +1055,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(claimed["activeOwner"], "Agent-X")
         current = last_json(wb(["context", x["id"], "--json"], root))
         self.assertEqual(current["card"]["changedRev"], claimed["rev"])
-        path = root / "board" / "board.json"
+        path = core.board_file("card guards")
         before = path.read_bytes()
         stale = wb(["note", x["id"], "--summary", "old decision", "--expected-rev", reviewed["rev"],
                     "--actor", "Agent-X", "--json"], root)
@@ -1154,7 +1095,7 @@ class Contracts(unittest.TestCase):
         completed = last_json(done)
         self.assertEqual(completed["rev"], result["rev"] + 1)
         self.assertTrue(all(item["done"] and item["doneBy"] == "Grace" for item in completed["items"]))
-        path = root / "board" / "board.json"
+        path = core.board_file("bulk")
         before = path.read_bytes()
         repeat = wb(["subtask", "1", "done", *ids, "--actor", "Ada", "--json"], root)
         self.assertEqual(repeat.returncode, 0, detail(repeat))
@@ -1179,7 +1120,7 @@ class Contracts(unittest.TestCase):
     def test_c28_errors_have_stable_codes_and_revision(self):
         root = self.init("errors", "error-envelope")
         card = last_json(wb(["add", "--title", "Error target", "--json"], root))
-        path = root / "board" / "board.json"
+        path = core.board_file("errors")
         before = path.read_bytes()
         cases = [
             (["subtask", "1", "done", "absent"], 404, "not_found"),
@@ -1202,7 +1143,7 @@ class Contracts(unittest.TestCase):
 
     def test_c29_note_timeline_grammar_and_projections(self):
         root = self.init("timeline", "notes-timeline")
-        path = root / "board" / "board.json"
+        path = core.board_file("timeline")
         card = last_json(wb(["add", "--title", "Timeline", "--json"], root))
         added = wb(["note", "1", "--summary", "  Chose the lock strategy  ",
                     "--body", "Evidence: `abc123`\n\n- tests pass\n", "--expected-rev", card["rev"], "--json"], root)
@@ -1257,8 +1198,7 @@ class Contracts(unittest.TestCase):
 
     def test_c30_legacy_notes_read_as_timeline_and_migrate_on_write(self):
         root = project("legacy-notes")
-        path = root / "board" / "board.json"
-        path.parent.mkdir()
+        path = core.create_board("legacy-notes", root)
         legacy = ("Context before stamps\n[2026-09-01] Fixed the parser. Added tests\n  - covered edge\n"
                   "[2026-09-02 ada] Checked edge cases; nothing else\n## Acceptance criteria\n- ships")
         path.write_text(json.dumps({"schemaVersion": 2, "name": "legacy-notes", "rev": 3, "nextNum": 2,
@@ -1281,7 +1221,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual((saved["schemaVersion"], saved["rev"]), (3, 4))
         self.assertEqual((saved["cards"][0]["notes"], saved["cards"][0]["log"]), (shown["notes"], shown["log"]))
         backups = core.list_backups(path)
-        self.assertEqual([rev for rev, _ in backups], [4])
+        self.assertEqual([rev for rev, _ in backups], [4, 1])
         self.assertEqual(read_board(backups[0][1]), saved)
 
 

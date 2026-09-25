@@ -1,7 +1,7 @@
 # CLI reference
 
 ```text
-workboard [--board PATH] [--json] [--actor NAME] COMMAND [ARGS]
+workboard [--board NAME|DIR] [--json] [--actor NAME] COMMAND [ARGS]
 wb ...                     # short alias, same program
 workboard --version        # prints: workboard 0.1.0
 workboard COMMAND --help
@@ -15,15 +15,34 @@ workboard COMMAND --help
 
 | Option | Meaning |
 |---|---|
-| `--board PATH` | A project directory (containing `board/board.json`) or a `board.json` file. |
+| `--board NAME\|DIR` | A registered board name, or a project or worktree folder to find the board from (see [Board resolution](#board-resolution)). A `board.json` path is not accepted. |
 | `--json` | Print one machine-readable JSON line instead of human output. |
-| `--actor NAME` | Actor label recorded on writes and used by `--mine` and the digest's `MINE` section. Overrides `WORKBOARD_ACTOR` (default `agent`; the browser records `user`). Nonblank, at most 80 characters, no control characters. Labels are attribution, not authentication. |
+| `--actor NAME` | Actor label recorded on writes and used by `--mine` and the digest's `MINE` section. Overrides `WORKBOARD_ACTOR` and `actor` in `config.json` (default `agent`; the browser records `user`). Nonblank, at most 80 characters, no control characters. Labels are attribution, not authentication. |
 
 Options must be spelled in full: abbreviations such as `--act` are rejected.
 
 ### Board resolution
 
-Board commands use, in order: `--board`, then `WORKBOARD_DEFAULT_BOARD`, then the first `board/board.json` found in the current directory or any parent. If none is found, the command fails and suggests running inside the project or passing `--board`.
+Boards live in `~/.workboard/boards/`, each linked to one project folder. Board commands take `--board`, else `WORKBOARD_DEFAULT_BOARD`, else the current directory:
+
+- A value that is a registered board name selects that board. Otherwise, if it is an existing directory, the board is found from that directory as below. Anything else fails with `not_found`: `no board named or linked to 'X'`.
+- From a directory, WorkBoard checks the directory and its parents, nearest first. The first one that is a board's linked project wins, so subfolders use their project's board and the nearest linked project wins when projects are nested.
+- Inside a linked git worktree, the check stops at the worktree's top folder and continues from the same relative path in the repository's main checkout, then the checkout and its parents. Worktrees therefore share their repository's boards, wherever they are.
+- Otherwise the command fails with `not_found` and suggests running `workboard init` in the project or passing `--board NAME`.
+
+`which` shows which board a directory resolves to. A project that moved is found again after `workboard link NAME` in its new location.
+
+### Settings
+
+Defaults come from environment variables and the optional `~/.workboard/config.json`, for example `{"port": 7891, "actor": "agent"}`. A flag wins over its environment variable, which wins over `config.json`:
+
+| Setting | Order |
+|---|---|
+| Actor | `--actor`, `WORKBOARD_ACTOR`, `actor`, then `agent` |
+| Port (`serve`, `open`, the URLs from `boards`) | `serve --port`, `WORKBOARD_PORT`, `port`, then `7891` |
+| Board | `--board`, `WORKBOARD_DEFAULT_BOARD`, then the current directory |
+
+`WORKBOARD_HOME` moves the whole store (default `~/.workboard`). An unknown key or invalid value in `config.json` fails with `invalid`. See the [README](../README.md#configuration).
 
 ### References
 
@@ -41,11 +60,11 @@ Board commands use, in order: `--board`, then `WORKBOARD_DEFAULT_BOARD`, then th
 | `owned` | Another actor owns the card; take it over explicitly or leave it. |
 | `deps` | Dependencies are missing, unfinished or canceled. |
 | `wip` | The In Progress WIP limit is reached. |
-| `state` | The lifecycle transition is not allowed, for example `fly REF done`. |
-| `invalid` | Invalid input: field names, text, revision or blank stdin. |
-| `not_found` | Unknown card, subtask, comment or attachment (status 404). |
+| `state` | The lifecycle transition is not allowed, for example `fly REF done`, or a board name or project is already taken. |
+| `invalid` | Invalid input (field names, text, revision or blank stdin), or an invalid `config.json` or `boards.json`. |
+| `not_found` | Unknown card, subtask, comment, attachment or board (status 404). |
 | `lock` | The board lock could not be acquired in time. |
-| `scope` | The write is outside `WORKBOARD_SCOPE_ROOT`. |
+| `scope` | A write path crosses a symbolic link, junction or other reparse point. |
 | `io` | An operating-system or network failure. |
 
 ### Side effects
@@ -59,7 +78,7 @@ Board commands never start a server and never open a browser. Only `serve`, `ope
 - **Card commands** (`start`, `done`, `fly`, `block`, `resume`, `update`, `note`, `workpad`, `subtask`, `depends`, `comment`, `attachment add|remove`, `bug`, `improve`, `reopen`, `takeover`, `cancel`, `rework`): the guard is card-scoped. The command fails with `stale` (409) only when the target card's `changedRev` is greater than `REV`. Writes to other cards don't invalidate it.
 - **Board maintenance** (`wip`, `recover --apply`, `sweep --apply`, `columns-core --apply`): the guard requires the exact current board revision.
 - `REV` must be a nonnegative integer. A value greater than the current board revision fails with `invalid`.
-- `add`, reads, `init`, `serve` and the installation commands reject `--expected-rev`.
+- `add`, reads, `init`, `link`, `serve` and the installation commands reject `--expected-rev`.
 
 A card-scoped stale error looks like this:
 
@@ -82,15 +101,21 @@ git log -1 --format=%B | workboard comment 12 add --stdin --expected-rev 41 --js
 
 ### `init [NAME] [--dir DIR]`
 
-Create `board/board.json` with the five columns in the current directory, or in `DIR`, and register it under `NAME` (default: the directory name). Fails if a board already exists there. `--board` is not accepted. Prints `board created: <path> — view it with: workboard open`.
+Create a board with the five columns for the project that contains the current directory, or `DIR`, and link it to that project. The project is the nearest folder at or above it that contains `.git`; inside a linked git worktree it is the repository's main checkout, and without git it is the directory itself. `NAME` defaults to the project folder's name. The board is stored in `~/.workboard/boards/<dir>/`, where `<dir>` comes from the name.
+
+`DIR` must be an existing folder (`not_found` otherwise). An existing board name, or a project that already has a board, fails with `state`; use `link` to move a board to another folder. `--board` is not accepted. Prints `board created: <name> for <project> — view it with: workboard open`. JSON: `{"ok", "name", "board", "project", "rev", "actor"}`.
+
+### `link NAME [--dir DIR]`
+
+Link the board `NAME` to the project that contains the current directory, or `DIR`, found as for `init`. Run it after moving or renaming a project folder. A project has at most one board, so a project already linked to another board fails with `state`. `--board` is not accepted. Prints `linked <name> → <project>`. JSON: `{"ok", "name", "board", "project"}`.
 
 ### `boards`
 
-List registered boards and whether each board file exists. JSON: `{"ok": true, "boards": [{"name", "board", "exists"}]}`.
+List registered boards, one per line: name, URL, project folder and `✓`, or `✗ board missing` and/or `✗ project missing`. JSON: `{"ok": true, "boards": [{"name", "board", "project", "url", "exists", "projectExists"}]}`.
 
 ### `which`
 
-Print the resolved board path, name, revision and card count. JSON: `{"ok", "board", "name", "schemaVersion", "rev", "cards"}`.
+Print the board the current directory (or `--board`) resolves to: `<name> — <board.json> (project <project>) · rev N · M cards`. JSON: `{"ok", "board", "name", "project", "schemaVersion", "rev", "cards"}`.
 
 ## Reading
 
@@ -166,7 +191,7 @@ These are operator tasks. Without `--apply`, `recover`, `sweep` and `columns-cor
 |---|---|
 | `wip LIMIT --expected-rev REV` | Set the In Progress WIP limit: `off` or `1`–`20`. |
 | `recover [REV] [--apply --expected-rev REV]` | List backup snapshots (newest first) or restore one. The revision and card numbering keep increasing after a restore. |
-| `sweep [--days N] [--apply --expected-rev REV]` | Archive Done cards older than N days (default 14) to `board/archive/`. |
+| `sweep [--days N] [--apply --expected-rev REV]` | Archive Done cards older than N days (default 14) to the board's `archive/` folder. |
 | `columns-core [--apply --expected-rev REV]` | Consolidate a legacy board into the five core columns. Removed cards are archived. |
 
 For `--apply` and `wip`, `--expected-rev` is the current board revision you reviewed (see `which --json`), not the snapshot revision.
@@ -175,21 +200,21 @@ For `--apply` and `wip`, `--expected-rev` is the current board revision you revi
 
 ### `serve [--port N] [--open] [--service]`
 
-Run the per-user server in the foreground for every registered board. It listens on `127.0.0.1` at `--port`, else `WORKBOARD_PORT`, else `7891`, and prints `serving N boards at http://127.0.0.1:7891/ (Ctrl+C to stop)` (JSON: `{"ok", "url", "pid", "port", "version"}`).
+Run the per-user server in the foreground for every registered board. It listens on `127.0.0.1` at `--port`, else `WORKBOARD_PORT`, else `port` in `~/.workboard/config.json`, else `7891`, and prints `serving N boards at http://127.0.0.1:7891/ (Ctrl+C to stop)` (JSON: `{"ok", "url", "pid", "port", "version"}`).
 
-- `--open` opens the current board, if it is registered, or the board list.
+- `--open` opens the current board, if one is found, or the board list.
 - `--service` is the background-service mode used by `workboard service`. It writes output to `~/.workboard/logs/server.log` (rotated at 5 MB) and never opens a browser.
 - If another WorkBoard server already answers on the port, it prints `already running: <url>` and exits 0. If another program holds the port, it fails with `state` and asks you to pass `--port` or set `WORKBOARD_PORT`.
 
 ### `open`
 
-Open the current board in the browser, or the board list when no board is found. It registers the board if needed and starts the server in the background if it isn't running. Prints `opened <url>`; JSON `{"ok", "url", "board"}`.
+Open the current board in the browser (see [Board resolution](#board-resolution)), or the board list when none is found. With `--board`, a board that can't be found is an error instead. It starts the server in the background if it isn't running. Prints `opened <url>`; JSON `{"ok", "url", "board"}`.
 
 ## Installation
 
-### `setup [--no-skills] [--no-service]`
+### `setup [--no-skills] [--no-service] [--no-codex]`
 
-Run `skills install` and `service install`, printing one summary line per action. `--no-skills` and `--no-service` skip either step.
+Run `skills install`, the Codex step and `service install`, printing one summary line per action. The Codex step adds `~/.workboard` to the writable folders in Codex's `config.toml`, so Codex can write boards from its sandbox, and prints `codex: <state>`, plus the reason and the snippet to paste when the state is `manual`. JSON includes a `codex` object with `state` and `config`, plus `reason` and `snippet` when the state is `manual`. `--no-skills`, `--no-codex` and `--no-service` skip a step. The states are described in [install.md](install.md#codex).
 
 ### `skills install [--refresh] | remove | status`
 
@@ -216,4 +241,4 @@ Upgrade through the detected channel: `npm` runs `npm install -g workboard@lates
 
 ### `doctor [--all]`
 
-Check the installation and the current board (or every registered board with `--all`). It covers the executable, version, channel, whether `workboard` on `PATH` is this installation, skills and service status, the running server's version, leftover files from the pre-release per-board viewer, board schema, attachments, backups and the registry. Prints a summary; `--json` prints `{"ok", "blockers", "warnings", ...}`. Exits 1 when there are blockers.
+Check the installation and the current board (or every registered board with `--all`); when no board is found, only the installation and the registry are checked. It covers the executable, version, channel, whether `workboard` on `PATH` is this installation, skills and service status, the running server's version, whether Codex can write to `~/.workboard`, leftover files from the pre-release per-board viewer or a pre-release `board/` folder in a linked project, board schema, attachments, backups, the registry, linked project folders that no longer exist and folders under `~/.workboard/boards/` that no board uses. Prints a summary; `--json` prints `{"ok", "blockers", "warnings", ...}`. Exits 1 when there are blockers.

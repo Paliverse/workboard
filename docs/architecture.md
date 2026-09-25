@@ -7,8 +7,8 @@ flowchart LR
   agent["Agents and scripts"] -- "workboard CLI" --> core
   browser["Browser (board.html)"] -- "HTTP + SSE" --> server["server.py<br/>127.0.0.1:7891"]
   server --> core["core.py<br/>lock, save, backups"]
-  core --> files["project/board/board.json<br/>.backups/ archive/ attachments/"]
-  core --> home["~/.workboard/boards.json"]
+  core --> files["~/.workboard/boards/*/<br/>board.json .backups/ archive/ attachments/"]
+  core --> home["~/.workboard/boards.json<br/>config.json"]
 ```
 
 ## Modules
@@ -17,11 +17,11 @@ All modules live in `src/workboard/`.
 
 | Module | Responsibility |
 |---|---|
-| `core.py` | Schema normalization, board discovery, locking, atomic persistence, backups, archives, the board registry, lifecycle rules, attachments and paths (`home()`, `registry_path()`, `server_state_path()`, `logs_dir()`). Every write goes through it. |
+| `core.py` | Schema normalization, the board store and registry, `config.json`, board lookup from project folders and git worktrees, locking, atomic persistence, backups, archives, lifecycle rules, attachments and paths (`home()`, `boards_dir()`, `deleted_dir()`, `registry_path()`, `server_state_path()`, `logs_dir()`). Every write goes through it. |
 | `cli.py` | The `workboard`/`wb` argument parser, board commands and output (one concise line, or one JSON line with `--json`), and the standard error envelope. |
 | `server.py` | The per-user HTTP/SSE server, browser mutation endpoints and lifecycle helpers: `server_url`, `board_url`, `server_info`, `stop`, `start_background`, `open_board`. |
 | `web/board.html` | The whole browser UI in one self-contained file, with no build step and no external assets. |
-| `install.py` | `setup`, `skills …`, `service …`, the command line that starts the server (`server_command`) and the Windows runtime copy. |
+| `install.py` | `setup` (including the Codex writable-folder grant), `skills …`, `service …`, the command line that starts the server (`server_command`) and the Windows runtime copy. |
 | `update.py` | `version`, channel detection and `upgrade`. |
 | `doctor.py` | Installation and data-integrity checks. |
 | `skills/workboard/SKILL.md` | The portable agent skill that `skills install` copies. |
@@ -33,35 +33,69 @@ Imports are kept cheap. `http.server`, `winreg`, `plistlib`, `urllib.request` an
 
 ## Data layout
 
-Each project owns its board:
+Everything WorkBoard stores lives in `WORKBOARD_HOME` (default `~/.workboard`). Nothing is written into project folders, and backing up this one folder backs up every board.
 
 ```text
-<project>/board/
-  board.json                  source of truth
-  .board.lock                 cross-process lock file
-  .backups/board-<rev>.json   rolling snapshots, newest 10 kept
-  archive/                    Done cards moved by sweep; cards removed by columns-core
-  attachments/<id>            attachment bytes (32-hex ids)
-  board.deleted-*.json        recovery copy left by deleting a board from the UI
+config.json                  optional settings (see Settings)
+boards.json                  the registry
+.board.lock                  registry lock
+boards/<dir>/                one folder per board
+  board.json                 source of truth
+  .board.lock                cross-process lock file
+  .backups/board-<rev>.json  rolling snapshots, newest 10 kept
+  archive/                   Done cards moved by sweep; cards removed by columns-core
+  attachments/<id>           attachment bytes (32-hex ids)
+deleted/<dir>-<stamp>/       boards deleted from the board chooser, kept for recovery
+server.json                  the running server: pid, port, url, version, startedAt, executable, token
+logs/server.log              service-mode output (rotated to server.log.1 above 5 MB)
+runtime/<version>-<fp>/      Windows binary installs only: the copy the service runs from
 ```
 
-Per-user state lives in `WORKBOARD_HOME` (default `~/.workboard`):
+### Registry
 
-```text
-boards.json              registry: {"boards": {"<name>": "<abs path to board.json>"}}
-.board.lock              registry lock
-server.json              the running server: pid, port, url, version, startedAt, executable, token
-logs/server.log          service-mode output (rotated to server.log.1 above 5 MB)
-runtime/<version>-<fp>/  Windows binary installs only: the copy the service runs from
+```json
+{"version": 2, "boards": {"my-project": {"dir": "my-project", "project": "/home/me/src/my-project"}}}
 ```
 
-Board commands find a board by `--board`, then `WORKBOARD_DEFAULT_BOARD`, then the nearest `board/board.json` at or above the working directory. The registry is only a name index for the server and the board switcher, so a board works from the CLI whether or not it is registered.
+- `dir` is the board's folder under `boards/`: one path component matching `^[a-z0-9][a-z0-9-]{0,63}$`, so a board is always `boards/<dir>/board.json` and never points outside the home. `init` derives it from the board name, adding `-2`, `-3`… when it is already used under `boards/`, `deleted/` or in the registry.
+- `project` is the absolute project folder. A project has at most one board, and a `dir` at most one entry.
+- A missing file is an empty registry. Any other shape, including another `version`, fails with `invalid`, and `doctor` reports it as `registry-invalid`.
+- `init`, `link` and board deletion change the registry under the registry lock, then the board lock. Reads are size-bounded and writes are atomic.
+
+### Finding the board
+
+`init` and `link` resolve a folder to its project by reading git's files directly; WorkBoard never runs `git`. They take the nearest folder at or above it that contains `.git`:
+
+- If `.git` is a directory, that folder is the project.
+- If `.git` is a file (`gitdir: <path>`), and the git directory it names has a `commondir` file pointing to a directory named `.git`, the project is that directory's parent: the main checkout of a linked worktree. Otherwise, as for a submodule, the project is the folder holding the `.git` file.
+- Without any `.git`, the project is the folder itself.
+
+Board commands use `--board`, else `WORKBOARD_DEFAULT_BOARD`. A registered name selects that board, an existing directory starts the lookup below from there, and anything else fails with `not_found`. With neither, the lookup starts at the current directory:
+
+1. The directory and its parents, nearest first. The first one that equals a registered `project` wins (compared case-insensitively on Windows).
+2. Inside a linked worktree, the walk stops at the worktree's top folder and continues from the same relative path in the main checkout, up to the main checkout and then its parents. `worktree/packages/web` therefore finds the board linked to `repo/packages/web`, or else the repository's board.
+3. Otherwise the command fails with `not_found`.
+
+Worktrees therefore share their repository's board, even when they live outside the main checkout. A moved project isn't found until `workboard link NAME` runs in its new location. `doctor` warns about linked projects that no longer exist (`project-missing`) and board folders that no registry entry uses (`unregistered-board-dir`).
+
+### Deleting a board
+
+Deleting a board from the board chooser (`POST /api/boards/delete`) requires the exact board revision. It moves the whole `boards/<dir>/` folder to `deleted/<dir>-<YYYYMMDDTHHMMSSZ>/` (UTC) and removes the registry entry. Cards, backups, archives and attachments are kept, and the project folder is never touched. If the board folder is already gone, only the entry is removed.
+
+To restore a deleted board, move its folder back into `boards/` under an unused name that `dir` allows, then add its entry to `boards.json` as shown above. `workboard doctor` checks the result.
+
+### Settings
+
+`config.json` is optional and WorkBoard never writes it. Both keys are optional: `port` (1–65535) and `actor` (a valid actor label). An unknown key, a wrong type or an invalid value fails with `invalid`, naming the file. The file is read on each call, so changes apply to the next command.
+
+- Port: `serve --port`, else `WORKBOARD_PORT`, else `port`, else 7891 (`core.configured_port()`).
+- CLI actor: `--actor`, else `WORKBOARD_ACTOR`, else `actor`, else `agent` (`core.actor()`). The browser records `user` unless you change its label.
 
 ## Persistence
 
 ### Locking
 
-Each write holds an exclusive lock on `board/.board.lock` (`fcntl.flock` on POSIX, `msvcrt.locking` on Windows). The lock is reentrant within a thread and waits up to 5 seconds. On timeout the write fails with code `lock` (HTTP 500); no writer ever proceeds without the lock. Registry changes take the registry lock first, then the board lock.
+Each write holds an exclusive lock on the board's `.board.lock` (`fcntl.flock` on POSIX, `msvcrt.locking` on Windows). The lock is reentrant within a thread and waits up to 5 seconds. On timeout the write fails with code `lock` (HTTP 500); no writer ever proceeds without the lock. Registry changes take the registry lock first, then the board lock.
 
 ### Atomic save
 
@@ -115,8 +149,8 @@ Nothing is retried automatically, merged silently or reported as success after a
 
 One process per user serves every registered board:
 
-- It binds `127.0.0.1:<port>` (`--port`, else `WORKBOARD_PORT`, else 7891). It rejects requests whose `Host` isn't a loopback name for that port or whose `Origin` is foreign, and JSON writes without `Content-Type: application/json`.
-- `/` serves the board chooser, `/b/<name>/` serves a board, and `/api/boards` lists the registry. Each board's endpoints live under `/b/<name>/` (see [http-api.md](http-api.md)). An unknown name is 404 `unknown_board`; a registered but missing file is 410 `board_missing`.
+- It binds `127.0.0.1:<port>` (`--port`, else `WORKBOARD_PORT`, else `port` in `config.json`, else 7891). It rejects requests whose `Host` isn't a loopback name for that port or whose `Origin` is foreign, and JSON writes without `Content-Type: application/json`.
+- `/` serves the board chooser, `/b/<name>/` serves a board, and `/api/boards` lists the registry with each board's project. Each board's endpoints live under `/b/<name>/` (see [http-api.md](http-api.md)). An unknown name is 404 `unknown_board`; a registered board whose `board.json` is missing is 410 `board_missing`.
 - After binding, it writes `server.json` atomically, including a random shutdown token. `POST /api/shutdown` with that token stops the server gracefully. On exit the server removes `server.json` only if the file still names its own pid.
 - If the port answers `/health` as WorkBoard, a second `serve` prints `already running` and exits 0. If another program holds the port, `serve` fails.
 - `server.stop()` never kills processes. It asks the server to exit through the token route and waits until `/health` stops answering.

@@ -14,6 +14,7 @@ import os
 import plistlib
 import subprocess
 import sys
+import tomllib
 import unittest
 import urllib.error
 from pathlib import Path
@@ -197,6 +198,99 @@ class SkillsTest(ScratchCase):
         self.assertTrue(all(path.is_file() for path in self.targets()))
 
 
+class CodexSandboxTest(ScratchCase):
+    """`setup` adds home() to Codex's writable_roots only through edits it can verify."""
+
+    def config(self, text=None) -> Path:
+        path = Path(os.environ["CODEX_HOME"]) / "config.toml"
+        if text is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(text.encode("utf-8"))
+        return path
+
+    def grant(self, text) -> tuple[dict, str]:
+        """Grant twice; the second run must report the same state and change nothing."""
+        path = self.config(text)
+        first = install.grant_codex_writable_root()
+        edited = path.read_bytes()
+        self.assertEqual(install.grant_codex_writable_root()["state"], first["state"])
+        self.assertEqual(path.read_bytes(), edited, "a second run must change nothing")
+        return first, edited.decode("utf-8")
+
+    def assert_granted(self, text, expected):
+        result, edited = self.grant(text)
+        self.assertEqual(result, {"state": "granted", "config": str(self.config())})
+        self.assertEqual(edited, expected)
+        self.assertIn(str(wb.home()), tomllib.loads(edited)["sandbox_workspace_write"]["writable_roots"])
+        self.assertEqual(self.config().with_name("config.toml.workboard-bak").read_bytes(), text.encode("utf-8"))
+
+    def assert_untouched(self, text, state):
+        result, edited = self.grant(text)
+        self.assertEqual(result["state"], state)
+        self.assertEqual(edited, text)
+        self.assertFalse(self.config().with_name("config.toml.workboard-bak").exists())
+        return result
+
+    def test_absent_config_is_never_created(self):
+        self.assertEqual(install.grant_codex_writable_root(), {"state": "absent", "config": str(self.config())})
+        self.assertFalse(self.config().parent.exists())
+
+    def test_full_access_and_profiles_are_left_alone(self):
+        self.assert_untouched('sandbox_mode = "danger-full-access"\n', "full-access")
+        manual = self.assert_untouched('default_permissions = "workspace"\n', "manual")
+        self.assertEqual(tomllib.loads(manual["snippet"]), {"sandbox_workspace_write": {
+            "writable_roots": [str(wb.home())]}})
+
+    def test_missing_table_is_appended(self):
+        text = 'model = "gpt-5"\n'
+        self.assert_granted(text, f"{text}\n[sandbox_workspace_write]\nwritable_roots = ['{wb.home()}']\n")
+
+    def test_table_without_roots_gets_the_line_after_its_header(self):
+        text = '[sandbox_workspace_write]\r\nnetwork_access = true\r\n\r\n[tools]\r\nweb_search = true\r\n'
+        self.assert_granted(text, text.replace(
+            "]\r\n", f"]\r\nwritable_roots = ['{wb.home()}']\r\n", 1))
+
+    def test_single_line_roots_are_extended(self):
+        text = '[sandbox_workspace_write]\nwritable_roots = ["/srv/shared", ]  # mine\n'
+        self.assert_granted(text, f'[sandbox_workspace_write]\nwritable_roots = ["/srv/shared", \'{wb.home()}\']  # mine\n')
+        text = '[sandbox_workspace_write]\nwritable_roots = ["/a"]  # see [docs]\n'
+        self.assert_granted(text, f'[sandbox_workspace_write]\nwritable_roots = ["/a", \'{wb.home()}\']  # see [docs]\n')
+
+    def test_a_home_no_literal_string_can_hold_is_manual_before_any_write(self):
+        text = 'sandbox_mode = "workspace-write"\n'
+        for folder in ("O'Brien", "del\x7fname"):
+            home = self.home / folder / ".workboard"
+            with self.subTest(folder=folder), mock.patch.dict(os.environ, {"WORKBOARD_HOME": str(home)}):
+                result = self.assert_untouched(text, "manual")
+                self.assertEqual(tomllib.loads(result["snippet"])["sandbox_workspace_write"]["writable_roots"],
+                                 [str(home)])
+
+    def test_multi_line_roots_need_a_manual_edit(self):
+        result = self.assert_untouched('[sandbox_workspace_write]\nwritable_roots = [\n  "/srv/shared",\n]\n', "manual")
+        self.assertEqual(tomllib.loads(result["snippet"])["sandbox_workspace_write"]["writable_roots"],
+                         [str(wb.home())])
+
+    def test_already_granted_is_unchanged(self):
+        self.assert_untouched(f"[sandbox_workspace_write]\nwritable_roots = ['{wb.home()}']\n", "granted")
+
+    def test_an_edit_that_does_not_parse_is_restored(self):
+        text = "sandbox_workspace_write.network_access = true\n"  # A dotted-key table: a header would redefine it.
+        result, edited = self.grant(text)
+        self.assertEqual((result["state"], edited), ("manual", text))
+        self.assertEqual(self.config().with_name("config.toml.workboard-bak").read_text(encoding="utf-8"), text)
+
+    def test_setup_reports_the_codex_step_and_no_codex_skips_it(self):
+        text = 'sandbox_mode = "workspace-write"\n'
+        self.config(text)
+        code, result = invoke_json("setup", "--no-skills", "--no-service", "--no-codex", "--json")
+        self.assertEqual((code, result), (0, {"ok": True}))
+        self.assertEqual(self.config().read_text(encoding="utf-8"), text)
+        code, out = invoke("setup", "--no-skills", "--no-service")
+        self.assertEqual((code, out.strip()), (0, "codex: granted"))
+        code, result = invoke_json("setup", "--no-skills", "--no-service", "--json")
+        self.assertEqual((code, result["codex"]), (0, {"state": "granted", "config": str(self.config())}))
+
+
 class ServerCommandTest(unittest.TestCase):
     def app(self, *names):
         root = Path(self.enterContext(scratch("wb-app-")))
@@ -333,8 +427,10 @@ class ServiceTest(ScratchCase):
         self.assertEqual(code, 0)
         self.assertEqual([t["action"] for t in result["skills"]], ["installed", "installed"])
         self.assertEqual((result["service"]["action"], result["service"]["kind"]), ("installed", "run-key"))
+        self.assertEqual(result["codex"]["state"], "absent")
         code, out = invoke("setup")
-        self.assertEqual(len(out.strip().splitlines()), 2, out)
+        self.assertIn("codex: absent", out.splitlines())
+        self.assertEqual(len(out.strip().splitlines()), 3, out)
 
     def test_launch_agent_plist_and_launchctl_lifecycle(self):
         runner = Runner(self.server)
