@@ -86,7 +86,7 @@ Details: [docs/architecture.md](docs/architecture.md).
 |---|---|---|
 | `WORKBOARD_HOME` | `~/.workboard` | Registry, server state, logs and the Windows service runtime |
 | `WORKBOARD_PORT` | `7891` | Server port on `127.0.0.1` |
-| `WORKBOARD_ACTOR` | `user` | Actor label recorded on writes (`--actor` overrides it) |
+| `WORKBOARD_ACTOR` | `agent` | Actor label recorded on CLI writes (`--actor` overrides it). The browser records `user`. |
 | `WORKBOARD_DEFAULT_BOARD` | unset | Board to use when `--board` is not given, instead of searching from the current directory |
 | `WORKBOARD_SCOPE_ROOT` | unset | Write fence: refuse any write outside this directory |
 

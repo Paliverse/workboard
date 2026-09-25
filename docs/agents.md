@@ -33,7 +33,7 @@ Track substantive work on the WorkBoard: follow the workboard skill, starting wi
 
 ## Actors
 
-Every write records an actor label. The effective label is `--actor NAME`, else `WORKBOARD_ACTOR`, else `user`. The browser uses `user` unless you change the label in the sidebar.
+Every write records an actor label. The effective label is `--actor NAME`, else `WORKBOARD_ACTOR`, else `agent`. The browser records `user` unless you change the label in the sidebar, so unlabeled CLI work and people in the web UI stay distinguishable.
 
 - Give each concurrent agent a distinct label, such as `codex-auth` or `claude-docs`. Ownership, the digest's `MINE @actor` section and `query --mine` all depend on it.
 - Pass `--actor` on every command, including reads.

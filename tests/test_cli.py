@@ -386,6 +386,17 @@ class Contracts(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, detail(proc))
         self.assertEqual(proc.stdout.strip(), f"workboard {__version__}")
 
+    def test_unlabeled_cli_writes_are_attributed_to_agent(self):
+        env = dict(ENV)
+        env.pop("WORKBOARD_ACTOR")
+        root = project("default-actor")
+        self.assertEqual(wb(["init", "default-actor", "--dir", root], BASE, env).returncode, 0)
+        added = last_json(wb(["add", "--title", "unlabeled", "--json"], root, env))
+        noted = last_json(wb(["note", "1", "--summary", "unlabeled note", "--json"], root, env))
+        self.assertEqual((added["actor"], noted["item"]["by"]), ("agent", "agent"))
+        card = last_json(wb(["show", "1", "--full", "--json"], root, env))["card"]
+        self.assertEqual({entry["by"] for entry in card["history"]}, {"agent"})
+
     def test_boards_lists_server_urls(self):
         env = make_env(BASE / "urls-home")
         root = project("urls")

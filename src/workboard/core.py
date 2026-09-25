@@ -166,7 +166,8 @@ def validate_actor(value) -> str:
 
 
 def actor() -> str:
-    return validate_actor(os.environ.get("WORKBOARD_ACTOR", "user"))
+    """CLI writer label: agents use the CLI, so unlabeled writes are `agent` (the browser records `user`)."""
+    return validate_actor(os.environ.get("WORKBOARD_ACTOR", "agent"))
 
 
 # ===== board discovery =====

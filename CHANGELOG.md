@@ -20,7 +20,7 @@ First public release.
   - content verbs `update`, `note`, `workpad`, bulk `subtask`, `depends`, `comment` and `attachment` (with a verified, non-overwriting export).
 - One-line human output. `--json` output carries `rev`, `actor` and the identity of created or changed items. Errors use stable codes: `stale`, `owned`, `deps`, `wip`, `state`, `invalid`, `not_found`, `lock`, `scope` and `io`.
 - Card-scoped `--expected-rev` guards: a conflict occurs only when the target card changed (`changedRev`) after the reviewed revision.
-- `--actor` and `WORKBOARD_ACTOR` attribution. `--stdin` variants for comments, notes, write-ups, block reasons and origins.
+- `--actor` and `WORKBOARD_ACTOR` attribution. Unlabeled CLI writes record `agent`; the web UI records `user`. `--stdin` variants for comments, notes, write-ups, block reasons and origins.
 - Crash-safe persistence: a cross-process lock, fsync and atomic replacement, 10 rolling backups, `recover`, `sweep` archiving, `columns-core` consolidation and an optional In Progress WIP limit (`wip`).
 - One per-user local server for every registered board at `http://127.0.0.1:7891/b/<board>/`, with a board chooser at `/`, live updates over Server-Sent Events, Host and Origin checks, and token-protected shutdown.
 - Browser UI in a single self-contained file:

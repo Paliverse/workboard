@@ -17,7 +17,7 @@ workboard COMMAND --help
 |---|---|
 | `--board PATH` | A project directory (containing `board/board.json`) or a `board.json` file. |
 | `--json` | Print one machine-readable JSON line instead of human output. |
-| `--actor NAME` | Actor label recorded on writes and used by `--mine` and the digest's `MINE` section. Overrides `WORKBOARD_ACTOR` (default `user`). Nonblank, at most 80 characters, no control characters. Labels are attribution, not authentication. |
+| `--actor NAME` | Actor label recorded on writes and used by `--mine` and the digest's `MINE` section. Overrides `WORKBOARD_ACTOR` (default `agent`; the browser records `user`). Nonblank, at most 80 characters, no control characters. Labels are attribution, not authentication. |
 
 Options must be spelled in full: abbreviations such as `--act` are rejected.
 
