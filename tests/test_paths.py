@@ -29,19 +29,12 @@ class LinkGuardTest(unittest.TestCase):
             self.assertEqual(caught.exception.status, 403)
 
     @unittest.skipUnless(POSIX, "POSIX ownership rule")
-    def test_root_owned_link_is_system_layout(self):
-        with scratch() as base:
-            link = base / "system-link"
-            real_lstat = os.lstat
-
-            def lstat(path, *args, **kwargs):
-                if Path(path) == link:
-                    return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)
-                return real_lstat(path, *args, **kwargs)
-
-            with mock.patch.object(core.os, "lstat", lstat):
-                self.assertFalse(core._has_reparse_point(link))
-                core.require_write_scope(link / "board" / "board.json")
+    def test_root_owned_link_is_system_layout_but_a_user_link_is_not(self):
+        link = Path("/fake/system-link")
+        for uid, refused in ((0, False), (os.getuid() or 1000, True)):
+            fake = SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=uid)
+            with mock.patch.object(core.os, "lstat", return_value=fake):
+                self.assertIs(core._has_reparse_point(link), refused, uid)
 
     def test_unresolved_system_temp_dir_is_writable(self):
         # On macOS the temp dir lives under /var -> /private/var, a root-owned link.
