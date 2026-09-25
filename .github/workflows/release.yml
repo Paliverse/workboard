@@ -136,7 +136,14 @@ jobs:
         env:
           # Empty when npm trusted publishing is configured; npm then authenticates with OIDC.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # npm only accepts provenance from a public repository.
+          PRIVATE_REPO: ${{ github.event.repository.private }}
         run: |
+          provenance=--provenance
+          if [ "$PRIVATE_REPO" = "true" ]; then
+            provenance=
+            echo "::warning::Private repository: publishing without provenance (npm requires a public repository)"
+          fi
           packages="workboard-win32-x64 workboard-win32-arm64 workboard-darwin-x64 workboard-darwin-arm64 workboard-linux-x64 workboard-linux-arm64 workboard"
           for name in $packages; do
             test -f "build/npm/$name/package.json" || { echo "::error::build/npm/$name was not built"; exit 1; }
@@ -146,6 +153,6 @@ jobs:
             if [ -n "$(npm view "$name@$VERSION" version 2>/dev/null)" ]; then
               echo "$name@$VERSION is already published"
             else
-              npm publish "build/npm/$name" --provenance --access public
+              npm publish "build/npm/$name" $provenance --access public
             fi
           done
