@@ -86,8 +86,13 @@ def binary(args) -> None:
             for path in sorted(app.rglob("*")):
                 zf.write(path, Path("workboard", path.relative_to(app)).as_posix())
     else:
+        def normalize(info: tarfile.TarInfo) -> tarfile.TarInfo:
+            # In place: TarInfo.replace() deep-copies the entry, including the open archive, and fails.
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            return info
         with tarfile.open(out, "w:gz") as tf:
-            tf.add(app, "workboard", filter=lambda info: info.replace(uid=0, gid=0, uname="", gname=""))
+            tf.add(app, "workboard", filter=normalize)
     print(out)
 
 
@@ -252,6 +257,8 @@ def main() -> None:
         p = sub.add_parser(name)
         p.add_argument("--version", required=True)
         p.set_defaults(fn=fn)
+    for stream in (sys.stdout, sys.stderr):  # CI consoles on Windows are cp1252; CLI output is UTF-8.
+        stream.reconfigure(encoding="utf-8", errors="replace")
     args = ap.parse_args()
     args.fn(args)
 

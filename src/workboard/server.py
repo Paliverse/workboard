@@ -18,6 +18,7 @@ import os
 import queue
 import re
 import secrets
+import socketserver
 import subprocess
 import sys
 import threading
@@ -1214,6 +1215,12 @@ class Server(ThreadingHTTPServer):
         self._watched: dict[Path, dict] = {}  # board -> {"sig": stat signature, "clients": [queue]}
         super().__init__(address, Handler)
         threading.Thread(target=self._watch, daemon=True).start()
+
+    def server_bind(self):
+        # HTTPServer.server_bind() resolves socket.getfqdn(host), a reverse-DNS lookup that
+        # can stall for tens of seconds on macOS; the server never uses that name.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def server_close(self):
         self.closed.set()
