@@ -1704,8 +1704,11 @@ def _has_reparse_point(path: Path) -> bool:
         st = os.lstat(path)
     except FileNotFoundError:
         return False
-    return stat.S_ISLNK(st.st_mode) or bool(
-        getattr(st, "st_file_attributes", 0) & 0x400)
+    if stat.S_ISLNK(st.st_mode):
+        # Root-owned POSIX links are system layout (macOS /var and /tmp, /home on Fedora Atomic):
+        # only root can plant one, so it cannot redirect a user's writes. Windows has no uid.
+        return _IS_WINDOWS or st.st_uid != 0
+    return bool(getattr(st, "st_file_attributes", 0) & 0x400)
 
 
 def canonical_registered_board(value) -> Path:
