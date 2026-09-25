@@ -37,6 +37,7 @@ Complete these steps before the first tag.
    - **Claim them promptly.** A platform name taken by someone else would be installed by every `npm install -g workboard`, so claim all seven names with the first release.
    - **First release.** Create a granular npm access token that can publish new packages (bypass 2FA) and store it as the `NPM_TOKEN` secret of the `npm` environment.
    - **After the first release.** Configure trusted publishing on each of the seven packages (*package → Settings → Trusted publishing*: GitHub Actions, `Paliverse/workboard`, workflow `release.yml`, environment `npm`), then delete `NPM_TOKEN`. When no token is present, npm authenticates with the job's OIDC identity. The job uses Node 24, whose npm supports trusted publishing.
+4. **Social preview (once the repository is public).** In *Settings → General → Social preview*, upload `docs/assets/social-preview.png` (1280×640). GitHub shows this section only for public repositories.
 
 ### Secrets and environments
 
