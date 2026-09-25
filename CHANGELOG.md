@@ -23,6 +23,7 @@ First public release.
 - `--actor` and `WORKBOARD_ACTOR` attribution. Unlabeled CLI writes record `agent`; the web UI records `user`. `--stdin` variants for comments, notes, write-ups, block reasons and origins.
 - Crash-safe persistence: a cross-process lock, fsync and atomic replacement, 10 rolling backups, `recover`, `sweep` archiving, `columns-core` consolidation and an optional In Progress WIP limit (`wip`).
 - One per-user local server for every registered board at `http://127.0.0.1:7891/b/<board>/`, with a board chooser at `/`, live updates over Server-Sent Events, Host and Origin checks, and token-protected shutdown.
+- The WorkBoard logo ("Card in Motion"): browser favicon, board-chooser mark, and `docs/assets/` lockups for dark and light themes.
 - Browser UI in a single self-contained file:
   - Board, Ready now, Rework, Canceled, Insights, Git and Calendar views;
   - card and column drag and drop, vertical column stacks and undo;

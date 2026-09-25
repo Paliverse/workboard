@@ -1,6 +1,25 @@
-# WorkBoard
+<div align="center">
 
-A local kanban board that you and your coding agents share: one board per project, one CLI, one local server.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+  <img src="docs/assets/logo-light.svg" alt="WorkBoard" width="460">
+</picture>
+<br><br>
+
+**One kanban board for you and your coding agents.**<br>
+Agents work the board from the CLI, you work it in the browser, and every project keeps its own crash-safe board.
+
+[![CI](https://github.com/Paliverse/workboard/actions/workflows/ci.yml/badge.svg)](https://github.com/Paliverse/workboard/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/workboard?label=npm&color=cb3837)](https://www.npmjs.com/package/workboard)
+[![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2f6fed)](docs/install.md)
+[![runtime](https://img.shields.io/badge/runtime-zero%20dependencies-1e9e5a)](docs/architecture.md)
+[![license](https://img.shields.io/badge/license-Apache--2.0-8b5cf6)](LICENSE)
+
+[Get started](#install) · [Releases](https://github.com/Paliverse/workboard/releases) · [Agents](docs/agents.md) · [CLI](docs/cli.md) · [HTTP API](docs/http-api.md) · [Architecture](docs/architecture.md) · [Changelog](CHANGELOG.md)
+
+</div>
+
+---
 
 ![WorkBoard showing a project board with Backlog, Task, In Progress, Done and Blocked columns](docs/assets/screenshot.png)
 
