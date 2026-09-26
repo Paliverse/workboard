@@ -5,7 +5,7 @@
                                   in a scratch home: --version, init, add, digest, serve + HTTP
   checksums [DIR]                 DIR/SHA256SUMS over every file in DIR (default: dist)
   notes --version X               print the CHANGELOG.md section of X (GitHub Release notes)
-  npm --version X                 build/npm/: the `workboard` package + one package per archive in dist/
+  npm --version X                 build/npm/: the `@paliverse/workboard` package + one package per archive in dist/
 """
 from __future__ import annotations
 
@@ -225,7 +225,7 @@ def npm(args) -> None:
             **shared, "os": [os_name], "cpu": [cpu], "files": ["workboard/"], "preferUnplugged": True})
         (package / "README.md").write_text(
             f"# {name}\n\nThe prebuilt {os_name}-{cpu} WorkBoard binary. Install "
-            f"[`workboard`](https://www.npmjs.com/package/workboard) instead: `npm install -g workboard`.\n",
+            f"[`@paliverse/workboard`](https://www.npmjs.com/package/@paliverse/workboard) instead: `npm install -g @paliverse/workboard`.\n",
             encoding="utf-8", newline="\n")
         print(package)
     main = out / "workboard"

@@ -10,7 +10,7 @@
 Agents work the board from the CLI, you work it in the browser, and every project gets its own crash-safe board.
 
 [![CI](https://github.com/Paliverse/workboard/actions/workflows/ci.yml/badge.svg)](https://github.com/Paliverse/workboard/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/workboard?label=npm&color=cb3837)](https://www.npmjs.com/package/workboard)
+[![npm](https://img.shields.io/npm/v/@paliverse/workboard?label=npm&color=cb3837)](https://www.npmjs.com/package/@paliverse/workboard)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2f6fed)](docs/install.md)
 [![runtime](https://img.shields.io/badge/runtime-zero%20dependencies-1e9e5a)](docs/architecture.md)
 [![license](https://img.shields.io/badge/license-Apache--2.0-8b5cf6)](LICENSE)
@@ -32,10 +32,10 @@ Agents work the board from the CLI, you work it in the browser, and every projec
 
 ## Install
 
-With [npm](https://www.npmjs.com/package/workboard) (Node.js 18 or newer) on Windows, macOS and Linux:
+With [npm](https://www.npmjs.com/package/@paliverse/workboard) (Node.js 18 or newer) on Windows, macOS and Linux:
 
 ```sh
-npm install -g workboard
+npm install -g @paliverse/workboard
 ```
 
 Without Node.js, use the install script. On macOS and Linux:
@@ -131,7 +131,7 @@ workboard version --check   # compare with the latest release
 workboard upgrade           # upgrade through the channel you installed with
 ```
 
-`workboard upgrade` stops the running server, upgrades the way you installed (`npm install -g workboard@latest`, or the install script again), refreshes installed skills and restarts the service. `workboard upgrade --dry-run` prints the plan without running it.
+`workboard upgrade` stops the running server, upgrades the way you installed (`npm install -g @paliverse/workboard@latest`, or the install script again), refreshes installed skills and restarts the service. `workboard upgrade --dry-run` prints the plan without running it.
 
 ## Uninstall
 
@@ -140,7 +140,7 @@ workboard service remove   # stop the server and remove the background service
 workboard skills remove    # remove the agent skill files
 ```
 
-Then remove the program: `npm uninstall -g workboard`, or delete the install script's directory. On Windows that is `%LOCALAPPDATA%\Programs\WorkBoard`; also remove it from your user `PATH` if the script added it. On macOS and Linux, delete `${XDG_DATA_HOME:-~/.local/share}/workboard` and the `~/.local/bin/workboard` and `~/.local/bin/wb` links. If `setup` gave Codex access, remove the `~/.workboard` entry from `writable_roots` in `~/.codex/config.toml`.
+Then remove the program: `npm uninstall -g @paliverse/workboard`, or delete the install script's directory. On Windows that is `%LOCALAPPDATA%\Programs\WorkBoard`; also remove it from your user `PATH` if the script added it. On macOS and Linux, delete `${XDG_DATA_HOME:-~/.local/share}/workboard` and the `~/.local/bin/workboard` and `~/.local/bin/wb` links. If `setup` gave Codex access, remove the `~/.workboard` entry from `writable_roots` in `~/.codex/config.toml`.
 
 **Every board lives in `~/.workboard`.** Deleting that folder deletes all your boards, along with the registry, settings and logs. Copy any board you want to keep first. See [docs/install.md](docs/install.md#uninstall).
 

@@ -18,7 +18,7 @@ try {
   console.error(
     `workboard: the platform package ${platformPackage} is not installed.\n` +
       "Prebuilt binaries exist for win32, darwin and linux on x64 and arm64. If yours is one of them, reinstall\n" +
-      "without skipping optional dependencies (--omit=optional / --no-optional): npm install -g workboard\n" +
+      "without skipping optional dependencies (--omit=optional / --no-optional): npm install -g @paliverse/workboard\n" +
       "Other install options: https://github.com/Paliverse/workboard#install",
   );
   process.exit(1);

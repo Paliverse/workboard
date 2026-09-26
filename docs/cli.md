@@ -237,7 +237,7 @@ Print `workboard 0.1.0 (<channel>)`, where the channel is `npm`, `script` (the i
 
 ### `upgrade [--dry-run]`
 
-Upgrade through the detected channel: `npm` runs `npm install -g workboard@latest`, and `script` runs the install script again. It stops the server, runs the channel's upgrade command, refreshes installed skills and restarts the service. `--dry-run` only prints the plan. `source` and `unknown` installations exit 1 with instructions.
+Upgrade through the detected channel: `npm` runs `npm install -g @paliverse/workboard@latest`, and `script` runs the install script again. It stops the server, runs the channel's upgrade command, refreshes installed skills and restarts the service. `--dry-run` only prints the plan. `source` and `unknown` installations exit 1 with instructions.
 
 ### `doctor [--all]`
 

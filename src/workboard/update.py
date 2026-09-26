@@ -25,7 +25,7 @@ CHANNELS = ("npm", "script", "source", "unknown")
 _UNSUPPORTED = {
     "source": ("this WorkBoard runs from a source checkout; update it with `git pull`, "
                "then reinstall the dev environment (`pip install -e .`)"),
-    "unknown": ("cannot tell how this WorkBoard was installed; reinstall it with `npm install -g workboard` "
+    "unknown": ("cannot tell how this WorkBoard was installed; reinstall it with `npm install -g @paliverse/workboard` "
                 f"or the install script from https://github.com/{REPO}/releases"),
 }
 
@@ -52,7 +52,7 @@ def detect_channel() -> str:
 
 def upgrade_command(channel: str) -> list[str] | None:
     if channel == "npm":
-        return ["npm", "install", "-g", "workboard@latest"]
+        return ["npm", "install", "-g", "@paliverse/workboard@latest"]
     if channel == "script":
         if install._WINDOWS:
             return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",

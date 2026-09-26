@@ -9,7 +9,7 @@ A release is one annotated tag, `vX.Y.Z`. Pushing the tag runs [`.github/workflo
 | `verify` | `ubuntu-latest` | Fails unless the tag equals `v` + `workboard.__version__` and `CHANGELOG.md` has a `## [X.Y.Z]` section. Runs the full test suite. |
 | `binaries` | one native runner per target | Builds the PyInstaller app with `packaging/build.py binary`, then smoke-tests the archive with `packaging/build.py smoke`: `--version`, `init`, `add`, `digest`, `serve --port 0 --json`, `/health`, `/b/<board>/` and token shutdown, all in a scratch home. |
 | `github-release` | `ubuntu-latest` | Creates the GitHub Release with the six archives, `install.sh`, `install.ps1` and `SHA256SUMS`. The notes are that version's CHANGELOG section. |
-| `npm` | `ubuntu-latest` | Builds the seven npm packages from the archives. It publishes the six platform packages first, then `workboard` (environment `npm`), authenticating through npm trusted publishing (OIDC). npm attaches provenance automatically. |
+| `npm` | `ubuntu-latest` | Builds the seven npm packages from the archives. It publishes the six platform packages first, then `@paliverse/workboard` (environment `npm`), authenticating through npm trusted publishing (OIDC). npm attaches provenance automatically. |
 
 The `npm` job starts only after the GitHub Release exists, so npm never gets a version that has no GitHub Release.
 
@@ -32,13 +32,9 @@ Complete these steps before the first tag.
 
 1. **Repository.** Create `github.com/Paliverse/workboard` and push `main`. In *Settings → Actions → General*, allow GitHub Actions. The default `GITHUB_TOKEN` permission can stay read-only, because each job asks for what it needs.
 2. **Environment.** Create the `npm` environment in *Settings → Environments*. Add required reviewers if you want to approve each publication.
-3. **npm packages.** The main package `workboard` has the platform packages `@paliverse/workboard-win32-x64`, `@paliverse/workboard-win32-arm64`, `@paliverse/workboard-darwin-x64`, `@paliverse/workboard-darwin-arm64`, `@paliverse/workboard-linux-x64` and `@paliverse/workboard-linux-arm64` as optional dependencies.
-   - **Why scoped.** npm's spam filter rejects brand-new unscoped platform names such as `workboard-win32-x64` (`403 Package name triggered spam detection`). Only the scope owner can publish into `@paliverse`, so the platform names can't be squatted either.
-   - **First publish of a package.** Trusted publishing can only be added to a package that already exists, and bypass-2FA tokens are being retired, so a maintainer publishes a package's first version by hand with 2FA. Use the archives of that version's GitHub Release, so npm ships the same binaries:
-     - download them into `dist/`, then run `packaging/build.py npm --version X.Y.Z`;
-     - run `npm publish build/npm/<dir> --access public` for each platform folder, then for `workboard`.
-
-     Do this on Linux or macOS, or in a Linux container. Packing on Windows drops the executable bit and the macOS framework symlinks, so the macOS and Linux packages would not run.
+3. **npm packages.** The main package `@paliverse/workboard` has the platform packages `@paliverse/workboard-win32-x64`, `@paliverse/workboard-win32-arm64`, `@paliverse/workboard-darwin-x64`, `@paliverse/workboard-darwin-arm64`, `@paliverse/workboard-linux-x64` and `@paliverse/workboard-linux-arm64` as optional dependencies.
+   - **Why scoped.** npm's spam filter rejects brand-new unscoped platform names such as `workboard-win32-x64` (`403 Package name triggered spam detection`), and the unscoped name `workboard` still belongs to someone else's unpublished 2023 package. Only the scope owner can publish into `@paliverse`, so none of these names can be squatted.
+   - **Claiming a new package name.** Trusted publishing can only be added to a package that already exists, and bypass-2FA tokens are being retired. So a maintainer claims each new package name once, with 2FA: publish a placeholder `0.0.0` (a `package.json` and a README only) with `npm publish --access public`, add the trusted publisher as below, and later deprecate the placeholder with `npm deprecate <package>@0.0.0 "<message>"`. The release workflow publishes every real version.
    - **Trusted publishing.** Then add a trusted publisher to each of the seven packages, either on npmjs.com (*package → Settings → Trusted publishing → GitHub Actions*) or with `npm trust github <package> --repo Paliverse/workboard --file release.yml --env npm --allow-publish`. Allow `npm publish`: new trusted publishers allow only staged publishing unless you choose it. The `npm` job then authenticates with the job's OIDC identity and needs no token or secret. It uses Node 24, whose npm supports trusted publishing.
    - **Lock down.** After a release has published through trusted publishing, set each package to *Settings → Publishing access → Require two-factor authentication and disallow tokens*. This doesn't affect trusted publishing.
 4. **Social preview (once the repository is public).** In *Settings → General → Social preview*, upload `docs/assets/social-preview.png` (1280×640). GitHub shows this section only for public repositories.
@@ -67,7 +63,7 @@ Complete these steps before the first tag.
 7. Follow the *Release* workflow run. If the `npm` environment has reviewers, approve it.
 8. Check the result:
    - the GitHub Release has the 6 archives, both install scripts and `SHA256SUMS`;
-   - `npx workboard@X.Y.Z --version` prints `workboard X.Y.Z`;
+   - `npx @paliverse/workboard@X.Y.Z --version` prints `workboard X.Y.Z`;
    - `workboard version --check` on an older install reports the update.
 
 Never move or reuse a published tag. If a release is broken, fix it on `main` and release `X.Y.Z+1`. npm refuses to overwrite a published version.

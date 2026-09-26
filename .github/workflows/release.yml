@@ -113,7 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: npm
-      url: https://www.npmjs.com/package/workboard
+      url: https://www.npmjs.com/package/@paliverse/workboard
     permissions:
       contents: read
       id-token: write
