@@ -1,6 +1,6 @@
 # Contributing to WorkBoard
 
-Thanks for helping. Bug reports, ideas, docs fixes and pull requests are all welcome. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report security issues privately as described in [SECURITY.md](SECURITY.md), not in public issues.
+Thanks for helping. Bug reports, ideas, docs fixes and pull requests are all welcome. Report security issues privately as described in [SECURITY.md](SECURITY.md), not in public issues.
 
 ## Development setup
 

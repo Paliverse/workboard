@@ -155,7 +155,7 @@ Then remove the program: `npm uninstall -g @paliverse/workboard`, or delete the 
 
 ## Contributing
 
-Bug reports, ideas and pull requests are welcome. Read [CONTRIBUTING.md](.github/CONTRIBUTING.md) and the [Code of Conduct](.github/CODE_OF_CONDUCT.md). Report security issues privately as described in [SECURITY.md](.github/SECURITY.md).
+Bug reports, ideas and pull requests are welcome. Read [CONTRIBUTING.md](.github/CONTRIBUTING.md). Report security issues privately as described in [SECURITY.md](.github/SECURITY.md).
 
 ## License
 
