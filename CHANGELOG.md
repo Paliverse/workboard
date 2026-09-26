@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-25
+
+### Fixed
+
+- `npm install -g workboard` works. The platform packages are now published as `@paliverse/workboard-<os>-<arch>`, because npm's spam filter rejects new unscoped names such as `workboard-win32-x64`. 0.1.0 was released on GitHub only.
+
+### Changed
+
+- Releases publish to npm through trusted publishing (OIDC), with provenance and without a stored npm token.
+
 ## [0.1.0] - 2026-09-25
 
 First public release.
@@ -40,5 +50,6 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Paliverse/workboard/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Paliverse/workboard/releases/tag/v0.1.0

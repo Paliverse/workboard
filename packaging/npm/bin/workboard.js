@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// Runs the prebuilt WorkBoard binary from the matching workboard-<platform>-<arch> package.
+// Runs the prebuilt WorkBoard binary from the matching @paliverse/workboard-<platform>-<arch> package.
 "use strict";
 
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
-const platformPackage = `workboard-${process.platform}-${process.arch}`;
+// Scoped: npm's spam filter rejects brand-new unscoped platform names such as workboard-win32-x64.
+const platformPackage = `@paliverse/workboard-${process.platform}-${process.arch}`;
 let binary;
 try {
   binary = path.join(

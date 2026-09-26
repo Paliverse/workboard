@@ -10,7 +10,7 @@ WorkBoard installs a `workboard` command and the short alias `wb`. npm and the i
 npm install -g workboard
 ```
 
-This needs Node.js 18 or newer. The `workboard` package installs the `workboard` and `wb` commands. They launch a prebuilt binary from a platform package (`workboard-win32-x64`, `workboard-darwin-arm64`, `workboard-linux-x64`, …), which npm selects automatically as an optional dependency. Node.js is only used to launch the binary.
+This needs Node.js 18 or newer. The `workboard` package installs the `workboard` and `wb` commands. They launch a prebuilt binary from a platform package (`@paliverse/workboard-win32-x64`, `@paliverse/workboard-darwin-arm64`, `@paliverse/workboard-linux-x64`, …), which npm selects automatically as an optional dependency. Node.js is only used to launch the binary.
 
 ### Install script
 
@@ -188,7 +188,7 @@ workboard doctor --json   # full report: {"ok", "blockers", "warnings", ...}
 | Symptom | Fix |
 |---|---|
 | `workboard: command not found` | Open a new terminal. For the POSIX script, add `~/.local/bin` to `PATH`. For npm, make sure npm's global `bin` directory is on `PATH`. |
-| `the platform package workboard-<os>-<arch> is not installed` | npm skipped optional dependencies. Reinstall without `--omit=optional` or `--no-optional`: `npm install -g workboard`. |
+| `the platform package @paliverse/workboard-<os>-<arch> is not installed` | npm skipped optional dependencies. Reinstall without `--omit=optional` or `--no-optional`: `npm install -g workboard`. |
 | `doctor` says `workboard` on `PATH` is a different installation | You have two installations. Uninstall one, or reorder `PATH`. |
 | `port 7891 is in use by another program` | Stop that program, or choose another port with `workboard serve --port N`, the `WORKBOARD_PORT` environment variable or `port` in `~/.workboard/config.json` (the background service reads the file). |
 | Browser shows an old version after an upgrade | `workboard service restart`. `doctor` and `service status` report a version mismatch. |

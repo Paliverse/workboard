@@ -196,6 +196,11 @@ def notes(args) -> None:
     print(match.group(1).strip())
 
 
+# Platform packages live under the maintainer's npm scope: npm's spam filter rejects brand-new
+# unscoped names like workboard-win32-x64, and nobody else can publish into the scope.
+NPM_SCOPE = "@paliverse"
+
+
 def npm(args) -> None:
     version = args.version.removeprefix("v")
     template = json.loads((ROOT / "packaging" / "npm" / "package.json").read_text(encoding="utf-8"))
@@ -205,11 +210,11 @@ def npm(args) -> None:
     out.mkdir(parents=True)
     for target, (os_name, cpu) in TARGETS.items():
         archive = DIST / asset(target)
-        name = f"workboard-{os_name}-{cpu}"
+        name = f"{NPM_SCOPE}/workboard-{os_name}-{cpu}"
         if not archive.is_file():
             print(f"skipped {name}: no dist/{archive.name}")
             continue
-        package = out / name
+        package = out / f"workboard-{os_name}-{cpu}"
         with tempfile.TemporaryDirectory() as tmp:
             # npm pack drops symlinks (PyInstaller keeps some on macOS/Linux): copy their targets instead.
             shutil.copytree(extract(archive, Path(tmp)), package / "workboard", symlinks=False)
@@ -228,7 +233,7 @@ def npm(args) -> None:
     write_json(main / "package.json", {
         "name": template["name"], "version": version, "description": pyproject()["description"],
         **{key: value for key, value in template.items() if key != "name"},
-        "optionalDependencies": {f"workboard-{o}-{c}": version for o, c in TARGETS.values()}})
+        "optionalDependencies": {f"{NPM_SCOPE}/workboard-{o}-{c}": version for o, c in TARGETS.values()}})
     shutil.copy2(ROOT / "README.md", main / "README.md")
     shutil.copy2(ROOT / "LICENSE", main / "LICENSE")
     print(main)

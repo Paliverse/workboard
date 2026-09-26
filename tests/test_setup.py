@@ -492,8 +492,8 @@ class ServiceTest(ScratchCase):
 
 class ChannelTest(unittest.TestCase):
     TABLE = [
-        (r"C:\Users\u\AppData\Roaming\npm\node_modules\workboard\node_modules\workboard-win32-x64\workboard\workboard.exe", "npm"),
-        ("/usr/local/lib/node_modules/workboard/node_modules/workboard-darwin-arm64/workboard/workboard", "npm"),
+        (r"C:\Users\u\AppData\Roaming\npm\node_modules\workboard\node_modules\@paliverse\workboard-win32-x64\workboard\workboard.exe", "npm"),
+        ("/usr/local/lib/node_modules/workboard/node_modules/@paliverse/workboard-darwin-arm64/workboard/workboard", "npm"),
         ("/home/u/.local/share/workboard/workboard", "unknown"),
         (r"C:\Users\u\AppData\Local\Programs\WorkBoard\workboard.exe", "unknown"),
     ]
