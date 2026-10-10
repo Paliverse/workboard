@@ -1088,6 +1088,12 @@ class Contracts(unittest.TestCase):
         self.assertEqual(error["card"], {"num": x["num"], "id": x["id"], "changedRev": claimed["rev"],
                                          "last": current["card"]["history"][-1]})
         self.assertEqual(path.read_bytes(), before)
+        last = current["card"]["history"][-1]
+        for message in (error["error"], wb(["note", x["id"], "--summary", "old decision", "--expected-rev",
+                                            reviewed["rev"], "--actor", "Agent-X"], root).stderr):
+            self.assertIn(f"last: {last['ev']} by Agent-X", message)
+            self.assertIn(f"context {x['num']}", message)
+        self.assertEqual(path.read_bytes(), before)
         projection = ["num", "id", "title", "column", "priority", "tags", "outcome", "owner",
                       "deps", "changedRev", "createdAt", "updatedAt", "doneAt", "origin"]
         mine = last_json(wb(["--actor", "Agent-X", "query", "--mine", "--fields", ",".join(projection),
@@ -1099,6 +1105,50 @@ class Contracts(unittest.TestCase):
         self.assertEqual(mine["cards"], [{**{field: current["card"][field] for field in projection
                                              if field not in ("owner", "deps")},
                                           "owner": "Agent-X", "deps": []}])
+
+    def test_scope_error_example_is_a_valid_scope_and_expected_rev_help_is_card_scoped(self):
+        root = self.init("scope hint", "scope-hint")
+        for args in (["add", "--title", "Parent"], ["start", "1"], ["subtask", "1", "add", "Slice", "--delegated"]):
+            self.assertEqual(wb([*args, "--actor", "Main"], root).returncode, 0, args)
+        configure = ["subtask", "1", "configure", "s-1", "--json", "--actor", "Main", "--scope"]
+        error = last_json(wb([*configure, "C:/work/tree/App.tsx"], root))
+        self.assertEqual(error["code"], "invalid")
+        example = re.search(r"e\.g\. (\S+)", error["error"]).group(1)
+        self.assertEqual(last_json(wb([*configure, example], root))["item"]["delegation"]["scope"], [example])
+        help_text = " ".join(wb(["start", "--help"], root).stdout.split())
+        self.assertIn("card verbs fail only if this card changed", help_text)
+
+    def test_digest_stays_a_short_pulse_on_big_boards(self):
+        root = self.init("big pulse", "big-pulse")
+        path = core.board_file("big pulse")
+        claimed = {"state": "claimed", "owner": "Main", "claimedAt": core.now_iso(), "result": ""}
+        with core.board_transaction(path) as doc:
+            for num in range(1, 25):
+                blocked = num > 12
+                doc["cards"].append(core.normalize_card({
+                    "num": num, "id": f"card-{num}", "title": f"Card {num}",
+                    "column": "blocked" if blocked else "inprogress", "activeOwner": "Main",
+                    "blockedReason": "r" * 300 if blocked else None, "unblockWhen": "u" * 300 if blocked else None,
+                    "history": [{"at": core.now_iso(), "ev": "blocked", "by": "Main"}] if blocked else [],
+                    "subtasks": [{"id": f"s-{i}", "text": f"Slice {i}", "done": False, "children": [],
+                                  "delegation": claimed} for i in range(10)] if num == 1 else []}))
+            doc["cards"].append(core.normalize_card({
+                "num": 25, "id": "card-25", "title": "Card 25", "column": "done", "outcome": "canceled",
+                "cancelReason": "c" * 300, "doneAt": core.now_iso()}))
+            doc["nextNum"] = 26
+            core.save(path, doc, by="Main")
+        lines = wb(["digest", "--actor", "Main"], root).stdout.splitlines()
+        rows = {name: [line for line in lines if re.match(pattern, line)] for name, pattern in (
+            ("mine", r"    #\d+ (inprogress|blocked) "), ("contributions", r"    #1/s-"),
+            ("inprogress", r"  IN PROGRESS: "), ("blocked", r"  BLOCKED: "))}
+        self.assertEqual({name: len(found) for name, found in rows.items()},
+                         {"mine": 8, "contributions": 8, "inprogress": 8, "blocked": 8})
+        self.assertEqual([line.split()[1] for line in rows["blocked"]], [f"#{num}" for num in range(13, 21)])
+        for more in ("    … +16 more (query --mine)", "    … +2 more (context REF --mine)",
+                     "  … +4 more (query --column inprogress)", "  … +4 more (query --column blocked)"):
+            self.assertIn(more, lines)
+        self.assertLessEqual(max(map(len, lines)), 200, max(lines, key=len))
+        self.assertEqual(len(last_json(wb(["digest", "--json", "--actor", "Main"], root))["contributions"]), 10)
 
     def test_c27_bulk_subtasks_are_atomic_and_idempotent(self):
         root = self.init("bulk", "bulk-subtasks")

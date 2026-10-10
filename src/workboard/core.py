@@ -126,12 +126,17 @@ class RevisionConflict(WorkflowError):
         if card is None:
             message = f"board changed; current revision is {rev}; refresh context before retrying"
         else:
+            last = (card.get("history") or [None])[-1]
             message = f"card #{card['num']} changed at rev {card['changedRev']} after reviewed rev {reviewed}"
+            if isinstance(last, dict) and last.get("ev"):
+                actor = f" by {last['by']}" if last.get("by") else ""
+                message += f" (last: {last['ev']}{actor})"
+            message += f"; re-read with context {card['num']}"
         super().__init__(message, 409, "stale")
         self.rev = rev
         self.card = None if card is None else {
             "num": card["num"], "id": card["id"], "changedRev": card["changedRev"],
-            "last": (card.get("history") or [None])[-1]}
+            "last": last}
 
 
 def check_revision(doc: dict, expected_rev: int | None, ref=None) -> None:
@@ -608,7 +613,8 @@ def _norm_scope(value) -> list[str]:
         item = item.strip().replace("\\", "/")
         if (not item or item.startswith("/") or any(char in item for char in ':<>"|')
                 or any(ord(char) < 32 for char in item) or _SCOPE_GLOB.search(item)):
-            raise WorkflowError("delegation scopes must be unambiguous portable relative paths")
+            raise WorkflowError("delegation scopes must be unambiguous portable relative paths from the "
+                                "project root, e.g. packages/web/src/app/App.tsx")
         item = item.rstrip("/")
         parts = item.split("/")
         if item != "." and any(part in ("", ".", "..") or part.endswith((" ", ".")) for part in parts):
@@ -2085,7 +2091,7 @@ def inbox(doc: dict, by: str, ref=None) -> list[dict]:
 
 
 def publish_subtask_note(doc: dict, card: dict, subtask_id: str, summary, body, by: str) -> dict:
-    """Append a note attributed to a worker's currently claimed delegated assignment."""
+    """Append a note attributed to a delegated assignment by its current claimant or the parent owner."""
     by = validate_actor(by)
     subtask_id = _required_text(subtask_id, "subtask ID")
     if not any(candidate is card for candidate in doc.get("cards") or []):
@@ -2095,9 +2101,11 @@ def publish_subtask_note(doc: dict, card: dict, subtask_id: str, summary, body, 
     item = _subtask_index(card).get(subtask_id)
     if item is None:
         raise WorkflowError(f"subtask '{subtask_id}' not found", 404)
-    delegation = item[0].get("delegation") or {}
-    if delegation.get("state") not in ("claimed", "blocked") or delegation.get("owner") != by:
-        raise WorkflowError("only the current claimant can publish for this assignment", 409, "owned")
+    delegation = item[0].get("delegation")
+    claimant = delegation and delegation["state"] in ("claimed", "blocked") and delegation["owner"] == by
+    if not (claimant or (delegation and card["activeOwner"] == by)):
+        raise WorkflowError("only the current claimant or the parent owner can publish for this assignment",
+                            409, "owned")
     entry = append_note(card, summary, body, by)
     entry["subtaskId"] = subtask_id
     return entry
@@ -2245,8 +2253,12 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
             raise WorkflowError("delegated work requires an owned In Progress parent card", 409, "state")
         state, owner = delegation["state"], delegation["owner"]
         if action == "configure":
-            if state != "available":
-                raise WorkflowError("configure requires available delegated work", 409, "state")
+            # The parent owner may re-scope running work; claim, owner, result and review stay untouched.
+            scope_only = (state in ("claimed", "blocked") and "scope" in details
+                          and not {"dependsOn", "reviewRequired"} & details.keys())
+            if state != "available" and not scope_only:
+                raise WorkflowError("configure requires available delegated work; claimed or blocked work "
+                                    "accepts only a scope change", 409, "state")
             scope = _norm_scope(details.get("scope", delegation["scope"]))
             required = details.get("reviewRequired", delegation["review"]["required"])
             depends_on = details.get("dependsOn", delegation["dependsOn"])
@@ -2256,8 +2268,9 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
                 raise WorkflowError("dependsOn must be an array of subtask IDs")
             delegation["scope"] = scope
             delegation["dependsOn"] = list(dict.fromkeys(depends_on))
-            delegation["review"] = {"required": required, "state": "pending", "by": None,
-                                    "at": None, "reason": ""}
+            if not scope_only:
+                delegation["review"] = {"required": required, "state": "pending", "by": None,
+                                        "at": None, "reason": ""}
             _validate_subtask_dependencies(index)
         elif action == "accept":
             if state != "completed":

@@ -12,6 +12,8 @@ npm install -g @paliverse/workboard
 
 This needs Node.js 18 or newer. The `@paliverse/workboard` package installs the `workboard` and `wb` commands. They launch a prebuilt binary from a platform package (`@paliverse/workboard-win32-x64`, `@paliverse/workboard-darwin-arm64`, `@paliverse/workboard-linux-x64`, …), which npm selects automatically as an optional dependency. Node.js is only used to launch the binary.
 
+On Windows, npm installs the commands as `workboard.cmd` and `wb.cmd` shims. Shells find them, but programs that start commands without a shell, such as Python's `subprocess`, need the full path from `shutil.which("workboard")`; see [Windows scripts](agents.md#machine-readable-output).
+
 ### Install script
 
 macOS and Linux:

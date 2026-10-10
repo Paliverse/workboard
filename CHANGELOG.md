@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The card's owner can change the scope of a delegated subtask a worker has already claimed or blocked: `subtask REF configure ID --scope PATH...` or `--clear-scope` keeps the claim, the worker and any result, and records the change in the card history. Prerequisites and the review requirement still change only while the subtask is available. Approving extra files mid-work no longer means leaving the saved scope wrong.
+- The owner of the In Progress card can post `note REF --subtask ID` on any delegated subtask of that card, in any state, so an approval or answer lands on the assignment instead of a card-level note. Anyone else still gets `owned`, and Main's own notes are not inbox findings.
+- `digest` stays a short pulse on big boards: `MINE`, `CONTRIBUTIONS`, In Progress and Blocked list at most 8 rows each, then `… +N more` with the read that lists the rest (`query --mine`, `context REF --mine`, `query --column inprogress`, `query --column blocked`), and Blocked reasons, exit conditions and cancel reasons are cut to 80 characters. `digest --json` is unchanged. On a real board with 28 cards In Progress and 23 Blocked, `digest` had printed 61 lines and 17 KB.
+- `handoff` commands name the card by its number instead of its long ID, and the prompt says that scope paths are relative to the board's project root.
+- The agent skill opens with why the board matters (shared memory the user watches, peers coordinate through and the next session resumes from) and adds that one read's `rev` guards every card it covers, that Main may widen a claimed subtask's scope and post `note --subtask`, that `accept` accepts the worker's deliverable (even a verification that found a bug), and that work is delegated only to workers that can run the CLI.
+- The docs cover reading many cards with one `query --json --fields …` instead of a `context` per card, filtering one `query` locally instead of many `search` calls, calling the Windows npm shim `workboard.cmd` from scripts that start commands without a shell (`shutil.which("workboard")`), what `accept` means, and relaying for workers without CLI access.
+
+### Fixed
+
+- The error for an invalid delegation scope shows an example path relative to the project root (`packages/web/src/app/App.tsx`).
+- A card-scoped `stale` error names the card's last change (event and actor) and says which `context` command re-reads it, for example `card #761 changed at rev 5130 after reviewed rev 5128 (last: subtask-configure by Main); re-read with context 761`. The code, status and JSON fields are unchanged.
+- `--expected-rev` help says which revision to pass. On card verbs: "rev from your last read or mutation; card verbs fail only if this card changed since"; on `wip`, `recover`, `sweep`, `columns-core` and `export` it is the exact board revision.
+
 ## [0.2.0] - 2026-10-10
 
 ### Added

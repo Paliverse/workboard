@@ -145,6 +145,9 @@ class FocusedContext(unittest.TestCase):
         self.assertEqual(last_json(fresh)["focus"]["subtaskId"], "available")
         self.assertIn("Approved request", payload["prompt"])
         self.assertIn("consumer.py only", payload["prompt"])
+        self.assertIn("project root", payload["prompt"])
+        self.assertEqual({argv[4] for argv in payload["commands"].values()}, {str(payload["num"])})
+        self.assertNotIn(payload["cardId"], json.dumps(payload["commands"]))
         self.assertEqual(self.path.read_bytes(), before)
         self.json(["handoff", "1", "--subtask", "mine", "--worker", "Ada", "--write-scope", "a.py"])
 

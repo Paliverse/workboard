@@ -360,7 +360,7 @@ def cmd_handoff(args):
     result = wb.subtask_handoff(path, args.ref, args.subtask, wb.actor(), args.worker,
                                args.write_scope, args.peer or [])
     result["boardName"] = name
-    sid, ref = result["assignment"]["id"], result["cardId"]
+    sid, ref = result["assignment"]["id"], str(result["num"])  # Card numbers are never reused.
     prefix = ["workboard", f"--board={name}", f"--actor={result['worker']}"]
     result["commands"] = {
         "read": [*prefix, "context", ref, f"--subtask={sid}", "--json"],
@@ -385,7 +385,8 @@ def cmd_handoff(args):
         + json.dumps(result["commands"], ensure_ascii=False, indent=2)
         + "\n1. read: you are already assigned, so skip digest. Add --full if omitted comments, history "
         "or notes matter. Ancestors are context only; nested assignments keep their own owners.\n"
-        "2. claim before editing. Edit only writeScope; coordinate overlaps with the peers.\n"
+        "2. claim before editing. Edit only writeScope (paths relative to the board's project root); "
+        "coordinate overlaps with the peers.\n"
         "3. publish each useful finding (kind, scope, evidence, limits; body on stdin). Peers see it on "
         "the card; if your runtime can message them, point them to its note ID.\n"
         "4. read again, then complete with a concise result and evidence; report it to Main.\n"
@@ -603,6 +604,18 @@ def _holder(card: dict) -> str | None:
     return None
 
 
+DIGEST_ROWS = 8  # Per section: digest stays a short pulse; query and context hold the rest.
+
+
+def _more(rows: list, hint: str, indent: str = "  ") -> None:
+    if len(rows) > DIGEST_ROWS:
+        print(f"{indent}… +{len(rows) - DIGEST_ROWS} more ({hint})")
+
+
+def _short(text: str, limit: int = 80) -> str:
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
 def cmd_digest(args):
     p = wb.find_board(args.board)
     doc = wb.load(p)
@@ -636,17 +649,19 @@ def cmd_digest(args):
     mine = [card for card in doc["cards"] if _holder(card) == by]
     if mine:
         print(f"  MINE @{by}:")
-        for card in mine:
+        for card in mine[:DIGEST_ROWS]:
             print(f"    {wb.fmt_ref(card)} {card['column']} {card['title'][:60]}")
+        _more(mine, "query --mine", "    ")
     if contributions:
         print(f"  CONTRIBUTIONS @{by}:")
-        for item in contributions:
+        for item in contributions[:DIGEST_ROWS]:
             print(f"    #{item['num']}/{item['subtaskId']} {item['state']} {item['text'][:60]}"
                   f" (parent {item['column']})")
+        _more(contributions, "context REF --mine", "    ")
     if col_line:
         print(f"  {col_line}")
     ip = [c for c in doc["cards"] if c["column"] == "inprogress"]
-    for c in ip:
+    for c in ip[:DIGEST_ROWS]:
         subs = [s for s, _ in wb.iter_subtasks(c["subtasks"])]
         prog = f" ☑{sum(1 for s in subs if s['done'])}/{len(subs)}" if subs else ""
         attention = _stage_attention(c)
@@ -654,6 +669,7 @@ def cmd_digest(args):
         owner = f" @{c['activeOwner']}" if c.get("activeOwner") else ""
         print(f"  IN PROGRESS: {wb.fmt_ref(c)}{owner} {c['title'][:60]}{prog}"
               f" ({_age(c['updatedAt'])}){marker}")
+    _more(ip, "query --column inprogress")
     done_cols = {c["id"] for c in doc["columns"] if c["kind"] == "done"} | {"done"}
     shipped = sorted((c for c in doc["cards"] if c["column"] in done_cols and c["doneAt"]
                       and c.get("outcome") != "canceled"),
@@ -661,14 +677,15 @@ def cmd_digest(args):
     for c in shipped:
         print(f"  SHIPPED: {wb.fmt_ref(c)} {c['title'][:58]} ({_age(c['doneAt'])} ago)")
     blocked = [c for c in doc["cards"] if c["column"] == "blocked"]
-    for c in blocked:
-        reason = (c.get("blockedReason") or "reason missing").strip()
-        until = (c.get("unblockWhen") or "condition missing").strip()
+    for c in blocked[:DIGEST_ROWS]:
+        reason = _short((c.get("blockedReason") or "reason missing").strip())
+        until = _short((c.get("unblockWhen") or "condition missing").strip())
         owner = f" @{_holder(c)}" if _holder(c) else ""
         print(f"  BLOCKED: {wb.fmt_ref(c)}{owner} {c['title'][:48]} — {reason}; until {until}")
+    _more(blocked, "query --column blocked")
     canceled = [c for c in doc["cards"] if c.get("outcome") == "canceled"]
     for c in canceled[-3:]:
-        print(f"  CANCELED: {wb.fmt_ref(c)} {c['title'][:48]} — {c.get('cancelReason') or ''}")
+        print(f"  CANCELED: {wb.fmt_ref(c)} {c['title'][:48]} — {_short((c.get('cancelReason') or '').strip())}")
     refs = " — " + " ".join(wb.fmt_ref(card) for card in ready[:5]) if ready else ""
     print(f"  READY: {len(ready)}{refs} · REWORK: "
           f"{sum(bool(c.get('reworkReason')) for c in doc['cards'] if c['column'] != 'done')}")
@@ -899,6 +916,9 @@ def _revision(value):
     return revision
 
 
+CARD_REV_HELP = "rev from your last read or mutation; card verbs fail only if this card changed since"
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="workboard", description=__doc__, allow_abbrev=False,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -913,8 +933,9 @@ def build_parser() -> argparse.ArgumentParser:
                     "subtask", "wip", "bug", "improve", "reopen", "workpad", "takeover",
                     "cancel", "rework", "depends", "comment", "recover", "columns-core", "sweep",
                     "export"}:
-            sp.add_argument("--expected-rev", type=_revision,
-                            help="reviewed revision: card-scoped for card verbs; exact board revision for maintenance")
+            sp.add_argument("--expected-rev", type=_revision, help=(
+                "exact board revision: board-scoped maintenance fails if anything changed since"
+                if name in {"wip", "recover", "columns-core", "sweep", "export"} else CARD_REV_HELP))
         sp.set_defaults(fn=fn)
         return sp
 
@@ -1076,7 +1097,7 @@ def build_parser() -> argparse.ArgumentParser:
         if operation in ("get", "remove"):
             operation_parser.add_argument("id")
         if operation in ("add", "remove"):
-            operation_parser.add_argument("--expected-rev", type=_revision)
+            operation_parser.add_argument("--expected-rev", type=_revision, help=CARD_REV_HELP)
         if operation == "add":
             operation_parser.add_argument("--file", required=True)
             operation_parser.add_argument("--name")

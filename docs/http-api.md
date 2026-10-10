@@ -187,7 +187,7 @@ For `action: "subtask"`, `details` holds `op`, `ids` and the fields that operati
 | `add` | `texts` (one or more), `parent`?, `delegated`? (boolean) | Add subtasks; `delegated: true` makes them available delegated work. |
 | `done`, `undone`, `rm` | `ids` | Plain checklist subtasks: any number of ids, any actor. `rm` removes nested subtasks too. |
 | `delegate` | one id | Make an open checklist subtask available. |
-| `configure` | one id, `scope`? (paths), `dependsOn`? (subtask ids), `reviewRequired`? (boolean) | Configure available work. Omitted fields keep their value; `[]` clears a list. |
+| `configure` | one id, `scope`? (paths relative to the project root), `dependsOn`? (subtask ids), `reviewRequired`? (boolean) | Configure available work. Omitted fields keep their value; `[]` clears a list. `scope` alone also changes claimed or blocked work and keeps its claim; `dependsOn` and `reviewRequired` need available work (409 `state`). |
 | `claim` | one id | Claim available work whose prerequisites are complete. |
 | `block` | one id, `reason`, `until` | The worker marks claimed work blocked. |
 | `resume` | one id | The worker continues blocked work. |
@@ -320,7 +320,7 @@ Card fields:
 | `by` | The actor label, or `null` for migrated entries whose stamp had none |
 | `summary` | One line, 1–160 characters, no line breaks |
 | `body` | Markdown, at most 32,000 characters, trailing whitespace stripped; `""` when empty |
-| `subtaskId` | Optional: the delegated subtask a worker's note or a generated note is about |
+| `subtaskId` | Optional: the delegated subtask a note is about, on a CLI `note --subtask` entry (by the worker or the card's owner) or a generated note |
 | `kind` | Optional: `"generated"` for notes the subtask lifecycle writes (results, releases, takeovers, reviews); the inbox ignores them |
 
 Entries are added only through the `note` lifecycle action (or the CLI's `note`) and the subtask lifecycle. A card PATCH or snapshot that changes `log` is 422.

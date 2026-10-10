@@ -486,6 +486,38 @@ class DelegationWorkflow(unittest.TestCase):
         result = self.json(["done", self.ref, "--writeup", "Integration remains compatible"])
         self.assertEqual(result["column"], "done")
 
+    def test_parent_owner_rescopes_and_annotates_running_work(self):
+        sid, other = self.add("Running work", "Prerequisite")
+        self.action("configure", sid, "--scope", "src/a.py", "--review-required")
+        claimed = self.action("claim", sid, actor="Ada")["item"]["delegation"]
+        widened = self.action("configure", sid, "--scope", "src/a.py", "--scope", "src/b.py")
+        delegation = widened["item"]["delegation"]
+        self.assertEqual(delegation["scope"], ["src/a.py", "src/b.py"])
+        self.assertEqual({**delegation, "scope": claimed["scope"]}, claimed)
+        last = self.context()["card"]["history"][-1]
+        self.assertEqual((last["ev"], last["by"]), ("subtask-configure", "Main"))
+        focused = self.json(["context", self.ref, "--subtask", sid], "Ada")
+        item = next(st for st, _ in core.iter_subtasks(focused["card"]["subtasks"]) if st["id"] == sid)
+        self.assertEqual(item["delegation"]["scope"], ["src/a.py", "src/b.py"])
+        for extra in (["--on", other], ["--clear-deps"], ["--review-required"], ["--no-review-required"]):
+            self.reject(["subtask", self.ref, "configure", sid, "--scope", "src/c.py", *extra], "state")
+        self.reject(["subtask", self.ref, "configure", sid, "--scope", "src/c.py"], "owned", "Ada")
+        self.action("block", sid, "--reason", "Needs a schema", "--until", "Schema lands", actor="Ada")
+        cleared = self.action("configure", sid, "--clear-scope")["item"]["delegation"]
+        self.assertEqual((cleared["scope"], cleared["state"], cleared["owner"], cleared["blocker"]["reason"]),
+                         ([], "blocked", "Ada", "Needs a schema"))
+        note = ["note", self.ref, "--subtask", sid, "--summary", "Approved src/b.py"]
+        self.reject(note, "owned", "Grace")
+        entry = self.json(note)["item"]
+        self.assertEqual((entry["subtaskId"], entry["by"]), (sid, "Main"))
+        self.assertEqual([row["kind"] for row in self.inbox()], ["blocker"])
+        self.action("resume", sid, actor="Ada")
+        self.action("done", sid, "--result", "Both files verified", actor="Ada")
+        self.reject(["subtask", self.ref, "configure", sid, "--scope", "src/c.py"], "state")
+        self.assertEqual(self.json([*note[:-1], "Reviewing the result"])["item"]["subtaskId"], sid)
+        self.json(["note", self.ref, "--subtask", other, "--summary", "Unclaimed slice note"])
+        self.assertEqual([row["kind"] for row in self.inbox()], ["review"])
+
     def test_block_resume_and_release_preserve_ownership_and_observable_exit(self):
         sid, = self.add("Waiting for producer")
         self.action("claim", sid, actor="Ada")

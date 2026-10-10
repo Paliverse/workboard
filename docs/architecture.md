@@ -134,7 +134,7 @@ A plain checklist subtask has no delegation metadata, so older boards and bulk c
 
 Only the subtask lifecycle in `core.subtask_action` creates or changes this metadata, under the board lock. Ownership and state are checked there, so two workers racing for one subtask get exactly one winner and the other gets `owned`.
 
-- Making work claimable (`add --delegated`, `delegate`) is refused with `owned` when another actor owns the card. Configuring, accepting and requesting changes need the active owner of an In Progress parent.
+- Making work claimable (`add --delegated`, `delegate`) is refused with `owned` when another actor owns the card. Configuring, accepting and requesting changes need the active owner of an In Progress parent. Configuring prerequisites or review needs available work; the scope alone can also change on claimed or blocked work, which keeps its claim, owner and result.
 - `claim`, `done`, `undone`, `block` and `resume` need an owned In Progress parent (`state` otherwise). Only the claimant may `release`, `block`, `resume`, complete or reopen its subtask (`owned`); the wrong state for its own subtask is `state`. `takeover` moves claimed or blocked work to the caller.
 - Completion requires a result. Completing, reopening, releasing, taking over, accepting and requesting changes each append a generated timeline note (`"kind": "generated"`, with its `subtaskId`), so the record of who did what survives. Blocking, canceling or pausing the parent keeps claims: nothing expires, and nothing completes the parent automatically. The parent can't be completed while a delegated subtask is unfinished or a required review is not accepted.
 
@@ -145,7 +145,7 @@ Card field edits never check card ownership (`update`, `workpad`, legacy checkli
 Schema 3 introduced the timeline, and schema 4 keeps it unchanged; versions 1 and 2 are still read. A card has two kinds of notes:
 
 - **Pinned notes** (`notes`): one free-form markdown string for durable context such as acceptance criteria. `update --notes`, `workpad` and the browser's notes editor change it.
-- **Timeline** (`log`): append-only entries `{"id", "at", "by", "summary", "body"}`, oldest first. A worker's subtask note also carries `subtaskId`, and notes the subtask lifecycle writes carry `"kind": "generated"`. Only `note` in the CLI, the `note` lifecycle action and the subtask lifecycle add them. The summary is one line of 1–160 characters and the body is markdown of at most 32,000 characters. The [HTTP API](http-api.md#notes-timeline) lists the entry rules.
+- **Timeline** (`log`): append-only entries `{"id", "at", "by", "summary", "body"}`, oldest first. A subtask note (`note --subtask`, by the subtask's claimant or the parent's active owner) also carries `subtaskId`, and notes the subtask lifecycle writes carry `"kind": "generated"`. Only `note` in the CLI, the `note` lifecycle action and the subtask lifecycle add them. The summary is one line of 1–160 characters and the body is markdown of at most 32,000 characters. The [HTTP API](http-api.md#notes-timeline) lists the entry rules.
 
 Before version 3, `note` appended `[YYYY-MM-DD actor] text` lines to `notes`. When a raw document's `schemaVersion` is below 3, normalization splits every card's notes with `core.split_legacy_notes`. A version 3 or 4 document is never split again.
 
@@ -166,7 +166,7 @@ The migration is lossless. Only the `[date actor] ` prefix moves into `at` and `
 
 Focused context (`context REF --subtask ID`, `--mine` or `--assigned-to ACTOR`) is a read projection. It keeps each selected subtree and its minimal ancestor chain, plus the card's shared metadata, comments, attachments, dependencies and timeline. `focus` records the selection (`subtaskId` or `assignedTo`), `matchedSubtaskIds`, `ancestorIds`, overlapping write scopes (`scopeWarnings`) and each selected subtask's `prerequisites`; `omitted.unrelatedSubtasks` counts the rows left out. Focus grants no authority to change anything.
 
-`handoff` is read-only too. The active owner of the In Progress parent names a delegated subtask, a worker, write scopes (default: the subtask's saved scope) and optional peers. The subtask must be available or already claimed by that worker, and its prerequisites must be complete (`deps` otherwise). It returns the facts, a runtime-agnostic prompt and `commands`: argument arrays for `read`, `claim`, `publish` and `complete`, each starting with `workboard --board=NAME --actor=WORKER`. A consumer replaces only the `{summary}` and `{result}` values and passes each array as separate arguments; `publish` reads the note body from standard input. Handoff never claims, spawns a worker or sends a message.
+`handoff` is read-only too. The active owner of the In Progress parent names a delegated subtask, a worker, write scopes (default: the subtask's saved scope, relative to the board's project root) and optional peers. The subtask must be available or already claimed by that worker, and its prerequisites must be complete (`deps` otherwise). It returns the facts, a runtime-agnostic prompt and `commands`: argument arrays for `read`, `claim`, `publish` and `complete`, each starting with `workboard --board=NAME --actor=WORKER` and naming the card by its number, which is never reused. A consumer replaces only the `{summary}` and `{result}` values and passes each array as separate arguments; `publish` reads the note body from standard input. Handoff never claims, spawns a worker or sends a message.
 
 ### Portable bundles
 
@@ -178,7 +178,7 @@ Focused context (`context REF --subtask ID`, `--mine` or `--assigned-to ACTOR`) 
 
 Every check runs under the same board lock as the write it protects.
 
-- **Card-scoped (CLI):** `--expected-rev REV` fails with `stale` only if the target card's `changedRev` is greater than `REV`. Agents working on different cards don't conflict. The error carries the current board `rev` and the card's `changedRev` and last history entry.
+- **Card-scoped (CLI):** `--expected-rev REV` fails with `stale` only if the target card's `changedRev` is greater than `REV`. Agents working on different cards don't conflict, and one read's `rev` guards every card it covers. The error carries the current board `rev` and the card's `changedRev` and last history entry, and its message names that entry's event and actor and the `context` command to re-read.
 - **Board-scoped (browser and maintenance):** browser writes (`baseRev`), `wip`, `sweep`, `recover`, `columns-core`, `export --expected-rev` and board deletion require the exact current board revision.
 - **Rules, not staleness:** ownership (`owned`), dependencies (`deps`), the WIP limit (`wip`) and illegal transitions (`state`) also return 409. They need a decision, not a re-read.
 
