@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `context` (and `GET api/card/{ref}/context`) returns only the newest 10 comments and reports the number left out as `omitted.comments`, like the notes timeline; `show` keeps the newest 5. Comment IDs are unchanged, and `--full` still returns every comment. Agents that coordinate through comments no longer pull the whole thread on every read: across 16 real boards, the largest card's `context` dropped from 470 KB to 30 KB.
+- The agent skill no longer asks for `--expected-rev` on `comment` and `note`. They only append, and on a card shared by several agents a guarded comment went stale on every peer's write: two of six agents hit this in a parallel-work test.
 
 ## [0.1.3] - 2026-10-10
 

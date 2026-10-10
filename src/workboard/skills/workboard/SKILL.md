@@ -20,7 +20,7 @@ workboard --actor YOUR_LABEL digest
 2. `context REF --json`: read recent comments, notes, open subtasks, dependencies, dependents, owner, readiness and the attachment manifest; keep `rev`. Use `--full` when `omitted` done subtasks/history/log/comments matter.
 3. `attachment REF get ID --out NEW_PATH --json` for relevant files, then open that exact file. Exports verify size/SHA256 and never overwrite. A manifest is not inspection; report required files you cannot read.
 4. Claim BEFORE editing: `start REF --expected-rev REV` (a same-actor claim is idempotent). Blocked work uses `resume`; another owner's card needs `takeover --reason`.
-5. Work: bulk `subtask REF add T1 T2`, `note`, `comment`, `attachment REF add`. Guard card mutations with the rev from your last context read or your own last successful mutation; chaining is correct. JSON returns `actor`, `rev` and the created/changed `item` or bulk `items` with IDs.
+5. Work: bulk `subtask REF add T1 T2`, `note`, `comment`, `attachment REF add`. Guard state changes with the rev of your last read or own mutation (chaining is correct); `comment`/`note` only append: no guard. JSON returns `actor`, `rev` and the created/changed `item` or bulk `items` with IDs.
 6. Before completion refresh context and inspect new relevant files. Verify acceptance criteria, then `done REF --writeup EVIDENCE --expected-rev REV` (or `--writeup-stdin`): card In Progress, real delivered work and checks, limitations disclosed.
 7. Not finishing: guarded `block REF --reason R --until CONDITION` or `fly REF task`. Never abandon In Progress work.
 
@@ -48,7 +48,7 @@ workboard --actor NAME note 12 --summary "Fixed flush race; tests pass" --body '
 ```
 
 ## Grammar
-Append to `workboard --actor YOUR_LABEL`. REF = card number or ID; item IDs come from context or mutation JSON. Add `--json`; guard card mutations except `add` with `--expected-rev REV`. `--stdin`/`--*-stdin` read nonblank piped text.
+Append to `workboard --actor YOUR_LABEL`. REF = card number or ID; item IDs come from context or mutation JSON. Add `--json`; guard state changes with `--expected-rev REV`. `--stdin`/`--*-stdin` read nonblank piped text.
 
 ```text
 digest | next [--limit N]

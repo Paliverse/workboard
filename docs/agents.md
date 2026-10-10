@@ -85,7 +85,7 @@ EOF
 
 Many agents and a person can write to the same board at once. Every write is locked, atomic and backed up, and each command guards against acting on outdated state.
 
-1. **Guard every card mutation with `--expected-rev`.** Use the `rev` from your last `context` read, or from your own last successful mutation. Chaining the `rev` your previous command returned is correct. `add` takes no guard.
+1. **Guard state changes with `--expected-rev`.** Use the `rev` from your last `context` read, or from your own last successful mutation. Chaining the `rev` your previous command returned is correct. `add` takes no guard, and `comment` and `note` only append, so post them unguarded: when several agents share a card, a guarded comment goes stale on every peer's write.
 2. **The guard is card-scoped.** It fails only when the card you are changing changed after the revision you reviewed (`changedRev > REV`). Other agents working on other cards don't disturb you.
 3. **On `stale`, re-read and reconsider.** Run `context` again, look at what changed (the error includes the card's last history entry), decide whether your change still makes sense, then issue a new command. Never retry blindly with the `rev` from the error.
 4. **Other 409 codes are decisions, not staleness.** Re-reading doesn't fix them.
