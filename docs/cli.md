@@ -122,6 +122,8 @@ Or feed an array to `workboard --actor main --board demo call`:
 
 Each request produces exactly one compact JSON line, flushed immediately, matching the equivalent command with `--json`. Requests run in order and independently, **not as a transaction**: a failure does not roll back earlier writes or stop later requests. The process exits 0 if every request succeeded, otherwise 1. Empty input fails with `invalid`.
 
+One `call` process keeps the parsed board between requests and parses it again only after a commit, so batch related requests into one `call` rather than starting a process per command. On a 790-card board, a `context` request inside `call` took about 7 ms, against about 190 ms as a separate command.
+
 `op` is a verb (`note`, `start`) or a dotted action (`subtask.claim`, `comment.edit`, `attachment.get`). `card` supplies the card reference for card verbs; it is optional for `inbox`. Special positional fields are:
 
 | Operation | Fields |
@@ -180,7 +182,7 @@ Print the board the current directory (or `--board`) resolves to: `<name> — <b
 | `show REF [--full]` | One card. JSON: `{"ok", "rev", "card"}`. Without `--full`, `notes` longer than 300 characters and `writeup` longer than 400 are cut with a `… (+N ch, --full)` marker, `history` keeps the last 10 entries, `comments` keeps the newest 5, and `log` keeps the newest 5 entries with each body cut to 300 characters with the same marker. `--full` shows everything in full. |
 | `list [--column C] [--tag X] [--priority P]` | A human listing of cards. |
 | `query [--column C] [--tag X] [--priority P] [--owner NAME \| --mine] [--since-days N] [--limit N] [--fields LIST]` | A JSON projection: `{"ok", "rev", "cards": [...]}`. `--mine` filters by the effective actor. A card's holder is its owner or, for Blocked cards, the actor who blocked it. `--fields` is a comma list of `num,id,title,column,priority,tags,outcome,owner,deps,changedRev,createdAt,updatedAt,doneAt,origin` (default `num,title,column`). Unknown names fail with `invalid`. One `query --fields num,title,owner,tags,changedRev` replaces a `context` per card when you only need those fields, and its `rev` guards each card it lists. |
-| `search TERMS...` | Cards matching every term (case-insensitive substring) in any text, including comments and every `log` entry's summary and body. Each call reads and scans the whole board; to match many keywords against titles or tags, filter one `query --json` result locally instead. |
+| `search TERMS...` | Cards matching every term (case-insensitive substring) in any text, including comments and every `log` entry's summary and body. Each search scans the whole board; to match many keywords against titles or tags, filter one `query --json` result locally instead. |
 
 `P` is `critical`, `mid` or `low`.
 

@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1315,6 +1316,27 @@ class Contracts(unittest.TestCase):
         shown = last_json(wb(["show", "1", "--json"], root))["card"]["comments"]
         self.assertEqual(shown, comments[-5:])
         self.assertEqual(last_json(wb(["show", "1", "--full", "--json"], root))["card"]["comments"], comments)
+
+    def test_c32_reused_parses_never_leak_mutations_or_hide_rewrites(self):
+        root = self.init("resident", "resident-board")
+        path = core.board_file("resident")
+        self.assertEqual(wb(["add", "--title", "Original"], root).returncode, 0)
+        settled = path.stat().st_mtime_ns - 10 * 10**9
+        os.utime(path, ns=(settled, settled))
+        core.load(path)["cards"][0]["title"] = "Mutated by one caller"
+        self.assertEqual(core.load(path)["cards"][0]["title"], "Original")
+        self.assertEqual(wb(["update", "1", "--title", "Committed"], root).returncode, 0)
+        self.assertEqual(core.load(path)["cards"][0]["title"], "Committed")
+        # An in-place rewrite that keeps the file's identity, size and mtime is still seen while the
+        # file is fresh (a future mtime stays fresh however slow this machine is).
+        fresh = time.time_ns() + 60 * 10**9
+        os.utime(path, ns=(fresh, fresh))
+        self.assertEqual(core.load(path)["cards"][0]["title"], "Committed")
+        rewritten = path.read_bytes().replace(b'"Committed"', b'"Rewritten"')
+        with open(path, "r+b") as stream:
+            stream.write(rewritten)
+        os.utime(path, ns=(fresh, fresh))
+        self.assertEqual(core.load(path)["cards"][0]["title"], "Rewritten")
 
 
 class AddFrom(unittest.TestCase):

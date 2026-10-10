@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import hashlib
+import marshal
 import mimetypes
 import json
 import os
@@ -592,14 +593,27 @@ def _validate_aliases(raw: dict) -> None:
             raise WorkflowError(f"conflicting legacy aliases: {canonical}/{alias}", 409)
 
 
+def _validate_before_lock(board_path: Path) -> None:
+    """Reject unsafe schemas/aliases before board_lock would create the lock file."""
+    if not (board_path.parent / LOCK_NAME).exists():
+        load(board_path)
+
+
 @contextlib.contextmanager
 def board_transaction(board_path, expected_rev=None, ref=None):
     board_path = require_write_scope(board_path)
-    load(board_path)  # Reject unsafe schemas/aliases before creating the lock file.
+    _validate_before_lock(board_path)
     with board_lock(board_path):
         doc = load(board_path)
         check_revision(doc, expected_rev, ref)
-        yield doc
+        # save() compares against what this lock holder loaded instead of reading the board again.
+        baselines = _lock_local.__dict__.setdefault("baselines", {})
+        lock_key = os.path.normcase(str(board_path.parent / LOCK_NAME))
+        baselines[lock_key] = _baseline(doc)
+        try:
+            yield doc
+        finally:
+            baselines.pop(lock_key, None)
 
 
 _SCOPE_GLOB = re.compile(r"[*?\[\]{}]")
@@ -909,26 +923,45 @@ def normalize_doc(raw: dict) -> dict:
     return doc
 
 
+# Every commit swaps in a new file, so (identity, size, mtime) names one committed version. A file
+# written within this window could still change in place within one timestamp tick (NTFS 15.6 ms,
+# Linux jiffies) without a new mtime, so it is parsed again until the window passes.
+_SETTLED_NS = 100_000_000
+_parsed: dict[str, tuple[tuple, bytes]] = {}
+
+
 def load(board_path: Path) -> dict:
+    """Read, validate and normalize board.json. While the file is unchanged, the process reuses its
+    last parse; every caller gets its own copy to mutate."""
+    key = os.path.normcase(os.path.abspath(board_path))
+    try:
+        st = os.stat(board_path)
+        signature = (st.st_ino, st.st_size, st.st_mtime_ns)
+    except OSError:
+        signature = None  # A replace in progress on Windows; the shared read below retries.
+    cached = _parsed.get(key)
+    if signature is not None and cached is not None and cached[0] == signature:
+        return marshal.loads(cached[1])
     data = read_text_shared(board_path)
     try:
         raw = json.loads(data)
     except json.JSONDecodeError as e:
         raise WorkflowError(f"{board_path} is not valid JSON ({e}); restore via workboard recover") from e
-    return normalize_doc(raw)
+    doc = normalize_doc(raw)
+    if signature is not None and time.time_ns() - signature[2] > _SETTLED_NS:
+        _parsed[key] = (signature, marshal.dumps(doc))  # Stat before read: a newer file only forces a reparse.
+    else:
+        _parsed.pop(key, None)
+    return doc
 
 
-def write_backup(board_path: Path, data: bytes, keep: int = BACKUP_KEEP) -> None:
+def write_backup(board_path: Path, data: bytes, rev: int, keep: int = BACKUP_KEEP) -> None:
     require_write_scope(board_path)
     require_write_scope(Path(board_path).parent / BACKUP_DIR)
     try:
         board_path = Path(board_path)
         bdir = board_path.parent / BACKUP_DIR
         bdir.mkdir(exist_ok=True)
-        try:
-            rev = int(json.loads(data).get("rev", 0))
-        except Exception:
-            rev = 0
         dest = require_write_scope(bdir / f"board-{rev}.json")
         fd, tmp = tempfile.mkstemp(dir=bdir, prefix=".backup-", suffix=".tmp")
         try:
@@ -978,27 +1011,34 @@ def _card_content(card: dict) -> str:
     return json.dumps({key: value for key, value in card.items() if key != "changedRev"}, sort_keys=True)
 
 
+def _baseline(doc: dict) -> tuple[int, dict]:
+    """The on-disk schema and each card's content and changedRev, as save() compares them."""
+    return doc["schemaVersion"], {card["id"]: (_card_content(card), card["changedRev"]) for card in doc["cards"]}
+
+
 def save(board_path: Path, doc: dict, by: str | None = None) -> int:
     """Commit one revision under the cross-process lock. Returns the new rev."""
     board_path = require_write_scope(board_path)
     normalized = normalize_doc(doc)  # Validate and compare canonical cards without discarding extensions.
-    held = getattr(_lock_local, "depths", {}).get(os.path.normcase(str(board_path.parent / LOCK_NAME)))
-    if board_path.exists() and not held:
-        load(board_path)  # Reject unsafe on-disk data before creating the lock file.
+    lock_key = os.path.normcase(str(board_path.parent / LOCK_NAME))
+    if board_path.exists() and not getattr(_lock_local, "depths", {}).get(lock_key):
+        _validate_before_lock(board_path)
     with board_lock(board_path):
-        current = load(board_path) if board_path.exists() else None
-        on_disk = current["cards"] if current else []
+        # A transaction's baseline is the board as it loaded it under this lock; a second save reloads.
+        baseline = getattr(_lock_local, "baselines", {}).pop(lock_key, None)
+        if baseline is None:
+            baseline = _baseline(load(board_path)) if board_path.exists() else (None, {})
+        on_disk_version, previous = baseline
         # Other boards stay schema 3 so 0.1.x can still read and write them; never downgrade a v4 board.
         doc["schemaVersion"] = (SCHEMA_VERSION if _uses_schema_4(normalized)
-                                or (current and current["schemaVersion"] == SCHEMA_VERSION) else 3)
+                                or on_disk_version == SCHEMA_VERSION else 3)
         doc["rev"] = int(doc.get("rev") or 0) + 1
-        previous = {card["id"]: card for card in on_disk}
         for card, canonical in zip(doc["cards"], normalized["cards"]):
             old = previous.get(canonical["id"])
-            if old is None or _card_content(old) != _card_content(canonical):
+            if old is None or old[0] != _card_content(canonical):
                 card["changedRev"] = doc["rev"]
             else:
-                card["changedRev"] = old["changedRev"]  # Never accept a supplied or restored stamp.
+                card["changedRev"] = old[1]  # Never accept a supplied or restored stamp.
         doc["savedAt"] = now_iso()
         doc["savedBy"] = actor() if by is None else validate_actor(by)
         for key in ("changeEpoch", "changeJournal"):  # Dropped incremental-context journal (dev builds).
@@ -1018,7 +1058,7 @@ def save(board_path: Path, doc: dict, by: str | None = None) -> int:
             except OSError:
                 pass
             raise
-        write_backup(board_path, data)
+        write_backup(board_path, data, doc["rev"])
     return doc["rev"]
 
 

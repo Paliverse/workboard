@@ -102,13 +102,17 @@ Each write holds an exclusive lock on the board's `.board.lock` (`fcntl.flock` o
 
 `core.save()` runs under the lock:
 
-1. Normalize the document and reload the on-disk copy.
+1. Normalize the document. Compare it with the board as it was on disk under this lock: what `board_transaction` loaded, or a fresh load for a save outside one.
 2. Increment `rev` and set `savedAt` and `savedBy`.
 3. Stamp `changedRev = rev` on every new card and every card whose content changed (canonical JSON, ignoring `changedRev`). Unchanged cards keep their stamp. A client can never set this field.
 4. Write the JSON to a temporary file in the same directory, `fsync` it and atomically replace `board.json`. On Windows the replace uses `ReplaceFileW` and retries sharing violations with backoff, and reads open files with `FILE_SHARE_DELETE` so a reader never blocks a writer.
 5. Write the same bytes to `.backups/board-<rev>.json` (also fsynced and atomically replaced) and prune all but the newest 10.
 
 `workboard recover` lists and restores those snapshots. A restore keeps `rev` and `nextNum` increasing, so card numbers are never reused.
+
+### Reads
+
+`core.load()` reads, validates and normalizes `board.json`. A process keeps its last parse of each board and reuses it while the file's identity, size and modification time are unchanged. Every save swaps in a new file, so a commit by any process forces a fresh parse. A file modified in the last 100 ms is always parsed again, because an in-place edit within one timestamp tick could keep all three. Each caller gets its own copy, so long-lived processes (`call`, the server) answer reads without parsing the board again.
 
 ### Schema safety
 

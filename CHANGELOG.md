@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A WorkBoard process reuses its parse of a board while `board.json` is unchanged, so `call` and the server answer reads without parsing the whole board again. Any commit, by any process, forces a fresh parse, and each reader gets its own copy. On a real 790-card, 3.7 MB board, 20 `context` requests in one `call` took 343 ms instead of 1319 ms: about 7 ms per request after the first instead of 64 ms. `call` also builds its argument parser once instead of per request.
+- Writes parse the board once instead of three times. `save` compares cards against the board the transaction loaded under the lock instead of reading it again, and the backup no longer re-parses the bytes it writes to find their revision. On the same board, one `note` took 316 ms instead of 436 ms, and 10 notes in one `call` 1.9 s instead of 3.2 s.
+
 ## [0.3.0] - 2026-10-10
 
 ### Added

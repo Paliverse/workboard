@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import contextlib
+import functools
 import io
 import json
 import sys
@@ -1124,6 +1125,7 @@ def _revision(value):
 CARD_REV_HELP = "rev from your last read or mutation; card verbs fail only if this card changed since"
 
 
+@functools.cache  # `call` runs main() per request; argparse parsers are reusable.
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="workboard", description=__doc__, allow_abbrev=False,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
