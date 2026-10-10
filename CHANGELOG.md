@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-10
+
 ### Changed
 
 - A WorkBoard process reuses its parse of a board while `board.json` is unchanged, so `call` and the server answer reads without parsing the whole board again. Any commit, by any process, forces a fresh parse, and each reader gets its own copy. On a real 790-card, 3.7 MB board, 20 `context` requests in one `call` took 343 ms instead of 1319 ms: about 7 ms per request after the first instead of 64 ms. `call` also builds its argument parser once instead of per request.
@@ -124,7 +126,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Paliverse/workboard/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Paliverse/workboard/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Paliverse/workboard/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Paliverse/workboard/compare/v0.1.3...v0.2.0
