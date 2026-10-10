@@ -50,6 +50,7 @@ The tests use only the standard library and need no install: `tests/support.py` 
 | Area | Module |
 |---|---|
 | CLI, schema, locking, backups, recovery | `tests.test_cli` |
+| JSON stdin requests (`call`), blocking change reads (`wait`) | `tests.test_call` |
 | Delegated subtasks, reviews, blockers, write scopes, the inbox, focused context, handoffs | `tests.test_subtasks`, `tests.test_context` |
 | Their HTTP contracts | `tests.test_delegation_http` |
 | Portable board ZIPs (`export`, `import`) | `tests.test_bundles` |

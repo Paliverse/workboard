@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import contextlib
+import io
 import json
 import sys
 import time
@@ -328,6 +329,210 @@ def cmd_ack(args):
         if before != json.dumps(card, sort_keys=True):
             wb.save(path, doc)
     _emit(args, card, doc, f"inbox notes acknowledged ({len(items)})", items=items)
+
+
+def cmd_wait(args):
+    if not 1 <= args.timeout <= 3600:
+        raise wb.WorkflowError("--timeout must be between 1 and 3600 seconds")
+    started = time.monotonic()
+    path = wb.find_board(args.board)
+    stamp = path.stat()
+    doc = wb.load(path)
+    card = _resolve(doc, args.ref)
+    after = doc["rev"] if args.after is None else args.after
+
+    def subtask():
+        if args.subtask is None:
+            return None
+        item = next((st for st, _ in wb.iter_subtasks(card["subtasks"])
+                     if st["id"] == args.subtask), None)
+        if item is None:
+            raise wb.WorkflowError(f"subtask '{args.subtask}' not found", 404)
+        return item
+
+    item = subtask()
+    snapshot = json.dumps(item, sort_keys=True, ensure_ascii=False)
+    changed = card["changedRev"] > after
+    deadline = started + args.timeout
+    while not changed:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.25, remaining))
+        current = path.stat()
+        if (current.st_mtime_ns, current.st_size, current.st_ino) == (
+                stamp.st_mtime_ns, stamp.st_size, stamp.st_ino):
+            continue
+        stamp = current
+        doc = wb.load(path)
+        card = _resolve(doc, card["id"])
+        item = subtask()
+        changed = (json.dumps(item, sort_keys=True, ensure_ascii=False) != snapshot
+                   if args.subtask is not None else card["changedRev"] > after)
+    last = (card.get("history") or [None])[-1]
+    waited = round(time.monotonic() - started, 1)
+    result = {"ok": True, "changed": changed, "num": card["num"], "id": card["id"],
+              "rev": doc["rev"], "changedRev": card["changedRev"], "last": last,
+              "waited": waited}
+    if item is not None:
+        result["subtask"] = {"id": item["id"], "done": item["done"],
+                             "delegation": item.get("delegation")}
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False))
+    elif changed:
+        event = f" (last: {last['ev']} by {last.get('by', '?')})" if last else ""
+        print(f"#{card['num']} changed at rev {card['changedRev']}{event}")
+    else:
+        print(f"#{card['num']} unchanged after {waited:g}s")
+
+
+CALL_OPS = frozenset({
+    "digest", "next", "context", "show", "query", "search", "inbox", "handoff", "wait",
+    "boards", "which", "add", "start", "done", "fly", "block", "resume", "update", "note",
+    "bug", "improve", "reopen", "workpad", "takeover", "cancel", "rework", "depends", "ack",
+    "attachment.list", "attachment.add", "attachment.get", "attachment.remove",
+})
+CALL_CARD_OPS = CALL_OPS - {"digest", "next", "query", "search", "boards", "which", "add"}
+
+
+def _call_argv(request, board):
+    if not isinstance(request, dict):
+        raise wb.WorkflowError("each call request must be a JSON object")
+    values = {}
+    for key, value in request.items():
+        key = "".join("-" + ch.lower() if ch.isupper() else ch for ch in key)
+        if key == "stdin" or key.endswith("-stdin"):
+            raise wb.WorkflowError(f"{key} is not available in call; text goes in the request")
+        if key == "help":
+            raise wb.WorkflowError("help is not available in call")
+        if key in values:
+            raise wb.WorkflowError(f"duplicate request key: {key}")
+        values[key] = value
+    op = values.pop("op", None)
+    if not isinstance(op, str):
+        raise wb.WorkflowError("each call request needs a string op")
+    verb, _, operation = op.partition(".")
+    if op not in CALL_OPS and not (operation and verb in {"subtask", "comment"}):
+        raise wb.WorkflowError(f"op {op} is not available in call")
+
+    def positional(*keys):
+        present = [key for key in keys if values.get(key) is not None]
+        if len(present) > 1:
+            raise wb.WorkflowError(f"choose only one of {', '.join(keys)}")
+        value = values.pop(present[0]) if present else None
+        for key in keys:
+            values.pop(key, None)
+        items = value if isinstance(value, list) else [] if value is None else [value]
+        if any(type(item) not in (str, int, float) for item in items):
+            raise wb.WorkflowError(f"{keys[0]} must contain strings or numbers")
+        return [str(item) for item in items]
+
+    fixed = positional("card") if op in CALL_CARD_OPS or verb in {"subtask", "comment"} else []
+    trailing = []
+    if verb in {"subtask", "comment", "attachment"}:
+        fixed.append(operation)
+    if verb == "subtask":
+        trailing = positional("text", "texts") if operation == "add" else positional("subtask", "subtasks")
+    elif verb == "comment":
+        if operation != "add":
+            trailing += positional("id")
+        if operation != "delete":
+            trailing += positional("text")
+    elif op in {"attachment.get", "attachment.remove"}:
+        fixed += positional("id")
+    elif op == "fly":
+        fixed += positional("column")
+    elif op == "improve":
+        trailing = positional("text")
+    elif op == "search":
+        trailing = positional("terms")
+    elif op == "ack":
+        fixed += positional("notes")
+
+    if values.get("board") is None and board is not None:
+        values["board"] = board
+    options = ["--json"]
+    for key, value in values.items():
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            if item is None or item is False:
+                if key == "review-required" and item is False:
+                    options.append("--no-review-required")
+            elif item is True:
+                options.append(f"--{key}")
+            elif type(item) in (str, int, float):
+                options.append(f"--{key}={item}")
+            else:
+                raise wb.WorkflowError(f"{key} must contain strings, numbers, flags or null")
+    # Attachment has nested subparsers: its operation's options follow REF and OP.
+    if verb == "attachment":
+        return [verb, *fixed[:2], *options, *fixed[2:]]
+    return [verb, *options, *fixed, *(["--", *trailing] if trailing else [])]
+
+
+def _call_invalid(message):
+    return {"ok": False, "status": 422, "code": "invalid", "error": message, "rev": None}
+
+
+def _call_request(request, board):
+    try:
+        argv = _call_argv(request, board)
+    except wb.WorkflowError as exc:
+        return _call_invalid(str(exc))
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        try:
+            main(argv)
+        except SystemExit as exc:
+            if exc.code == 2:
+                return _call_invalid(stderr.getvalue().partition(": error: ")[2].strip())
+    result = json.loads(stdout.getvalue())
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{argv[0]} --json must print one JSON object")
+    return result
+
+
+def cmd_call(args):
+    decoder = json.JSONDecoder()
+    pending, received, failed = "", False, False
+
+    def emit(result):
+        nonlocal failed
+        failed |= not result["ok"]
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")), flush=True)
+
+    stream = getattr(sys.stdin, "buffer", sys.stdin)
+    first = True
+    for line in stream:
+        try:
+            if isinstance(line, bytes):
+                line = line.decode("utf-8-sig" if first else "utf-8")
+            elif first:
+                line = line.removeprefix("\ufeff")
+        except UnicodeDecodeError as exc:
+            emit(_call_invalid(f"invalid UTF-8 input: {exc}"))
+            raise SystemExit(1)
+        first = False
+        pending += line
+        while pending.strip():
+            pending = pending.lstrip()
+            try:
+                value, end = decoder.raw_decode(pending)
+            except json.JSONDecodeError:
+                break  # A pretty-printed request may continue on the next line.
+            received = True
+            pending = pending[end:]
+            for request in value if isinstance(value, list) else [value]:
+                emit(_call_request(request, args.board))
+    if pending.strip():
+        try:
+            decoder.raw_decode(pending.lstrip())
+        except json.JSONDecodeError as exc:
+            emit(_call_invalid(f"invalid JSON input: {exc}"))
+    elif not received:
+        emit(_call_invalid("call requires JSON requests on stdin"))
+    if failed:
+        raise SystemExit(1)
 
 
 def _bundle_counts(result) -> str:
@@ -1077,6 +1282,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("ref")
     p.add_argument("ids", nargs="+", metavar="NOTE_ID", help="note ID (repeatable)")
 
+    p = add("wait", cmd_wait, "wait read-only until a card or subtask changes")
+    p.add_argument("ref")
+    p.add_argument("--subtask", help="watch only this subtask's subtree")
+    p.add_argument("--after", type=_revision, help="baseline revision (default: current board rev)")
+    p.add_argument("--timeout", type=float, default=300, help="seconds to wait, from 1 to 3600 (default: 300)")
+
+    add("call", cmd_call, "read JSON requests on stdin; print one JSON result per request")
+
     p = add("export", cmd_export, "export the board, its attachments and archives as a portable ZIP")
     p.add_argument("--out", required=True, help="new ZIP file; an existing file is never replaced")
     p.add_argument("--no-archives", action="store_true", help="omit swept cards and their files")
@@ -1225,7 +1438,9 @@ def main(argv=None):
             rev = getattr(exc, "rev", None)
             if rev is None:
                 try:
-                    rev = wb.load(wb.find_board(args.board))["rev"]
+                    path = wb.find_board(args.board)
+                    if path.is_file():
+                        rev = wb.load(path)["rev"]
                 except (OSError, ValueError, KeyError, TypeError):
                     pass
             error = {"ok": False, "status": status, "code": code, "error": message, "rev": rev}

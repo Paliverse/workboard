@@ -83,7 +83,7 @@ python -m venv build/venv
 build/venv/bin/python -m pip install -r packaging/requirements-build.txt   # Windows: build\venv\Scripts\python.exe
 build/venv/bin/python packaging/build.py binary          # dist/workboard-<os>-<arch>.{zip,tar.gz}
 build/venv/bin/python packaging/build.py smoke dist/workboard-<os>-<arch>.zip
-WORKBOARD_TEST_COMMAND="$PWD/build/pyinstaller/dist/workboard/workboard" python -m unittest tests.test_cli tests.test_subtasks tests.test_context tests.test_bundles
+WORKBOARD_TEST_COMMAND="$PWD/build/pyinstaller/dist/workboard/workboard" python -m unittest tests.test_cli tests.test_call tests.test_subtasks tests.test_context tests.test_bundles
 ```
 
 `packaging/build.py` has five commands:

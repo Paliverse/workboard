@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `workboard call` accepts JSON requests on stdin (a stream of objects or an array), runs agent board commands in-process without a server, and prints one compact `--json` result per request. Requests run independently and continue after errors. Text stays out of shell arguments, so multi-line notes, comments, write-ups, results and reasons survive Windows' npm `.cmd` shim.
+- `workboard wait REF [--subtask ID] [--after REV] [--timeout SECONDS]` blocks until a card or subtask subtree changes, or a timeout elapses, without a server or lock. Main can await results and workers can await review or requested changes; it also works as a `wait` request in `call`.
+
+### Changed
+
+- The skill recommends `call` for any request that carries text, and the docs tell Windows scripts to spawn the real `workboard.exe` (`executable` in `workboard version --json`) instead of npm's `workboard.cmd` shim, which cuts arguments at line breaks and which Node and Bun refuse to start when an argument holds `"`, `&` or `|`.
+
 ## [0.2.1] - 2026-10-10
 
 ### Changed

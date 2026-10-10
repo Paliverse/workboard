@@ -45,6 +45,18 @@ Every write records an actor label. The effective label is `--actor NAME`, else 
 - Pass `--actor` on every command, including reads.
 - Labels are attribution, not authentication. Any local process can write any label. A parent card still has one accountable holder; a delegated subtask may have a different owner.
 
+## JSON requests for agents
+
+Prefer `workboard --actor YOUR_LABEL call` for requests carrying text: notes, comments, write-ups, results and reasons. Send JSON on stdin, not as an argument. This avoids shell quoting and Windows npm shim truncation, works without a server, and runs multiple requests in one CLI process.
+
+Use a verb or dotted action as `op`, `card` for a card reference, and the command's long option names in camelCase or kebab-case (`expectedRev` or `expected-rev`). Text positionals use `text`; subtask actions use `subtask` or `subtasks`. Per-request `actor` and `board` override the invocation defaults. For example, feed this object to `workboard --actor codex-auth call`:
+
+```json
+{"op":"note","card":12,"summary":"Migration written; 42/42 tests pass","body":"Evidence:\n- src/migration.py\n- Tests: 42/42"}
+```
+
+Input may be a stream of objects (one per line or pretty-printed) or an array. Each request prints one compact `--json` result line; commands run independently and later requests still run after an error. Exit 0 means all succeeded, 1 means at least one failed. No stdin-text flags inside a request: put text directly in `body`, `writeup`, `reason`, `result` or `text`. See [JSON requests](cli.md#json-requests) for all positional keys, value types and available operations.
+
 ## The loop
 
 ```sh
@@ -68,16 +80,19 @@ workboard --actor codex-auth done 12 --writeup "What changed and which checks ra
 
 A card's notes timeline (`log`) is the running record of the work. Each `note` appends one entry: a one-line summary, which the board shows collapsed, and an optional markdown body, which expands under it.
 
-```sh
-workboard --actor codex-auth note 12 --summary "Fixed flush race; tests pass" --stdin --expected-rev 44 --json <<'EOF'
-- Root cause: the writer released the lock before `fsync`.
-- Commit `abc1234` (`src/app/flush.py`)
-- Tests: 42/42
-EOF
+Feed this pretty-printed request to `workboard --actor codex-auth call`:
+
+```json
+{
+  "op": "note",
+  "card": 12,
+  "summary": "Fixed flush race; tests pass",
+  "body": "- Root cause: the writer released the lock before fsync.\n- Commit abc1234 (src/app/flush.py)\n- Tests: 42/42"
+}
 ```
 
 - **Summary:** one line of at most 160 characters saying what changed or was decided. Never put line breaks in it; they fail with `invalid`.
-- **Body:** markdown, from `--body MARKDOWN` or piped into `--stdin` (the heredoc above is POSIX shell; in other shells pipe a file or use `--body`). Use bullets for evidence, backticks for commit SHAs and file paths, and include test counts and links. At most 32,000 characters.
+- **Body:** markdown, in the request's `body` field (or `--body MARKDOWN` / text piped into `--stdin` outside `call`). Use bullets for evidence, backticks for commit SHAs and file paths, and include test counts and links. At most 32,000 characters.
 - **One entry per meaningful step:** a decision, a finding, a commit, a test run. Don't save a whole session for one entry, and don't log every command.
 - **Pinned notes are not a log.** `update --notes` replaces the card's pinned notes. Keep them for durable context such as acceptance criteria and verification steps (`workpad` adds those sections).
 
@@ -130,20 +145,39 @@ Without `--json` it prints only the copy-ready prompt, which already contains th
 
 A worker that was handed a subtask skips `digest` and works only on that subtask:
 
-```text
-workboard --actor worker-a context 12 --subtask s-1 --json
-workboard --actor worker-a subtask 12 claim s-1
-workboard --actor worker-a note 12 --subtask s-1 --summary "Finding: the migration needs a compatibility path" --body "Evidence: src/migration.py:40"
-workboard --actor worker-a subtask 12 block s-1 --reason "Needs a schema decision" --until "Main decides the schema"
-workboard --actor worker-a subtask 12 resume s-1
-workboard --actor worker-a subtask 12 done s-1 --result "Added the compatibility path; tests 14/14"
+Use `workboard --actor worker-a call`, with these JSON requests on stdin. Read and claim before editing:
+
+```json
+{"op":"context","card":12,"subtask":"s-1"}
+{"op":"subtask.claim","card":12,"subtask":"s-1"}
 ```
+
+After inspecting the assigned files, publish the real finding:
+
+```json
+{"op":"note","card":12,"subtask":"s-1","summary":"Finding: the migration needs a compatibility path","body":"Evidence: src/migration.py:40"}
+```
+
+After doing the work and checking it, refresh and complete:
+
+```json
+{"op":"context","card":12,"subtask":"s-1"}
+{"op":"subtask.done","card":12,"subtask":"s-1","result":"Added the compatibility path.\nTests: 14/14"}
+```
+
+Then await Main's review with the `rev` returned by completion:
+
+```text
+workboard --actor worker-a wait 12 --subtask s-1 --after REV --timeout 300 --json
+```
+
+On a change, re-read `context` or `inbox`. If Main requested changes, the subtask is yours again: make the requested correction, refresh, then send `subtask.done` with the new result. If accepted, the assignment is settled. A timeout means unchanged, not accepted.
 
 - **Focused context** (`context REF --subtask ID`, or `--mine` for everything you hold) shows your subtree, its ancestors and prerequisites, and the card's shared notes, attachments and newest 10 comments, without unrelated subtasks.
 - **Claim before editing.** Claiming is atomic: when two workers race for one subtask, exactly one wins and the other gets `owned`. Claiming your own claim again changes nothing.
 - **No revision guard.** Worker commands check ownership and state under the board lock. A card-scoped `--expected-rev` would go stale whenever a sibling worker writes to the same card.
-- **Publish findings as soon as they can help a peer**, with `note --subtask`. Peers see it when they read the card; if your runtime can message them, point them to the note ID. Only the worker holding the subtask, and Main on its own card, can post with `--subtask`. Don't poll the board.
-- **Stuck:** `block` keeps your claim and puts a blocker in Main's inbox; `resume` continues. **Giving up:** `release ID --reason TEXT` makes the subtask available again. `takeover ID --reason TEXT` moves claimed or blocked work to another worker when asked.
+- **Publish findings as soon as they can help a peer**, with `note --subtask` (or `op: "note"` with `subtask`). Peers see it when they read the card; if your runtime can message them, point them to the note ID. Only the worker holding the subtask, and Main on its own card, can post with `--subtask`. Use `wait`, not a loop of CLI reads.
+- **Stuck:** `subtask.block` with `reason` and `until` keeps your claim and puts a blocker in Main's inbox; `subtask.resume` continues. **Giving up:** `release ID --reason TEXT` makes the subtask available again. `takeover ID --reason TEXT` moves claimed or blocked work to another worker when asked.
 - **Finish** with `done ID --result TEXT`; the result is also appended to the notes timeline. `undone` reopens it unless Main accepted it.
 - Stay inside your write scope, and never change the card itself: its lifecycle, fields and other workers' subtasks belong to Main.
 
@@ -172,9 +206,17 @@ workboard --actor main done 12 --writeup "What changed and which checks ran" --e
 
 `inbox [REF]` is read-only. It shows Main results waiting for review, blockers and new findings from others on cards Main owns, and shows workers their blockers and requested changes. Main's own notes, including its `note --subtask` entries, are never findings. `accept` or `request-changes` settles a review; `request-changes` sends the subtask back to its worker. `ack` acknowledges any number of findings in one write, and repeating it changes nothing. See [Inbox](cli.md#inbox) for the row shapes.
 
-`accept` accepts the worker's deliverable, not the state of the code. A verification that found a defect is a good verification: accept it, then put the fix into new work, such as another delegated subtask. Use `request-changes` when the result itself falls short of the assignment, for example missing evidence or an unanswered question. When a separate reviewer (its own subtask, or an agent outside the board) finds problems in an author's work, send them back with `request-changes` on the author's subtask and the review in `--reason`; this works even after you accepted it, and the subtask returns to that author as claimed work. The board doesn't notify a worker that already finished, so tell it through your runtime too.
+`accept` accepts the worker's deliverable, not the state of the code. A verification that found a defect is a good verification: accept it, then put the fix into new work, such as another delegated subtask. Use `request-changes` when the result itself falls short of the assignment, for example missing evidence or an unanswered question. When a separate reviewer (its own subtask, or an agent outside the board) finds problems in an author's work, send them back with `request-changes` on the author's subtask and the review in `reason`; this works even after you accepted it, and the subtask returns to that author as claimed work. Workers waiting on the subtask wake on the review change; use your runtime too if a worker is no longer waiting.
 
 Claims never expire, and a completed subtask never completes the card. `done` on the card fails with `state` while a delegated subtask is unfinished or a required review is not accepted. Main then verifies the original acceptance criteria itself before completing the card.
+
+Main can await worker results without repeated CLI reads:
+
+```text
+workboard --actor main wait 12 --after REV --timeout 300 --json
+```
+
+Use the revision from your last read or mutation. After a change, read `inbox` and the relevant `context`; `wait` reports a change, not a verified deliverable. Add `--subtask ID` for one assignment's subtree. It ignores unrelated writes while waiting, but returns immediately if the card had already changed since `REV` at startup (conservative). Omit it when you also need card notes and comments. See [`wait`](cli.md#wait-ref---subtask-id---after-rev---timeout-seconds) for timeout and output details.
 
 ## Who may change what
 
@@ -188,11 +230,13 @@ Claims never expire, and a completed subtask never completes the card. `done` on
 
 ## Long text
 
-Use the stdin variants for multi-line text so the shell doesn't mangle quotes: `comment REF add --stdin`, `comment REF edit ID --stdin`, `note REF --summary TEXT --stdin`, `update REF --notes-stdin`, `block REF --reason-stdin --until …`, `done REF --writeup-stdin` and `add --origin-stdin`. Blank input fails with `invalid`. On Windows this is required, not just tidier: through npm's `workboard.cmd` shim, `cmd.exe` ends the command at the first line break inside an argument, so the text after it and every later argument (including `--json`) are dropped without an error.
+Use JSON over stdin through `call` for multi-line text and shell-sensitive characters; the request carries the full `body`, `text`, `writeup`, `reason` or `result`. For example, feed this to `workboard --actor codex-auth call` after refreshing the card and replacing `43` with the reviewed revision:
 
-```sh
-cat writeup.md | workboard --actor codex-auth done 12 --writeup-stdin --expected-rev 43 --json
+```json
+{"op":"done","card":12,"writeup":"Delivered the migration.\nChecks: 42/42 tests; compatibility path inspected.","expectedRev":43}
 ```
+
+Ordinary CLI stdin variants remain available: `comment REF add --stdin`, `comment REF edit ID --stdin`, `note REF --summary TEXT --stdin`, `update REF --notes-stdin`, `block REF --reason-stdin --until …`, `done REF --writeup-stdin` and `add --origin-stdin`. Blank input fails with `invalid`. On Windows stdin is required for multi-line text: npm's `workboard.cmd` passes through `cmd.exe`, which ends an argument at the first line break and silently drops its remaining text and every later argument, including `--json`. A `call` request's text never becomes a shell argument.
 
 ## Machine-readable output
 
@@ -200,4 +244,4 @@ With `--json`, every command prints one JSON line. Mutations include `ok`, `acti
 
 - **Read many cards at once.** `query --json --fields num,title,column,owner,tags,changedRev` returns owners, tags and change revisions for every card in one read, so a script doesn't need one `context` per card. Its `rev` guards each of those cards (see [Concurrency etiquette](#concurrency-etiquette)).
 - **Filter locally.** To match many keywords against titles or tags, filter one `query --json` result in your script instead of running one `search` per keyword; each `search` reads and scans the whole board again.
-- **Windows scripts.** npm installs `workboard` on Windows as a `workboard.cmd` shim. A program that starts commands without a shell, such as Python's `subprocess.run(["workboard", ...])`, doesn't find `.cmd` files: resolve the path first with `shutil.which("workboard")`, or use the `workboard.exe` that the install script puts on `PATH`. Arguments to a `.cmd` file pass through `cmd.exe`, which ends the command at the first line break inside an argument (the rest of that text and every later argument are silently lost), expands `%NAME%`, can drop `^` and lets a `"` followed by `&` start another command. Pass text through standard input (`--stdin`, `--writeup-stdin`, …), always for multi-line text, and keep line breaks, `"`, `%` and `^` out of the arguments you still pass, such as a note summary.
+- **Windows scripts.** npm's `workboard` is a `workboard.cmd` shim, and every argument to a `.cmd` file passes through `cmd.exe`: a line break silently ends the command (the rest of that text and every later argument, including `--json`, are lost), `%NAME%` expands, `^` can disappear and `"` plus `&` can start another command. Node and Bun also refuse to start a `.cmd` file with arguments that hold `"`, `&` or `|`. Avoid the shim in scripts: run `workboard version --json` once and spawn the `executable` it reports (the real `workboard.exe`) with list arguments, or use the install script's `workboard.exe`. Send text through `call` (JSON on stdin) or the `--stdin`/`--*-stdin` options, which never pass through `cmd.exe`. Programs that start commands without a shell, such as Python's `subprocess`, don't find `.cmd` files at all; `shutil.which("workboard")` resolves the shim if you must use it.

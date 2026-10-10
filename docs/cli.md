@@ -52,7 +52,7 @@ Defaults come from environment variables and the optional `~/.workboard/config.j
 
 - Mutations print one concise line. With `--json` they print one line containing `ok`, `action`, `num`, `id`, `column`, `rev` and `actor`, plus `item` for a single created or changed subtask, comment, attachment or note entry, and `items` for subtask operations and `ack`.
 - Reads print human summaries. With `--json` they print one object that includes the board `rev`.
-- Failures exit with status 1. Human form: `error [code]: message`. JSON form: `{"ok": false, "status": HTTP_STATUS, "code": CODE, "error": MESSAGE, "rev": REV}`, where `rev` is the current board revision or `null` when the board cannot be read. Argument usage errors come from the parser and may be plain text.
+- Failures exit with status 1. Human form: `error [code]: message`. JSON form: `{"ok": false, "status": HTTP_STATUS, "code": CODE, "error": MESSAGE, "rev": REV}`, where `rev` is the current board revision or `null` when the board cannot be read. Argument usage errors come from the parser and may be plain text; `call` converts them to JSON `invalid` errors.
 
 | `code` | Meaning |
 |---|---|
@@ -92,11 +92,62 @@ Re-read `context`, reconsider, then issue a new command. Never retry blindly wit
 
 ### Long text from stdin
 
-`--stdin` and `--*-stdin` read the text from standard input, so long text needs no shell quoting. Empty or whitespace-only input fails with `invalid`.
+For agents, prefer [JSON requests through `call`](#json-requests) for commands carrying text. Outside `call`, `--stdin` and `--*-stdin` read text from standard input, so long text needs no shell quoting. Empty or whitespace-only input fails with `invalid`. On Windows, npm's `workboard.cmd` shim silently cuts an argument at the first line break and drops every later argument; send multi-line text through stdin, never an argument.
 
 ```sh
 git log -1 --format=%B | workboard comment 12 add --stdin --expected-rev 41 --json
 ```
+
+## JSON requests
+
+### `call`
+
+`workboard [--actor NAME] [--board NAME] call` reads requests from stdin, without a server or shell interpretation of the text. Prefer it for agent notes, comments, write-ups, results and reasons: line breaks, quotes, `%`, `^` and `&` stay in the request rather than passing through shell arguments. The same command validation, ownership checks, revision guards and output apply as in the ordinary CLI.
+
+Send a stream of JSON objects (one per line or pretty-printed), or one JSON array of objects. For example, feed this to `workboard --actor worker-a call`:
+
+```json
+{"op":"note","card":12,"summary":"Migration inspected","body":"Evidence:\n- src/migration.py:40\n- The value is \"100%\", with ^ and & preserved."}
+{"op":"comment.add","card":12,"text":"- Please review the compatibility path."}
+```
+
+Or feed an array to `workboard --actor main --board demo call`:
+
+```json
+[
+  {"op":"context","card":12},
+  {"op":"query","fields":"num,title,column,owner,changedRev","mine":true}
+]
+```
+
+Each request produces exactly one compact JSON line, flushed immediately, matching the equivalent command with `--json`. Requests run in order and independently, **not as a transaction**: a failure does not roll back earlier writes or stop later requests. The process exits 0 if every request succeeded, otherwise 1. Empty input fails with `invalid`.
+
+`op` is a verb (`note`, `start`) or a dotted action (`subtask.claim`, `comment.edit`, `attachment.get`). `card` supplies the card reference for card verbs; it is optional for `inbox`. Special positional fields are:
+
+| Operation | Fields |
+|---|---|
+| `subtask.add` | `text` (one string) or `texts` (a list) |
+| Other `subtask.*` | `subtask` (one ID) or `subtasks` (a list); delegated actions require exactly one |
+| `comment.add` | `text` |
+| `comment.edit` | `id`, `text` |
+| `comment.delete`, `attachment.get`, `attachment.remove` | `id` |
+| `fly` | `column` |
+| `improve` | `text` |
+| `search` | `terms` (a list) |
+| `ack` | `notes` (a list of note IDs) |
+| `wait` | `card`; `subtask` is its optional focus |
+
+Other keys are the command's full long option names, in camelCase or kebab-case: `expectedRev` and `expected-rev` both mean `--expected-rev`; `assignedTo` means `--assigned-to`. Per-request `actor` and `board` override the defaults on `call`.
+
+- Strings and numbers become one option value each; values starting with `-` are safe.
+- `true` enables a flag; `false` omits it, except `reviewRequired: false` means `--no-review-required`.
+- Lists repeat the option (for example, `scope` or `tag`); `null` omits it. Objects are invalid values.
+- Free-text positionals, including leading `-`, are safe too. Command limits still apply, including a note's single-line summary and body length.
+- Do not use `stdin` or keys ending in `-stdin` or `Stdin`: stdin is the request stream, so text goes in the request.
+
+Available operations are `digest next context show query search inbox handoff wait boards which add start done fly block resume update note subtask.* bug improve reopen workpad takeover cancel rework depends comment.* ack attachment.list attachment.add attachment.get attachment.remove`. The subtask and comment actions are the ones documented below. Operator commands (`init link serve open setup skills service upgrade version doctor recover sweep columns-core wip export import`), `list` and `call` itself are unavailable.
+
+Unavailable operations return `{"ok":false,"status":422,"code":"invalid","error":"op X is not available in call"}`. Parser usage errors become `invalid` (422), with the parser message in `error`, no usage text and `rev: null`. Other errors retain the ordinary command's envelope, including its current `rev`.
 
 ## Board setup
 
@@ -132,6 +183,30 @@ Print the board the current directory (or `--board`) resolves to: `<name> — <b
 | `search TERMS...` | Cards matching every term (case-insensitive substring) in any text, including comments and every `log` entry's summary and body. Each call reads and scans the whole board; to match many keywords against titles or tags, filter one `query --json` result locally instead. |
 
 `P` is `critical`, `mid` or `low`.
+
+### `wait REF [--subtask ID] [--after REV] [--timeout SECONDS]`
+
+Block until a card or subtask changes, without a server, board lock or repeated CLI starts. Main can await worker results; workers can await acceptance or `request-changes`. The CLI checks the board file's stat about every 0.25 seconds and reloads only when it changes.
+
+```text
+workboard --actor main wait 12 --after 40 --timeout 30 --json
+workboard --actor worker-a wait 12 --subtask s-1 --after 40 --timeout 30 --json
+```
+
+Use the `rev` from your last read or mutation as `--after`; the default is the board revision when `wait` starts. Without `--subtask`, it returns as soon as the card's `changedRev` is greater than that baseline, including immediately if the card has already changed.
+
+With `--subtask`, it watches that subtask's entire subtree, including delegation, result and review state, and ignores unrelated card changes while waiting. If the card already changed after `--after` when the wait starts, it returns immediately and conservatively: the old subtree cannot be reconstructed. Missing subtasks fail with `not_found`. Notes and comments are card changes, not subtree changes; omit `--subtask` to watch them.
+
+`--timeout` defaults to 300 seconds and accepts 1–3600. Both a change and a timeout exit 0. JSON is `{"ok":true,"changed":BOOL,"num":N,"id":ID,"rev":BOARD_REV,"changedRev":CARD_REV,"last":LAST_HISTORY_ROW_OR_NULL,"waited":SECONDS}`; `waited` is rounded to one decimal. With `--subtask`, it adds `subtask: {"id","done","delegation"}`. Human output is `#N changed at rev X (last: EV by ACTOR)` or `#N unchanged after Ns`. A board that disappears returns the normal error envelope.
+
+It also works in `call`; feed this request to `workboard --actor worker-a call`:
+
+```json
+{"op":"wait","card":12,"subtask":"s-1","after":40,"timeout":30}
+```
+
+On `changed: true`, re-read focused `context` or `inbox` and decide what to do; a wake-up is not an instruction or automatic acceptance. On `changed: false`, the timeout elapsed; wait again only if still appropriate.
+
 
 ## Card lifecycle
 
