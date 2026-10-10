@@ -39,6 +39,8 @@ _CARD_API = re.compile(r"/api/card/([^/]+)\Z")
 _LIFECYCLE_API = re.compile(r"/api/card/([^/]+)/lifecycle\Z")
 _COMMENTS_API = re.compile(r"/api/card/([^/]+)/comments\Z")
 _CONTEXT_API = re.compile(r"/api/card/([^/]+)/context\Z")
+_INBOX_API = re.compile(r"/api/card/([^/]+)/inbox\Z")
+_SCOPE_API = re.compile(r"/api/card/([^/]+)/scopes\Z")
 _ATTACHMENTS_API = re.compile(r"/api/card/([^/]+)/attachments\Z")
 _ATTACHMENT_API = re.compile(r"/api/card/([^/]+)/attachments/([^/]+)\Z")
 
@@ -220,6 +222,12 @@ def _require_local(handler) -> None:
         raise BodyError(403, "request Origin is not this local server")
 
 
+def _require_same_site(handler) -> None:
+    """Downloads carry board data: a cross-site page must not trigger them."""
+    if handler.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+        raise BodyError(403, "cross-site downloads are not allowed")
+
+
 def _require_json(handler, *, beacon=False) -> None:
     content_type = handler.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
     if content_type != "application/json" and not (beacon and content_type == "text/plain"):
@@ -364,13 +372,15 @@ def _find_card(doc: dict, reference: str) -> dict:
 def _guard_delete(card: dict, by: str) -> None:
     if card.get("activeOwner") and card["activeOwner"] != by:
         raise BodyError(409, f"card is owned by {card['activeOwner']}; take over before deleting")
+    wb.guard_subtask_replacement(card.get("subtasks", []), [], by)
 
 
 _CARD_EDITABLE = frozenset({
     "code", "title", "column", "priority", "tags", "origin", "notes", "writeup",
     "subtasks", "links", "lastTouchedSubtask", "meta", "agentRuns",
 })
-_SUBTASK_EDITABLE = frozenset({"id", "text", "done", "createdAt", "doneAt", "collapsed"})
+# delegation passes through only so guard_subtask_replacement can refuse any change to it.
+_SUBTASK_EDITABLE = frozenset({"id", "text", "done", "createdAt", "doneAt", "collapsed", "delegation"})
 
 
 def _editable_card(raw: dict, current: dict | None = None) -> dict:
@@ -388,6 +398,9 @@ def _editable_card(raw: dict, current: dict | None = None) -> dict:
             for item in items:
                 if not isinstance(item, dict) or not isinstance(item.get("id"), str):
                     raise BodyError(422, "every subtask needs an id")
+                for key in ("done", "collapsed"):
+                    if key in item and type(item[key]) is not bool:
+                        raise BodyError(422, f"subtask {key} must be a boolean")
                 retained = by_id.get(item["id"], {})
                 result.append({**retained, **{key: value for key, value in item.items()
                                             if key in _SUBTASK_EDITABLE},
@@ -409,6 +422,7 @@ def _update_card(doc: dict, current: dict, raw: dict, by: str) -> dict:
             merged[key] = current[key]
     merged.pop("lifecycleCycles", None)
     updated = wb.normalize_card(merged)
+    wb.guard_subtask_replacement(current.get("subtasks", []), updated["subtasks"], by)
     current.clear()
     current.update(updated)
     if destination != current["column"]:
@@ -428,6 +442,7 @@ def _op_create_card(doc: dict, op: dict, by: str) -> tuple:
     ):
         raise BodyError(422, "create in Backlog, Task, or In Progress; close/block via lifecycle actions")
     card = wb.normalize_card({**_editable_card(raw), "id": raw["id"]})
+    wb.guard_subtask_replacement([], card["subtasks"], by)
     if not card["title"].strip():
         raise BodyError(422, "created card needs a title")
     destination = card["column"]
@@ -502,7 +517,7 @@ def _op_update_columns(doc: dict, op: dict) -> None:
     doc["columns"] = norm
 
 
-def _op_lifecycle(doc: dict, card: dict, action: str, details: dict, by: str) -> None:
+def _op_lifecycle(doc: dict, card: dict, action: str, details: dict, by: str):
     if action == "submit":
         if card["column"] != "inprogress":
             raise BodyError(422, "complete requires the card to be In Progress")
@@ -513,7 +528,7 @@ def _op_lifecycle(doc: dict, card: dict, action: str, details: dict, by: str) ->
             raise BodyError(422, "completion requires summary and verification")
         action = "complete"
         details = {"writeup": f"{summary.strip()}\n\nVerification: {verification.strip()}"}
-    wb.workflow_action(doc, card, action, details, by)
+    return wb.workflow_action(doc, card, action, details, by)
 
 
 def _mutate(handler, payload: dict, base_rev: int, apply_fn):
@@ -532,7 +547,8 @@ def _send_error(handler, error) -> None:
                               "error": str(error) or "board revision changed", "rev": error.rev}, 409)
     if isinstance(error, (BodyError, wb.WorkflowError)):
         return handler._json({"ok": False, "status": error.status, "error": str(error),
-                              "conflict": error.status == 409}, error.status)
+                              "conflict": error.status == 409,
+                              **({"code": error.code} if isinstance(error, wb.WorkflowError) else {})}, error.status)
     if isinstance(error, wb.RefError):
         return handler._json({"ok": False, "status": 404, "error": str(error)}, 404)
     if isinstance(error, FileNotFoundError):
@@ -624,15 +640,17 @@ def _handle_lifecycle_patch(handler, reference: str) -> None:
 
         def apply_fn(doc):
             card = _find_card(doc, reference)
-            _op_lifecycle(doc, card, action, details, by)
-            return card
+            items = _op_lifecycle(doc, card, action, details, by)
+            return card, items
 
-        doc, rev, card = _mutate(handler, payload, base_rev, apply_fn)
+        doc, rev, (card, items) = _mutate(handler, payload, base_rev, apply_fn)
     except (BodyError, wb.WorkflowError, SystemExit, wb.LockTimeout,
             OSError, ValueError, KeyError, TypeError) as e:
         return _send_error(handler, e)
     handler._json({"ok": True, **_saved_meta(doc), "card": card,
-                   "document": doc, "event": "card-updated", "action": action}, 200)
+                   "document": doc, "event": "card-updated", "action": action,
+                   **({"items": items, **({"item": items[0]} if len(items) == 1 else {})}
+                      if action == "subtask" else {})}, 200)
 
 
 def _handle_structure_patch(handler) -> None:
@@ -744,6 +762,7 @@ def _handle_attachment_upload(handler, reference: str, query: str) -> None:
 
 def _handle_attachment_get(handler, reference: str, attachment_id: str) -> None:
     try:
+        _require_same_site(handler)
         _require_board_present(handler.board)
         doc, card, item, body = wb.attachment_read(
             handler.board, unquote(reference), unquote(attachment_id))
@@ -783,6 +802,72 @@ def _handle_projection(handler, kind: str) -> None:
     except (wb.WorkflowError, SystemExit, OSError, ValueError, KeyError, TypeError) as e:
         return _send_error(handler, e)
     handler._json({"rev": doc["rev"], **data})
+
+
+def _query_once(query: str, allowed: set[str]) -> dict:
+    params = parse_qs(query, keep_blank_values=True)
+    if any(key not in allowed or len(values) != 1 for key, values in params.items()):
+        raise BodyError(400, "unsupported or repeated query parameter")
+    return {key: values[0] for key, values in params.items()}
+
+
+def _handle_inbox_get(handler, query: str) -> None:
+    try:
+        params = _query_once(query, {"actor"})
+        doc = _doc(handler.board)
+        items = wb.inbox(doc, params.get("actor", "user"))
+        return handler._json({"rev": doc["rev"], "items": items})
+    except (BodyError, wb.WorkflowError, wb.LockTimeout, SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
+        return _send_error(handler, exc)
+
+
+def _handle_inbox_patch(handler, reference: str) -> None:
+    try:
+        _require_json(handler)
+        payload = _read_body_handler(handler)
+        base_rev = _base_rev(payload, handler)
+        by = wb.validate_actor(payload.get("actor", "user"))
+
+        def apply_fn(doc):
+            card = _find_card(doc, reference)
+            wb.ack_inbox_notes(doc, card, payload.get("noteIds"), by)
+            return card
+
+        doc, _, card = _mutate(handler, payload, base_rev, apply_fn)
+        return handler._json({"ok": True, **_saved_meta(doc), "card": card, "document": doc})
+    except (BodyError, wb.WorkflowError, wb.LockTimeout, SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
+        return _send_error(handler, exc)
+
+
+def _handle_bundle_export(handler, query: str) -> None:
+    import shutil
+    import tempfile
+    started = False
+    try:
+        _require_same_site(handler)
+        value = _query_once(query, {"baseRev"}).get("baseRev")
+        if value is not None and not re.fullmatch(r"[0-9]+", value):
+            raise BodyError(400, "baseRev must be a board revision")
+        with tempfile.TemporaryDirectory(prefix="workboard-http-export-") as folder:
+            target = Path(folder) / "board.zip"
+            wb.export_bundle(handler.board, target, expected_rev=None if value is None else int(value))
+            # Stream the completed archive: a large export must not become a large
+            # in-memory response. The temporary directory is private and always removed.
+            handler.send_response(200)
+            handler.send_header("Content-Type", "application/zip")
+            handler.send_header("Content-Length", str(target.stat().st_size))
+            handler.send_header("Content-Disposition", "attachment; filename=workboard.zip")
+            handler.send_header("X-Content-Type-Options", "nosniff")
+            handler.send_header("Cache-Control", "no-store")
+            handler.end_headers()
+            started = True
+            with target.open("rb") as stream:
+                shutil.copyfileobj(stream, handler.wfile, 128 * 1024)
+    except (BodyError, wb.WorkflowError, wb.LockTimeout, SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
+        if started:
+            handler.close_connection = True
+            return
+        return _send_error(handler, exc)
 
 
 def _git_state(root: Path) -> dict:
@@ -930,6 +1015,19 @@ def _handle_cards_page(handler, query: str) -> None:
 
 
 def _handle_board_get(handler, path: str, query: str) -> None:
+    if path == "/api/inbox":
+        return _handle_inbox_get(handler, query)
+    if path == "/api/export":
+        return _handle_bundle_export(handler, query)
+    match = _SCOPE_API.match(path)
+    if match:
+        try:
+            params = _query_once(query, {"subtask"})
+            doc = _doc(handler.board)
+            card = _find_card(doc, match.group(1))
+            return handler._json({"rev": doc["rev"], "conflicts": wb.scope_conflicts(doc, card, params.get("subtask"))})
+        except (BodyError, wb.WorkflowError, OSError, ValueError, KeyError, TypeError) as exc:
+            return _send_error(handler, exc)
     if path in ("/board.json", "/api/bootstrap", "/rev"):
         try:
             doc = _doc(handler.board)
@@ -958,8 +1056,16 @@ def _handle_board_get(handler, path: str, query: str) -> None:
     if match:
         try:
             _require_board_present(handler.board)
-            return handler._json(wb.card_context(handler.board, unquote(match.group(1))))
-        except (wb.RefError, OSError, ValueError, KeyError, TypeError) as exc:
+            params = parse_qs(query, keep_blank_values=True)
+            if any(len(values) != 1 for values in params.values()):
+                raise wb.WorkflowError("context query parameters must occur once")
+            if params.get("full", ["0"])[0] not in ("0", "1"):
+                raise wb.WorkflowError("context full must be 0 or 1")
+            return handler._json(wb.card_context(
+                handler.board, unquote(match.group(1)), full=params.get("full") == ["1"],
+                subtask_id=params.get("subtask", [None])[0],
+                assigned_to=params.get("assignedTo", [None])[0]))
+        except (wb.WorkflowError, wb.RefError, OSError, ValueError, KeyError, TypeError) as exc:
             return _send_error(handler, exc)
     match = _CARD_API.match(path)
     if match:
@@ -979,6 +1085,7 @@ def _handle_board_write(handler, method: str, path: str, query: str) -> None:
             return _handle_structure_patch(handler)
         for pattern, handle in ((_CARD_API, _handle_card_patch),
                                 (_LIFECYCLE_API, _handle_lifecycle_patch),
+                                (_INBOX_API, _handle_inbox_patch),
                                 (_COMMENTS_API, _handle_comments_patch)):
             match = pattern.match(path)
             if match:

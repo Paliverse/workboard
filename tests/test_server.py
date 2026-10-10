@@ -29,6 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zipfile
 from importlib import resources
 from pathlib import Path
 from unittest import mock
@@ -500,6 +501,13 @@ class MultiBoardApiTest(unittest.TestCase):
         notes = current(ctx, wid)["notes"]
         assert "Collaborative notes" in notes and "## Acceptance criteria" in notes and "## Verification" in notes
         assert life(ctx, wid, "workpad", actor=other)[1]["card"]["notes"] == notes
+        # Field edits, reordering and board edits never check card ownership.
+        status, edited, _ = mutate(ctx, f"/api/card/{wid}", {
+            "card": {"title": "Retitled by a reviewer", "priority": "critical", "tags": ["review"]},
+            "position": {"after": capacity["id"]}, "document": {"title": "Shared board"}}, actor=other)
+        assert status == 200 and edited["positioned"] and edited["document"]["title"] == "Shared board"
+        assert (edited["card"]["title"], edited["card"]["priority"], edited["card"]["tags"],
+                edited["card"]["activeOwner"]) == ("Retitled by a reviewer", "critical", ["review"], owner)
         assert life(ctx, wid, "takeover", actor=other)[0] == 422
         assert life(ctx, wid, "takeover", {"reason": "Explicit handoff"}, actor=other)[0] == 200
         assert current(ctx, wid)["activeOwner"] == other
@@ -626,7 +634,7 @@ class MultiBoardApiTest(unittest.TestCase):
         before = ctx["path"].read_bytes()
         doc = board(ctx)
         served = doc["cards"][0]
-        self.assertEqual((doc["schemaVersion"], served["notes"]), (3, "Pinned context"))
+        self.assertEqual((doc["schemaVersion"], served["notes"]), (core.SCHEMA_VERSION, "Pinned context"))
         self.assertEqual([(item["at"], item["by"], item["summary"], item["body"]) for item in served["log"]],
                          [("2026-09-01", None, "Shipped the parser.", "Tests pass."),
                           ("2026-09-02", "ada", "Fixed nits", "")])
@@ -645,11 +653,15 @@ class MultiBoardApiTest(unittest.TestCase):
         comment = added["comment"]
         status, edited, _ = mutate(ctx, path, {"operation": {
             "type": "edit", "id": comment["id"], "text": "Collaboratively edited"}}, actor="Bob")
-        assert status == 200 and edited["comment"]["text"] == "Collaboratively edited"
+        assert status == 409
+        status, edited, _ = mutate(ctx, path, {"operation": {
+            "type": "edit", "id": comment["id"], "text": "Author correction"}})
+        assert status == 200 and edited["comment"]["text"] == "Author correction"
         assert all(edited["comment"][key] == comment[key] for key in ("id", "by", "at"))
         assert edited["comment"]["updatedAt"]
         assert mutate(ctx, path, {"operation": {"type": "delete", "id": "absent"}})[0] == 404
-        assert mutate(ctx, path, {"operation": {"type": "delete", "id": comment["id"]}}, actor="Bob")[0] == 200
+        assert mutate(ctx, path, {"operation": {"type": "delete", "id": comment["id"]}}, actor="Bob")[0] == 409
+        assert mutate(ctx, path, {"operation": {"type": "delete", "id": comment["id"]}})[0] == 200
         assert current(ctx, cid)["comments"] == []
         content = b"\x00\xffActual binary bytes\r\n<script>not inline</script>"
         name = '../report "caf\u00e9".html'
@@ -698,7 +710,8 @@ class MultiBoardApiTest(unittest.TestCase):
             connection.close()
         assert mutate(ctx, f"/api/card/{cid}/attachments/{attachment['id']}", {}, method="DELETE",
                       rev=upload_rev)[0] == 409
-        assert mutate(ctx, f"/api/card/{cid}/attachments/{attachment['id']}", {}, method="DELETE")[0] == 200
+        assert mutate(ctx, f"/api/card/{cid}/attachments/{attachment['id']}", {}, method="DELETE")[0] == 409
+        assert mutate(ctx, f"/api/card/{cid}/attachments/{attachment['id']}", {}, method="DELETE", actor="Zoë")[0] == 200
         assert http_req(url)[0] == 404 and current(ctx, cid)["attachments"] == []
         assert blob.read_bytes() == content  # Recovery snapshots still need detached bytes.
         limit_content = b"x" * MAX_ATTACHMENT_BYTES
@@ -707,6 +720,31 @@ class MultiBoardApiTest(unittest.TestCase):
         assert status == 200 and limit_upload["attachment"]["size"] == MAX_ATTACHMENT_BYTES
         limit_url = ctx["url"] + f"/api/card/{cid}/attachments/{limit_upload['attachment']['id']}"
         assert http_req(limit_url)[1] == limit_content
+
+    def test_export_is_a_same_site_read(self):
+        ctx = self.new_board()
+        card = create(ctx, "Portable")
+        rev = board(ctx)["rev"]
+        status, uploaded, _ = http_req(ctx["url"] + f"/api/card/{card['id']}/attachments?name=evidence.txt", "POST",
+                                       b"evidence", {"Content-Type": "text/plain", "X-Board-Base-Rev": str(rev)})
+        self.assertEqual(status, 200, uploaded)
+        rev = uploaded["rev"]
+        export = ctx["url"] + "/api/export"
+        attachment = ctx["url"] + f"/api/card/{card['id']}/attachments/{uploaded['attachment']['id']}"
+        for url in (export, export + f"?baseRev={rev}"):
+            status, raw, headers = http_req(url, headers={"Sec-Fetch-Site": "same-origin"})
+            self.assertEqual(status, 200, raw)
+            self.assertEqual(headers["Content-Type"], "application/zip")
+            self.assertTrue(zipfile.is_zipfile(io.BytesIO(raw)))
+        self.assertEqual(board(ctx)["rev"], rev)
+        self.assertEqual(http_req(export + f"?baseRev={rev - 1}")[0], 409)
+        self.assertEqual(http_req(export + "?baseRev=latest")[0], 400)
+        self.assertEqual(http_req(attachment)[1], b"evidence")
+        for url in (export, attachment):
+            status, denied, _ = http_req(url, headers={"Sec-Fetch-Site": "cross-site"})
+            self.assertEqual(status, 403, denied)
+        status, _, _ = http_req(self.origin + "/api/boards/import", "POST", raw, {"Content-Type": "application/zip"})
+        self.assertEqual(status, 404)
 
     def test_write_origin_and_actor(self):
         ctx = self.new_board()
@@ -915,9 +953,152 @@ class MultiBoardApiTest(unittest.TestCase):
         cli_board, http_board = Path(payload["board"]), Path(http_context["board"])
         assert cli_board.is_absolute() and http_board.is_absolute() and cli_board.resolve() == http_board.resolve()
         assert http_context == {**payload, "board": http_context["board"]}
-        assert mutate(ctx, f"/api/card/{cid}/attachments/{metadata['id']}", {}, method="DELETE")[0] == 200
+        assert mutate(ctx, f"/api/card/{cid}/attachments/{metadata['id']}", {}, method="DELETE", actor=metadata['by'])[0] == 200
         assert core.attachment_path(path, metadata["id"]).read_bytes() == content
         assert http_req(download)[0] == 404
+
+    def test_delegated_subtask_http_race_and_contributions(self):
+        ctx = self.new_board()
+        cid = create(ctx, "One integration owner", column="inprogress")["id"]
+        status, added, _ = life(ctx, cid, "subtask", {
+            "op": "add", "texts": ["Produce", "Consume"], "delegated": True})
+        self.assertEqual(status, 200, added)
+        one, two = [item["id"] for item in added["items"]]
+        rev = added["rev"]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            attempts = list(pool.map(lambda actor: life(ctx, cid, "subtask", {
+                "op": "claim", "ids": [one]}, actor=actor, rev=rev), ("Bob", "Chen")))
+        self.assertEqual(sorted(attempt[0] for attempt in attempts), [200, 409])
+        claimed = current(ctx, cid)["subtasks"][0]
+        producer = claimed["delegation"]["owner"]
+        successful_actor = next(actor for actor, attempt in zip(("Bob", "Chen"), attempts)
+                                if attempt[0] == 200)
+        self.assertEqual(producer, successful_actor)
+        consumer = "Chen" if producer == "Bob" else "Bob"
+        self.assertEqual(life(ctx, cid, "subtask", {"op": "claim", "ids": [two]}, actor=consumer)[0], 200)
+        before = ctx["path"].read_bytes()
+        for actor, details in ((consumer, {"op": "done", "ids": [one], "result": "Not my work"}),
+                               (producer, {"op": "takeover", "ids": [two]})):
+            self.assertGreaterEqual(life(ctx, cid, "subtask", details, actor=actor)[0], 400)
+            self.assertEqual(ctx["path"].read_bytes(), before)
+        self.assertEqual(life(ctx, cid, "complete", {"writeup": "Still unfinished"})[0], 409)
+        self.assertEqual(life(ctx, cid, "subtask", {
+            "op": "release", "ids": [one], "reason": "handoff with notes"}, actor=producer, rev=rev)[0], 409)
+        published = mutate(ctx, f"/api/card/{cid}/comments", {"operation": {
+            "type": "add", "text": f"Kind: finding; Subtask: {one}; Scope: consumer; Evidence: contract; Limitations: pending"}}, actor=producer)
+        self.assertEqual(published[0], 200)
+        self.assertIn("Evidence: contract", current(ctx, cid)["comments"][-1]["text"])
+        with core.board_transaction(ctx["path"]) as doc:
+            target = core.resolve_ref(doc, cid)
+            target["log"] = [{"id": uuid.uuid4().hex, "at": core.now_iso(), "by": producer,
+                              "summary": f"Shared finding {i}", "body": "Evidence"}
+                             for i in range(12)]
+            core.save(ctx["path"], doc, by=producer)
+        before_read = ctx["path"].read_bytes()
+        for query in (f"subtask={two}", f"assignedTo={consumer}&full=1"):
+            status, focused, _ = http_req(ctx["url"] + f"/api/card/{cid}/context?{query}")
+            self.assertEqual(status, 200, focused)
+            self.assertEqual([st["id"] for st in focused["card"]["subtasks"]], [two])
+            self.assertIn(f"Subtask: {one}", focused["card"]["comments"][-1]["text"])
+            self.assertEqual(len(focused["card"]["log"]), 12 if "full=1" in query else 10)
+        for query in ("subtask=", "assignedTo=", f"subtask={one}&assignedTo={consumer}",
+                      f"subtask={one}&subtask={two}", "full=true"):
+            self.assertEqual(http_req(ctx["url"] + f"/api/card/{cid}/context?{query}")[0], 422)
+        self.assertEqual(http_req(ctx["url"] + f"/api/card/{cid}/context?subtask=missing")[0], 404)
+        self.assertEqual(ctx["path"].read_bytes(), before_read)
+        for actor, sid in ((producer, one), (consumer, two)):
+            status, completed, _ = life(ctx, cid, "subtask", {
+                "op": "done", "ids": [sid], "result": f"{sid}: contribution verified"}, actor=actor)
+            self.assertEqual(status, 200, completed)
+            self.assertEqual(completed["item"]["delegation"]["owner"], actor)
+            self.assertEqual(completed["card"]["column"], "inprogress")
+        self.assertEqual(life(ctx, cid, "complete", {"writeup": "Worker cannot integrate"}, actor=consumer)[0], 409)
+        self.assertEqual(life(ctx, cid, "complete", {"writeup": "Main integrated both contributions"})[0], 200)
+
+    def test_generic_http_edits_cannot_bypass_delegated_ownership(self):
+        ctx = self.new_board()
+        cid = create(ctx, "Protected parent", column="inprogress")["id"]
+        delegated = life(ctx, cid, "subtask", {"op": "add", "texts": ["Worker assignment"], "delegated": True})[1]["item"]
+        legacy = life(ctx, cid, "subtask", {"op": "add", "texts": ["Checklist"]})[1]["item"]
+        self.assertEqual(life(ctx, cid, "subtask", {"op": "claim", "ids": [delegated["id"]]}, actor="Bob")[0], 200)
+        before = ctx["path"].read_bytes()
+        trees = []
+        tree = current(ctx, cid)["subtasks"]
+        tree[0]["done"] = True
+        trees.append(tree)
+        tree = current(ctx, cid)["subtasks"]
+        tree[0]["delegation"]["owner"] = "Ada"
+        trees.append(tree)
+        tree = current(ctx, cid)["subtasks"]
+        tree[0]["text"] = "Changed someone else's assignment"
+        trees.append(tree)
+        trees.append([legacy])  # A parent owner cannot silently delete a worker's contribution.
+        tree = current(ctx, cid)["subtasks"]
+        tree[1]["delegation"] = {"state": "available", "owner": None, "claimedAt": None, "result": ""}
+        trees.append(tree)
+        for tree in trees:
+            status = mutate(ctx, f"/api/card/{cid}", {"card": {"subtasks": tree}})[0]
+            self.assertIn(status, (409, 422))
+            snapshot = board(ctx)
+            snapshot["cards"][0]["subtasks"] = tree
+            self.assertIn(full_post(ctx, snapshot)[0], (409, 422))
+            self.assertEqual(ctx["path"].read_bytes(), before)
+        claimed = current(ctx, cid)["subtasks"][0]
+        forged = {"id": str(uuid.uuid4()), "title": "Forged claim", "subtasks": [claimed]}
+        self.assertIn(mutate(ctx, "/api/structure", {"operation": {"type": "create-card", "card": forged}})[0], (409, 422))
+        self.assertEqual(mutate(ctx, "/api/structure", {"operation": {"type": "delete-card", "cardId": cid}})[0], 409)
+        self.assertEqual(ctx["path"].read_bytes(), before)
+        # Field and board edits never check ownership, and leave the worker's claim intact.
+        for field in ("title", "notes", "origin", "writeup"):
+            status, edited, _ = mutate(ctx, f"/api/card/{cid}", {"card": {field: f"Bob's {field}"}}, actor="Bob")
+            self.assertEqual(status, 200, edited)
+        snapshot = board(ctx)
+        snapshot["title"] = "Shared board"
+        snapshot["cards"][0]["notes"] = "Snapshot edit by Bob"
+        self.assertEqual(full_post(ctx, snapshot, actor="Bob")[0], 200)
+        # Old clients may omit delegation fields in an otherwise unchanged snapshot.
+        tree = current(ctx, cid)["subtasks"]
+        tree[0].pop("delegation")
+        status, saved, _ = mutate(ctx, f"/api/card/{cid}", {"card": {"subtasks": tree, "title": "Owner edit"}})
+        self.assertEqual(status, 200, saved)
+        self.assertEqual((saved["card"]["subtasks"][0]["delegation"]["owner"], saved["card"]["notes"],
+                          saved["card"]["activeOwner"], saved["document"]["title"]),
+                         ("Bob", "Snapshot edit by Bob", "Ada", "Shared board"))
+
+    def test_comment_and_attachment_moderation(self):
+        ctx = self.new_board()
+        cid = create(ctx, "Moderated", column="inprogress")["id"]  # Ada owns it.
+        path = f"/api/card/{cid}/comments"
+        comment = mutate(ctx, path, {"operation": {"type": "add", "text": "Bob's note"}}, actor="Bob")[1]["comment"]
+        files = []
+        for name in ("bob.txt", "imported.txt"):
+            status, uploaded, _ = http_req(ctx["url"] + f"/api/card/{cid}/attachments?name={name}", "POST", b"evidence", {
+                "Content-Type": "text/plain", "X-Board-Base-Rev": str(board(ctx)["rev"]), "X-WorkBoard-Actor": "Bob"})
+            self.assertEqual(status, 200, uploaded)
+            files.append(f"/api/card/{cid}/attachments/{uploaded['attachment']['id']}")
+        with core.board_transaction(ctx["path"]) as doc:  # Entries from older boards may carry no author.
+            card = core.resolve_ref(doc, cid)
+            card["comments"].append({"id": uuid.uuid4().hex, "at": core.now_iso(), "text": "Authorless"})
+            card["attachments"][1].pop("by")
+            core.save(ctx["path"], doc, by="Ada")
+        authorless = current(ctx, cid)["comments"][1]["id"]
+        before = ctx["path"].read_bytes()
+        self.assertEqual(mutate(ctx, path, {"operation": {"type": "edit", "id": comment["id"], "text": "Carl"}},
+                                actor="Carl")[0], 409)
+        self.assertEqual(mutate(ctx, path, {"operation": {"type": "delete", "id": comment["id"]}}, actor="Carl")[0], 409)
+        self.assertEqual(mutate(ctx, files[0], {}, method="DELETE", actor="Carl")[0], 409)
+        self.assertEqual(ctx["path"].read_bytes(), before)
+        for operation in ({"type": "edit", "id": authorless, "text": "Anyone may fix this"},
+                          {"type": "delete", "id": authorless}):
+            self.assertEqual(mutate(ctx, path, {"operation": operation}, actor="Carl")[0], 200)
+        self.assertEqual(mutate(ctx, files[1], {}, method="DELETE", actor="Carl")[0], 200)
+        # The card's active owner moderates everyone's entries.
+        status, edited, _ = mutate(ctx, path, {"operation": {"type": "edit", "id": comment["id"], "text": "Moderated"}})
+        self.assertEqual((status, edited["comment"]["by"], edited["comment"]["updatedBy"]), (200, "Bob", "Ada"))
+        self.assertEqual(mutate(ctx, files[0], {}, method="DELETE")[0], 200)
+        self.assertEqual(mutate(ctx, path, {"operation": {"type": "delete", "id": comment["id"]}})[0], 200)
+        card = current(ctx, cid)
+        self.assertEqual((card["comments"], card["attachments"]), ([], []))
 
     def test_health_and_corrupt_documents(self):
         ctx = self.new_board()

@@ -7,7 +7,7 @@ A release is one annotated tag, `vX.Y.Z`. Pushing the tag runs [`.github/workflo
 | Job | Runs on | Does |
 |---|---|---|
 | `verify` | `ubuntu-latest` | Fails unless the tag equals `v` + `workboard.__version__` and `CHANGELOG.md` has a `## [X.Y.Z]` section. Runs the full test suite. |
-| `binaries` | one native runner per target | Builds the PyInstaller app with `packaging/build.py binary`, then smoke-tests the archive with `packaging/build.py smoke`: `--version`, `init`, `add`, `digest`, `serve --port 0 --json`, `/health`, `/b/<board>/` and token shutdown, all in a scratch home. |
+| `binaries` | one native runner per target | Builds the PyInstaller app with `packaging/build.py binary`, then smoke-tests the archive with `packaging/build.py smoke`: CLI startup, one delegated subtask round trip through parent completion, `add --from`, `export`, `serve --port 0 --json`, `/health`, `/b/<board>/` and token shutdown, all in a scratch home. |
 | `github-release` | `ubuntu-latest` | Creates the GitHub Release with the six archives, `install.sh`, `install.ps1` and `SHA256SUMS`. The notes are that version's CHANGELOG section. |
 | `npm` | `ubuntu-latest` | Builds the seven npm packages from the archives. It publishes the six platform packages first, then `@paliverse/workboard` (environment `npm`), authenticating through npm trusted publishing (OIDC). npm attaches provenance automatically. |
 
@@ -49,7 +49,7 @@ Complete these steps before the first tag.
 ## Cutting a release
 
 1. Make sure CI on `main` is green.
-2. Set `__version__` in `src/workboard/__init__.py` to `X.Y.Z`. This is the only version source; `pyproject.toml` and the npm packages read it or the tag.
+2. Set `__version__` in `src/workboard/__init__.py` to `X.Y.Z`. This is the only version source; `pyproject.toml` and the npm packages read it or the tag. The bump belongs to this release commit, never to feature work: `main` keeps reporting the last released version until then (the delegation and schema 4 work ships as 0.2.0).
 3. In `CHANGELOG.md`, move the `Unreleased` entries under `## [X.Y.Z] - YYYY-MM-DD` and update the compare links at the bottom.
 4. Commit (`Release X.Y.Z`), push, and wait for CI.
 5. Dry-run the release: *Actions → Release → Run workflow* on `main`. It runs the checks, the tests and all six binary builds with their smoke tests, but creates no GitHub Release and publishes nothing. Go on only when it is green.
@@ -83,7 +83,7 @@ python -m venv build/venv
 build/venv/bin/python -m pip install -r packaging/requirements-build.txt   # Windows: build\venv\Scripts\python.exe
 build/venv/bin/python packaging/build.py binary          # dist/workboard-<os>-<arch>.{zip,tar.gz}
 build/venv/bin/python packaging/build.py smoke dist/workboard-<os>-<arch>.zip
-WORKBOARD_TEST_COMMAND="$PWD/build/pyinstaller/dist/workboard/workboard" python -m unittest tests.test_cli
+WORKBOARD_TEST_COMMAND="$PWD/build/pyinstaller/dist/workboard/workboard" python -m unittest tests.test_cli tests.test_subtasks tests.test_context tests.test_bundles
 ```
 
 `packaging/build.py` has five commands:
@@ -116,5 +116,5 @@ HOME=$(mktemp -d) WORKBOARD_INSTALL_BASE_URL=http://127.0.0.1:8000 sh scripts/in
 | `packaging/build.py` | The release tool described above (stdlib only). |
 | `packaging/npm/` | Template for the main npm package and its `bin/workboard.js` launcher, which runs the platform binary. |
 | `scripts/install.sh`, `scripts/install.ps1` | The one-line installers attached to every release. |
-| `.github/workflows/ci.yml` | Tests on Ubuntu, macOS and Windows with Python 3.11 to 3.14, and a PyInstaller build per OS that smoke-tests the archive and runs `tests.test_cli` against the binary. |
+| `.github/workflows/ci.yml` | Tests on Ubuntu, macOS and Windows with Python 3.11 to 3.14, and a PyInstaller build per OS that smoke-tests the archive and runs the CLI, delegated-subtask, focused-context and review/inbox suites against the binary. |
 | `.github/workflows/release.yml` | The release pipeline. Third-party actions are pinned to commit SHAs, and Dependabot keeps them current. |

@@ -646,10 +646,19 @@ class Contracts(unittest.TestCase):
         notes = core.load(path)["cards"][0]["notes"]
         self.assertTrue(notes.startswith("Existing notes\n\n## Acceptance criteria\nKeep this."), notes)
         self.assertEqual((notes.count("## Acceptance criteria"), notes.count("## Verification")), (1, 1))
-        self.assertEqual(core.load(path)["cards"][0]["activeOwner"], winner)
+        retitled = wb(["update", "1", "--title", "Shared task (reviewed)", "--json"], root, envs[loser])
+        self.assertEqual(retitled.returncode, 0, detail(retitled))
+        card = core.load(path)["cards"][0]
+        self.assertEqual((card["title"], card["activeOwner"]), ("Shared task (reviewed)", winner))
 
         added = wb(["comment", "1", "add", "Please verify the boundary", "--json"], root, envs[loser])
         comment = core.load(path)["cards"][0]["comments"][0]
+        third = dict(ENV, WORKBOARD_ACTOR="Lin")
+        unchanged = path.read_bytes()
+        for args in (["edit", comment["id"], "Hijacked"], ["delete", comment["id"]]):
+            refused = wb(["comment", "1", *args, "--json"], root, third)
+            self.assertEqual(last_json(refused)["code"], "owned", detail(refused))
+        self.assertEqual(path.read_bytes(), unchanged)
         edited = wb(["comment", "1", "edit", comment["id"], "Boundary verified", "--json"],
                     root, envs[winner])
         changed = core.load(path)["cards"][0]["comments"][0]
@@ -663,6 +672,16 @@ class Contracts(unittest.TestCase):
         self.assertEqual(last_json(deleted)["item"], changed)
         self.assertEqual({key: changed[key] for key in ("id", "at", "by")},
                          {key: comment[key] for key in ("id", "at", "by")})
+        self.assertEqual(core.load(path)["cards"][0]["comments"], [])
+        with core.board_transaction(path) as board:
+            board["cards"][0]["comments"] = [
+                {"id": "imported", "at": "2026-01-01T00:00:00Z", "text": "Imported without an author"},
+                {"id": "foreign", "at": "2026-01-01T00:00:00Z", "by": loser, "text": "Loser's note"}]
+            core.save(path, board)
+        for label, comment_id, env in (("authorless", "imported", third),
+                                       ("card owner", "foreign", envs[winner])):
+            proc = wb(["comment", "1", "delete", comment_id, "--json"], root, env)
+            self.assertEqual(proc.returncode, 0, (label, detail(proc)))
         self.assertEqual(core.load(path)["cards"][0]["comments"], [])
 
         takeover = wb(["takeover", "1", "--reason", "handoff agreed", "--json"], root, envs[loser])
@@ -839,6 +858,10 @@ class Contracts(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0, (operation, proc.stdout))
             self.assertEqual(path.read_bytes(), before)
         self.assertFalse((root / "wrong").exists())
+        intruder = wb(["attachment", reference, "remove", metadata["id"], "--board", root, "--json"],
+                      BASE, dict(ENV, WORKBOARD_ACTOR="Lin"))
+        self.assertEqual(last_json(intruder)["code"], "owned", detail(intruder))
+        self.assertEqual(path.read_bytes(), before)
 
         removed = wb(["attachment", reference, "remove", metadata["id"], "--expected-rev", rev,
                       "--board", root, "--json"], BASE)
@@ -903,11 +926,11 @@ class Contracts(unittest.TestCase):
             path.write_text(json.dumps(legacy), encoding="utf-8")
             core.save(path, core.load(path), by="Ada")
             saved = json.loads(path.read_bytes())
-            self.assertEqual(saved["schemaVersion"], 3)
+            self.assertEqual(saved["schemaVersion"], 4)
             self.assertEqual(saved["vendorDocument"], raw["vendorDocument"])
             self.assertNotIn("linkedCards", saved["cards"][0])
             self.assertNotIn("lifecycleCycles", saved["cards"][0])
-        for version in (True, False, 0, 4, "2", 2.0, None):
+        for version in (True, False, 0, 5, "2", 2.0, None):
             path.write_text(json.dumps({**raw, "schemaVersion": version}), encoding="utf-8")
             before = path.read_bytes()
             lock.unlink(missing_ok=True)
@@ -1212,13 +1235,13 @@ class Contracts(unittest.TestCase):
             ("2026-09-01", None, "Fixed the parser.", "Added tests\n  - covered edge"),
             ("2026-09-02", "ada", "Checked edge cases", "nothing else")])
         context = last_json(wb(["context", "1", "--json"], root))
-        self.assertEqual((context["schemaVersion"], context["card"]["log"]), (3, shown["log"]))
+        self.assertEqual((context["schemaVersion"], context["card"]["log"]), (4, shown["log"]))
         self.assertEqual(path.read_bytes(), before, "reads must not rewrite a legacy board")
 
         wrote = wb(["update", "1", "--title", "Legacy migrated", "--json"], root)
         self.assertEqual(wrote.returncode, 0, detail(wrote))
         saved = read_board(path)
-        self.assertEqual((saved["schemaVersion"], saved["rev"]), (3, 4))
+        self.assertEqual((saved["schemaVersion"], saved["rev"]), (4, 4))
         self.assertEqual((saved["cards"][0]["notes"], saved["cards"][0]["log"]), (shown["notes"], shown["log"]))
         backups = core.list_backups(path)
         self.assertEqual([rev for rev, _ in backups], [4, 1])
@@ -1242,6 +1265,91 @@ class Contracts(unittest.TestCase):
         shown = last_json(wb(["show", "1", "--json"], root))["card"]["comments"]
         self.assertEqual(shown, comments[-5:])
         self.assertEqual(last_json(wb(["show", "1", "--full", "--json"], root))["card"]["comments"], comments)
+
+
+class AddFrom(unittest.TestCase):
+    """`add --from` copies a card's requirements, never its progress."""
+
+    def setUp(self):
+        self.project = project("add-from")
+        self.json(["init", "add-from"])
+        self.path = core.board_file("add-from")
+
+    def call(self, args, actor="Main"):
+        return wb([*args, "--actor", actor], self.project)
+
+    def json(self, args, actor="Main"):
+        result = self.call([*args, "--json"], actor)
+        self.assertEqual(result.returncode, 0, detail(result))
+        self.assertEqual(len(result.stdout.splitlines()), 1, result.stdout)
+        return last_json(result)
+
+    def reject(self, args, code, actor="Main"):
+        before = self.path.read_bytes()
+        result = self.call([*args, "--json"], actor)
+        self.assertNotEqual(result.returncode, 0, detail(result))
+        error = last_json(result)
+        self.assertEqual(error["code"], code, detail(result))
+        self.assertEqual(error["rev"], json.loads(before)["rev"])
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def add(self, *titles, ref):
+        return [item["id"] for item in self.json(["subtask", ref, "add", *titles, "--delegated"])["items"]]
+
+    def action(self, op, sid, *args, actor="Main", ref):
+        return self.json(["subtask", ref, op, sid, *args], actor)
+
+    def context(self, ref):
+        return self.json(["context", ref, "--full"])
+
+    def test_add_from_copies_requirements_with_fresh_ids_and_reset_state(self):
+        prerequisite = self.json(["add", "--title", "Prerequisite"])["id"]
+        self.json(["start", prerequisite])
+        self.json(["done", prerequisite, "--writeup", "Shipped"])
+        source = self.json(["add", "--title", "Reusable integration", "--origin", "Approved request",
+                            "--priority", "critical", "--tag", "reusable", "--on", prerequisite])["id"]
+        self.json(["update", source, "--notes", "Acceptance: producer and consumer agree"])
+        self.json(["start", source])
+        checklist = self.json(["subtask", source, "add", "Checklist"])["item"]["id"]
+        producer, consumer = self.add("Producer", "Consumer", ref=source)
+        self.json(["subtask", source, "add", "Nested", "--parent", checklist])
+        self.json(["subtask", source, "done", checklist])
+        self.action("configure", producer, "--review-required", "--scope", "src/producer.py", ref=source)
+        self.action("configure", consumer, "--on", producer, "--scope", "src/consumer.py", ref=source)
+        self.action("claim", producer, actor="Ada", ref=source)
+        self.action("done", producer, "--result", "Producer verified", actor="Ada", ref=source)
+        self.action("accept", producer, ref=source)
+        self.json(["comment", source, "add", "Discussion stays with the source"])
+        self.json(["note", source, "--summary", "Finding stays with the source"])
+        original = self.context(source)["card"]
+
+        self.assertNotEqual(self.call(["add", "--json"]).returncode, 0)
+        added = self.json(["add", "--from", source, "--column", "backlog", "--tag", "copy"])
+        self.assertEqual(self.context(source)["card"], original)
+        card = self.context(added["id"])["card"]
+        self.assertEqual((card["title"], card["column"], card["priority"], card["tags"], card["notes"]),
+                         ("Reusable integration", "backlog", "critical", ["reusable", "copy"], original["notes"]))
+        for key, empty in (("origin", ""), ("comments", []), ("log", []), ("attachments", []),
+                           ("dependsOn", []), ("activeOwner", None), ("outcome", None)):
+            self.assertEqual(card[key], empty, key)
+        self.assertEqual([row["ev"] for row in card["history"]], ["created"])
+        rows = [item for item, _ in core.iter_subtasks(card["subtasks"])]
+        self.assertEqual([(item["id"], item["text"], item["done"]) for item in rows],
+                         [("s-1", "Checklist", False), ("s-2", "Nested", False),
+                          ("s-3", "Producer", False), ("s-4", "Consumer", False)])
+        self.assertNotIn("delegation", rows[0])
+        copied_producer, copied_consumer = rows[2]["delegation"], rows[3]["delegation"]
+        self.assertEqual((copied_producer["state"], copied_producer["owner"], copied_producer["result"],
+                          copied_producer["scope"], copied_producer["review"]["required"],
+                          copied_producer["review"]["state"]),
+                         ("available", None, "", ["src/producer.py"], True, "pending"))
+        self.assertEqual((copied_consumer["dependsOn"], copied_consumer["scope"]), (["s-3"], ["src/consumer.py"]))
+        self.assertNotEqual(producer, "s-3")
+        renamed = self.json(["add", "--from", source, "--title", "Renamed copy"])
+        self.assertEqual(self.context(renamed["id"])["card"]["title"], "Renamed copy")
+        self.json(["start", added["id"]])
+        self.action("claim", "s-3", actor="Ada", ref=added["id"])
+        self.reject(["subtask", added["id"], "claim", "s-4"], "deps", "Bert")
 
 
 if __name__ == "__main__":

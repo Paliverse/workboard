@@ -2,7 +2,8 @@
 
   binary                          PyInstaller app -> dist/workboard-<os>-<arch>.{zip,tar.gz}
   smoke PATH                      run a release archive (or an installed executable) end to end
-                                  in a scratch home: --version, init, add, digest, serve + HTTP
+                                  in a scratch home: --version, init, one delegated subtask round trip,
+                                  add --from, export, digest, serve + HTTP
   checksums [DIR]                 DIR/SHA256SUMS over every file in DIR (default: dist)
   notes --version X               print the CHANGELOG.md section of X (GitHub Release notes)
   npm --version X                 build/npm/: the `@paliverse/workboard` package + one package per archive in dist/
@@ -120,10 +121,26 @@ def smoke(args) -> None:
                 raise SystemExit(f"smoke failed: workboard {' '.join(argv)} exited {proc.returncode}")
             return proc.stdout
 
+        def cli_json(*argv: str) -> dict:
+            return json.loads(cli(*argv, "--json").strip().splitlines()[-1])
+
         if cli("--version").strip() != f"workboard {version}":
             raise SystemExit(f"smoke failed: --version does not report workboard {version}")
         cli("init", "smoke")
-        cli("add", "--title", "Smoke card")
+        # One delegated round trip plus add --from and export load every private module in the frozen app.
+        num = str(cli_json("--actor", "Main", "add", "--title", "Smoke card")["num"])
+        cli("--actor", "Main", "start", num)
+        subtask = cli_json("--actor", "Main", "subtask", num, "add", "Produce")["items"][0]["id"]
+        cli("--actor", "Main", "subtask", num, "delegate", subtask)
+        cli("--actor", "Ada", "subtask", num, "claim", subtask)
+        cli("--actor", "Ada", "subtask", num, "done", subtask, "--result", "produced")
+        cli("--actor", "Main", "subtask", num, "accept", subtask)
+        if cli_json("--actor", "Main", "done", num, "--writeup", "Integrated the result")["column"] != "done":
+            raise SystemExit("smoke failed: the parent card did not complete")
+        cli("--actor", "Main", "add", "--from", num, "--title", "Smoke copy")
+        cli("export", "--out", str(tmp / "smoke.zip"))
+        if not zipfile.is_zipfile(tmp / "smoke.zip"):
+            raise SystemExit("smoke failed: export did not write a ZIP")
         cli("digest")
         serve_smoke(target, project, env, tmp / "serve.log")
     print(f"smoke ok: {args.path}")

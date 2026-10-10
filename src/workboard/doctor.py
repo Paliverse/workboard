@@ -197,7 +197,7 @@ def _attachment_metadata_size(metadata):
     return size
 
 
-def _validate_document(raw, path, board, report, budget, blob_cache, *, archive=False):
+def _validate_document(raw, path, board, report, budget, blob_cache, *, archive=False, recovery=False):
     if archive and isinstance(raw, list):
         raw = {"cards": raw}
     if not isinstance(raw, dict):
@@ -205,9 +205,10 @@ def _validate_document(raw, path, board, report, budget, blob_cache, *, archive=
     version = raw.get("schemaVersion", 1)
     if not archive or "schemaVersion" in raw:
         version = wb.validate_schema(raw)
-        if version != wb.SCHEMA_VERSION:
-            _finding(report, "legacy-schema", f"Supported legacy schema v{version} upgrades on the next write; "
-                     "card notes then move into the notes timeline", path, warning=True)
+        if version != wb.SCHEMA_VERSION and not recovery:  # Snapshots keep their schema; only the board upgrades.
+            _finding(report, "legacy-schema", f"Supported legacy schema v{version} upgrades on the next write"
+                     + ("; legacy card notes move into the notes timeline" if version < 3 else ""),
+                     path, warning=True)
     log_invalid = False
     cards = raw.get("cards")
     card_ids, numbers = _identities(cards, "cards", nums=True)
@@ -265,7 +266,7 @@ def _validate_document(raw, path, board, report, budget, blob_cache, *, archive=
                 _finding(report, "attachment-integrity", exc, label)
                 if isinstance(exc, _LimitError):
                     raise
-        if version == wb.SCHEMA_VERSION:
+        if version >= 3:
             try:
                 wb.normalize_log(card.get("log"))
             except wb.WorkflowError as exc:
@@ -278,12 +279,21 @@ def _validate_document(raw, path, board, report, budget, blob_cache, *, archive=
     summary = {"schemaVersion": raw.get("schemaVersion", 1), "rev": raw.get("rev"), "cards": len(cards)}
     if log_invalid:
         return summary  # Normalization would reject the same entries; log-invalid already names them.
-    if archive:
-        normalized = {**raw, "cards": [wb.normalize_card(card) for card in cards]}
-    else:
-        normalized = wb.normalize_doc(copy.deepcopy(raw))
+    try:
+        if archive:
+            normalized = {**raw, "cards": [wb.normalize_card(card) for card in cards]}
+        else:
+            # The core normalizer owns delegated scope, dependency, review, and
+            # blocker invariants.  Doctor reports its refusal without reproducing
+            # lifecycle rules here.
+            normalized = wb.normalize_doc(copy.deepcopy(raw))
+    except wb.WorkflowError as exc:
+        if version == wb.SCHEMA_VERSION:
+            _finding(report, "delegation-invalid", exc, path)
+            return summary
+        raise
     # normalize_doc migrates pre-v3 notes into the timeline, rewriting `notes` and `log` by design.
-    skip = frozenset({"notes", "log"}) if not archive and version != wb.SCHEMA_VERSION else frozenset()
+    skip = frozenset({"notes", "log"}) if not archive and version < 3 else frozenset()
     for change in _normalization_changes(raw, normalized, skip=skip):
         budget.take()
         # A timeline entry normalization would still rewrite (untrimmed summary/body) breaks the v3 log rules.
@@ -320,7 +330,8 @@ def _inspect_data(value, report, budget, blob_cache):
             try:
                 archive = relative.parts[0] == wb.ARCHIVE_DIR
                 recovered = _json_read(path, budget)
-                entry.update(_validate_document(recovered, path, board, report, budget, blob_cache, archive=archive))
+                entry.update(_validate_document(recovered, path, board, report, budget, blob_cache,
+                                                archive=archive, recovery=True))
                 match = re.fullmatch(r"board-(\d+)\.json", path.name)
                 if relative.parts[0] == wb.BACKUP_DIR and match and int(match[1]) != recovered.get("rev"):
                     raise ValueError("backup filename revision disagrees with its document")
@@ -502,7 +513,10 @@ def _check_installation(report) -> None:
         _finding(report, "service-stale", "the service starts a different command; run: workboard service install",
                  service["location"], category="install", warning=True)
     server = service.get("server")
-    if server and server.get("version") != __version__:
+    if server and service["schemaMatch"] is False:
+        _finding(report, "server-schema-mismatch",
+                 f"{install.STALE_SERVER} (server v{server.get('version')})", server.get("port"), category="install")
+    elif server and server.get("version") != __version__:
         _finding(report, "server-version-mismatch",
                  f"the running server is v{server.get('version')} but this CLI is v{__version__}; "
                  "run: workboard service restart", server.get("port"), category="install", warning=True)

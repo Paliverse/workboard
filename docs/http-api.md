@@ -30,24 +30,27 @@ The per-user server (`workboard serve`, or the background service) speaks HTTP/1
 | Unknown board name | 404 | `{"error": "unknown_board", "name": "<name>"}` |
 | Registered board file is missing | 410 | `{"error": "board_missing", "board": "<abs path>"}` |
 | Revision conflict | 409 | `{"ok": false, "status": 409, "conflict": true, "error": "board changed; current revision is N; refresh context before retrying", "rev": N}` |
-| Workflow or validation error | its status (400, 404, 409, 413, 415, 422, …) | `{"ok": false, "status": S, "error": "…", "conflict": S == 409}` |
+| Workflow or validation error | its status (400, 404, 409, 413, 415, 422, …) | `{"ok": false, "status": S, "error": "…", "conflict": S == 409, "code"?: "owned"}`. `code` is the [CLI error code](cli.md#output) (`owned`, `state`, `deps`, `wip`, `invalid`, …) whenever a workflow rule refused the request. |
 | Unknown card | 404 | `{"ok": false, "status": 404, "error": "…"}` |
 | Anything else | 500 | `{"error": "board unavailable: …"}` |
 | Unknown route | 404 | `{"error": "not found"}` |
 
-A 409 is not always a revision conflict: ownership, dependency, WIP and state violations also use 409. Branch on `conflict` together with `rev`, not on the status alone.
+A 409 is not always a revision conflict: ownership, dependency, WIP and state violations also use 409. Branch on `conflict` together with `rev`, not on the status alone; a refusal by a workflow rule carries `code` instead of `rev`.
 
 ## Server routes
 
 ### `GET /health`
 
 ```json
-{"ok": true, "app": "workboard", "version": "0.1.0", "apiVersion": 2, "schemaVersion": 3,
- "supportedSchemaVersions": [1, 2, 3], "capabilities": ["context", "..."],
- "pid": 1234, "port": 7891, "startedAt": "2026-09-24T08:00:00Z", "boards": 3, "sseClients": 1}
+{"ok": true, "app": "workboard", "version": "0.2.0", "apiVersion": 2, "schemaVersion": 4,
+ "supportedSchemaVersions": [1, 2, 3, 4],
+ "capabilities": ["context", "attachment-cli", "shared-attachments", "expected-rev", "schema-guard",
+                  "delegated-subtasks", "focused-context", "handoff", "write-scopes", "subtask-dependencies",
+                  "subtask-blockers", "review-inbox", "subtask-notes", "board-bundles"],
+ "pid": 1234, "port": 7891, "startedAt": "2026-09-24T08:00:00Z", "boards": 3, "registryError": null, "sseClients": 1}
 ```
 
-`boards` is the number of registered boards. Use this route for readiness checks. SSE streams stay open, so network-idle heuristics never settle.
+`boards` is the number of registered boards (`null`, with the reason in `registryError`, when the registry can't be read). Use this route for readiness checks. SSE streams stay open, so network-idle heuristics never settle. `workboard service status`, `service restart` and `doctor` compare `version` and `supportedSchemaVersions` with the CLI.
 
 ### `GET /`
 
@@ -91,14 +94,20 @@ All paths below are relative to `/b/<enc>/`.
 | GET | `api/git` | Local read-only git status of the project |
 | GET | `api/cards?column=&offset=&limit=` | One page of a column |
 | GET | `api/card/{ref}` | One card |
-| GET | `api/card/{ref}/context` | A card with its dependencies and dependents |
+| GET | `api/card/{ref}/context` | A card with its dependencies and dependents, optionally focused on subtasks |
+| GET | `api/card/{ref}/scopes?subtask=ID` | Claimed work elsewhere whose saved write scope overlaps this subtask's |
+| GET | `api/inbox?actor=ACTOR` | Delegated work that needs the actor's attention |
+| GET | `api/export[?baseRev=N]` | Download the board as a portable ZIP |
 | PATCH | `api/card/{ref}` | Edit fields and position |
 | PATCH | `api/card/{ref}/lifecycle` | Lifecycle action |
 | PATCH | `api/card/{ref}/comments` | Add, edit or delete a comment |
+| PATCH | `api/card/{ref}/inbox` | Acknowledge inbox findings |
 | PATCH | `api/structure` | Create, delete or sort cards, edit columns, update the document |
 | POST | `api/card/{ref}/attachments?name=` | Upload an attachment (raw bytes) |
 | GET | `api/card/{ref}/attachments/{attId}` | Download an attachment |
 | DELETE | `api/card/{ref}/attachments/{attId}` | Detach an attachment |
+
+Importing a board ZIP is CLI-only (`workboard import`).
 
 Every JSON write response includes `ok`, `rev`, `savedAt`, `savedBy` and the saved `document`.
 
@@ -112,12 +121,14 @@ Every JSON write response includes `ok`, `rev`, `savedAt`, `savedBy` and the sav
 | `GET api/git` | `{"state": "clean"\|"dirty"\|"not_repo"\|"error"\|"unavailable", "root", "branch", "head", "subject", "ahead", "behind", "staged", "unstaged", "untracked", "conflicted", "files": [{"path", "index", "worktree"}] (at most 200), "truncated", "error", "warning"}`. Never fetches or writes. Git runs with an 8 s budget, so call it on demand rather than on a timer. |
 | `GET api/cards` | `{"column", "cards", "total", "rev"}`. `limit` is clamped to 1–250 (default 50) and `offset` must be 0 or more. Invalid values are 400. |
 | `GET api/card/{ref}` | `{"card", "rev"}` |
-| `GET api/card/{ref}/context` | `{"ok", "board", "schemaVersion", "rev", "card", "dependencies": [{"id", "num", "title", "column", "outcome", "satisfied"}], "missingDependencies", "dependents": [{"num", "id", "title", "column", "outcome"}], "ready", "omitted"?}`. The card is trimmed to the 10 most recent done subtasks, the last 25 history entries, the newest 10 `log` entries and the newest 10 comments; `omitted` reports what was trimmed (`doneSubtasks`, `history`, plus `log` and `comments` when those entries were dropped). |
+| `GET api/card/{ref}/context` | `{"ok", "board", "schemaVersion", "rev", "card", "dependencies": [{"id", "num", "title", "column", "outcome", "satisfied"}], "missingDependencies", "dependents": [{"num", "id", "title", "column", "outcome"}], "ready", "focus"?, "omitted"?}`. `?full=1` includes every subtask, history and log entry and every comment. By default the card keeps the 10 most recent done subtasks, 25 history entries, the newest 10 log entries and the newest 10 comments, and `omitted` counts the rest (`doneSubtasks`, `history`, plus `log` and `comments` when any were dropped). `?subtask=ID` focuses that subtask's subtree and its ancestors, and `?assignedTo=ACTOR` the subtrees that actor holds; the same comment window, attachments, notes and dependencies are kept, and focused done subtasks are never trimmed. Focus adds `focus: {"subtaskId" or "assignedTo", "matchedSubtaskIds", "ancestorIds", "scopeWarnings", "prerequisites"}` and `omitted.unrelatedSubtasks`. Both selectors together are 422, an unknown subtask 404, and a repeated parameter or a `full` other than `0`/`1` 422; other parameters are ignored. |
+| `GET api/card/{ref}/scopes?subtask=ID` | `{"rev", "conflicts": [{"cardId", "num", "subtaskId", "owner", "state", "overlaps": [{"scope", "otherScope"}]}]}`: claimed or blocked delegated subtasks on any card that isn't Done whose saved scopes overlap this subtask's. Advisory only. A plain checklist subtask is 409 `state`. |
+| `GET api/inbox?actor=ACTOR` | `{"rev", "items"}` for `actor` (default `user`), the same rows as [`workboard inbox`](cli.md#inbox): `review`, `blocker`, `changes_requested` and `finding`. An unknown or repeated query parameter is 400. |
 
 ### `POST board.json`: snapshot save
 
 ```jsonc
-{ "baseRev": 12, "actor": "user", "schemaVersion": 3,
+{ "baseRev": 12, "actor": "user", "schemaVersion": 4,
   "columns": [/* the five core columns, in display order */],
   "cards": [/* every card, in display order */],
   "title": "…", "name": "…", "tagTaxonomy": {}, "activeWork": null, "activeWorkId": null }
@@ -139,14 +150,14 @@ Every JSON write response includes `ok`, `rev`, `savedAt`, `savedBy` and the sav
 ```
 
 - `card` is required. Other keys in it are dropped, and server-owned fields must be unchanged. For example, a changed `log` is 422 `'log' is server-owned; use its dedicated action`; add timeline entries with the `note` lifecycle action.
-- `subtasks` replaces the whole tree. Every item needs a string `id`. If an item omits `children`, its existing children are kept.
-- Changing `column` runs the lifecycle `move` action, including owner, WIP, dependency and state checks. Field edits alone don't check ownership.
+- `subtasks` replaces the whole tree. Every item needs a string `id`, and `done` and `collapsed` must be booleans (422). If an item omits `children`, its existing children are kept. An item that omits `delegation` keeps its stored value. Delegated state changes only through the `subtask` lifecycle action: supplying a `delegation` that differs from the stored one, adding one to a new or plain item, or changing `done`/`doneAt` of a delegated item is refused (409 `state`), and so is dropping, retexting or moving another worker's claimed, blocked or completed subtask (409 `owned`). The same rules apply to snapshots and `create-card`.
+- Field edits never check who owns the card. Changing `column` runs the lifecycle `move` action, including its owner, WIP, dependency and state checks.
 - `position` reorders cards within the display order: `before` wins over `after`. It never changes the column.
 - Response adds `card`, `positioned` and `"event": "card-updated"`.
 
 ### `PATCH api/card/{ref}/lifecycle`
 
-Body: `{"baseRev", "actor"?, "action", "details": {}}`. If the card has another owner, every action except `takeover`, `workpad` and `note` is 409. Required text is trimmed and must not be blank.
+Body: `{"baseRev", "actor"?, "action", "details": {}}`. If the card has another owner, every action except `takeover`, `workpad`, `note` and `subtask` is 409 `owned`. The `subtask` action has its own rules (below). Required text is trimmed and must not be blank.
 
 | `action` | `details` | Allowed from | Effect |
 |---|---|---|---|
@@ -165,8 +176,38 @@ Body: `{"baseRev", "actor"?, "action", "details": {}}`. If the card has another 
 | `dependencies` | `ids` (the full list; `[]` clears) | any | Rejects self-dependencies, unknown ids and cycles. |
 | `workpad` | | any | Adds missing acceptance and verification sections to the pinned notes. |
 | `note` | `summary`, `body`? | any | Appends an entry to the card's `log` (see [Notes timeline](#notes-timeline)). `summary` is trimmed and must be one line of 1–160 characters; `body` is markdown of at most 32,000 characters (`null` or omitted means `""`). Otherwise 422. |
+| `subtask` | `op`, `ids`, and the fields `op` needs | see below | Runs the subtask lifecycle. The response adds `items` (the selected subtasks) and, for one subtask, `item`. |
 
 An unknown action is 422. The response adds `card`, `action` and `"event": "card-updated"`.
+
+For `action: "subtask"`, `details` holds `op`, `ids` and the fields that operation needs. `ids` is a list (a single string is accepted). Each `op` follows the rules and error codes of the [CLI command](cli.md#delegated-subtasks) of the same name:
+
+| `op` | Fields | Effect |
+|---|---|---|
+| `add` | `texts` (one or more), `parent`?, `delegated`? (boolean) | Add subtasks; `delegated: true` makes them available delegated work. |
+| `done`, `undone`, `rm` | `ids` | Plain checklist subtasks: any number of ids, any actor. `rm` removes nested subtasks too. |
+| `delegate` | one id | Make an open checklist subtask available. |
+| `configure` | one id, `scope`? (paths), `dependsOn`? (subtask ids), `reviewRequired`? (boolean) | Configure available work. Omitted fields keep their value; `[]` clears a list. |
+| `claim` | one id | Claim available work whose prerequisites are complete. |
+| `block` | one id, `reason`, `until` | The worker marks claimed work blocked. |
+| `resume` | one id | The worker continues blocked work. |
+| `done` | one id, `result` | The worker completes claimed work. |
+| `undone` | one id | The worker reopens completed work that was not accepted. |
+| `release` | one id, `reason` | The worker gives the work back. |
+| `takeover` | one id, `reason` | Take claimed or blocked work from its worker. |
+| `accept` | one id | The card's owner accepts a completed result. |
+| `request-changes` | one id, `reason` | The card's owner sends a completed result back to its worker. |
+
+A delegated subtask's `delegation` is:
+
+```json
+{"state": "claimed", "owner": "worker-a", "claimedAt": "2026-09-24T08:15:02Z", "result": "",
+ "scope": ["src/migration.py"], "dependsOn": ["s-1"],
+ "review": {"required": true, "state": "pending", "by": null, "at": null, "reason": ""},
+ "blocker": null}
+```
+
+`state` is `available`, `claimed`, `blocked` or `completed`; `review.state` is `pending`, `accepted` or `changes_requested`; `blocker` is `{"reason", "until", "at", "by"}` while blocked. Plain checklist subtasks have no `delegation`. A card can't be completed while a delegated subtask is unfinished or a required review is not accepted.
 
 Adding a note:
 
@@ -187,9 +228,17 @@ Adding a note:
 
 A stale `baseRev` is 409 like any other write.
 
+### `PATCH api/card/{ref}/inbox`
+
+Body: `{"baseRev", "actor"?, "noteIds": ["<note id>", …]}`. Acknowledges findings from the actor's inbox in one write, as [`workboard ack`](cli.md#inbox) does: only the owner of the In Progress card may (409 `owned`), every id must be a finding on that card (404), and repeating an id is harmless. Acknowledgements are stored in the card's `inboxAcknowledged` and add no history entry. The response adds `card`.
+
+### `GET api/export`
+
+Downloads the board as a portable ZIP (`application/zip`, `Content-Disposition: attachment; filename=workboard.zip`), with attachments and archives, as `workboard export` writes it. The optional `baseRev` must equal the board revision (409 with `rev` otherwise); without it the current board is exported. A non-numeric `baseRev` or any other query parameter is 400. Requests marked `Sec-Fetch-Site: cross-site` are 403.
+
 ### `PATCH api/card/{ref}/comments`
 
-Body: `{"baseRev", "actor"?, "operation"}`, where the operation is one of `{"type": "add", "text"}`, `{"type": "edit", "id", "text"}` or `{"type": "delete", "id"}`. Text is trimmed, nonblank and at most 16,000 characters. Extra keys are 422 and an unknown id is 404. The response adds `card` and `comment` (`null` after a delete). The server doesn't check authorship; clients must not edit or delete other people's comments.
+Body: `{"baseRev", "actor"?, "operation"}`, where the operation is one of `{"type": "add", "text"}`, `{"type": "edit", "id", "text"}` or `{"type": "delete", "id"}`. Text is trimmed, nonblank and at most 16,000 characters. Extra keys are 422 and an unknown id is 404. The response adds `card` and `comment` (`null` after a delete). Anyone may add a comment. Editing or deleting one is limited to its author, the card's `activeOwner`, or anyone when the comment has no `by`; otherwise 409 `owned`.
 
 ### `PATCH api/structure`
 
@@ -199,7 +248,7 @@ Body: `{"baseRev", "actor"?, "operation": {"type", …}}`. The response adds `op
 |---|---|---|
 | `create-card` | `card` | `card.id` is required: 32 hex characters or a UUID, optionally preceded by a lowercase slug and `-` (at most 120 characters). It must not already be used as a card id, dependency or link (409). `column` is `backlog`, `task` (default) or `inprogress`, and `title` is required. The server assigns `num` and timestamps and appends the card. Creating in In Progress runs the `start` checks. |
 | `create-follow-up` | `sourceCardId`, `card` | The source card must be Done. The new card and the source link to each other. |
-| `delete-card` | `cardId` | A card owned by someone else is 409. Links and dependencies that point to it are left as they are. |
+| `delete-card` | `cardId` | A card owned by someone else is 409 (`card is owned by X; take over before deleting`), and so is one with another worker's claimed, blocked or completed delegated subtask (`owned`). Links and dependencies that point to it are left as they are. |
 | `sort-cards` | `mode: "created-desc"` | Sorts by column, then newest first. |
 | `update-columns` | `columns` | Exactly the five core column ids, in display order. Each entry is `{"id", "name"?, "kind"?, "wipLimit"?, "stackUnder"?}`. `wipLimit`: an integer sets it, `null` removes it, and omitting it keeps it. An omitted `stackUnder` unstacks the column. |
 | `update-document` | `changes` | `title`, `name`, `tagTaxonomy`, `activeWork`, `activeWorkId` |
@@ -207,8 +256,8 @@ Body: `{"baseRev", "actor"?, "operation": {"type", …}}`. The response adds `op
 ### Attachments
 
 - **Upload:** `POST api/card/{ref}/attachments?name=<encodeURIComponent(name)>`. The body is the raw bytes (up to 10 MiB), and `X-Board-Base-Rev` is required as a header. `Content-Type` must be a bare `type/subtype`; if absent, it is guessed from the name. The response adds `card` and `attachment: {"id", "name", "size", "mime", "sha256", "createdAt", "by"}`.
-- **Download:** `GET api/card/{ref}/attachments/{attId}`, where `attId` is 32 hex characters. It is served as `application/octet-stream` with `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`. A size or hash mismatch is 409 and missing bytes are 404.
-- **Detach:** `DELETE api/card/{ref}/attachments/{attId}` with body `{"baseRev", "actor"?}`. Only the metadata is removed; the bytes stay on disk.
+- **Download:** `GET api/card/{ref}/attachments/{attId}`, where `attId` is 32 hex characters. It is served as `application/octet-stream` with `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`. A size or hash mismatch is 409, missing bytes are 404, and a request marked `Sec-Fetch-Site: cross-site` is 403.
+- **Detach:** `DELETE api/card/{ref}/attachments/{attId}` with body `{"baseRev", "actor"?}`. Allowed for the attachment's author, the card's `activeOwner`, or anyone when it has no `by`; otherwise 409 `owned`. Only metadata is removed; the bytes stay on disk.
 
 ## Server-Sent Events
 
@@ -224,9 +273,9 @@ A client should fetch `board.json` on connect and on every `resync-required`, an
 
 ## Schema
 
-The document (`schemaVersion` 3) contains `name`, `title`?, `rev`, `nextNum`, `savedAt`, `savedBy`, `columns` and `cards` (array order is display order), plus optional `tagTaxonomy`, `activeWork` and `activeWorkId`. Unknown top-level keys on disk are preserved. Timestamps are UTC `YYYY-MM-DDTHH:MM:SSZ`.
+The document (`schemaVersion` 4) contains `name`, `title`?, `rev`, `nextNum`, `savedAt`, `savedBy`, `columns` and `cards` (array order is display order), plus optional `tagTaxonomy`, `activeWork` and `activeWorkId`. Unknown top-level keys on disk are preserved. Timestamps are UTC `YYYY-MM-DDTHH:MM:SSZ`.
 
-Every read returns the normalized version 3 document. A version 1 or 2 file is upgraded in memory, with legacy card notes split into the timeline (see [Architecture](architecture.md#schema-3-and-the-notes-timeline)), and is written as version 3 on the next save.
+Versions 1 through 3 are read unchanged on disk and normalized in memory. The next successful save writes version 4; an older writer then rejects that board rather than risking a stale overwrite. Legacy card notes split into the timeline during normalization.
 
 A column is `{"id", "name", "kind", "stackUnder": id|null, "wipLimit"?}`. Only the In Progress `wipLimit` is enforced.
 
@@ -241,13 +290,14 @@ Card fields:
 | `column` | `backlog`, `task`, `inprogress`, `done` or `blocked` |
 | `priority` | `critical`, `mid`, `low` or `null` |
 | `tags`, `links` | String arrays |
-| `subtasks` | A tree of `{"id", "text", "done", "createdAt", "doneAt", "collapsed", "children", "by"?, "doneBy"?}` |
+| `subtasks` | A tree of `{"id", "text", "done", "createdAt", "doneAt", "collapsed", "children", "by"?, "doneBy"?, "delegation"?}`. `delegation` is described [above](#patch-apicardreflifecycle). |
 | `dependsOn` | Card ids, set through the `dependencies` action |
 | `activeOwner`, `claimedAt` | Set only while In Progress |
 | `outcome` | `completed` or `canceled` in Done, otherwise `null` |
 | `blockedReason`, `unblockWhen`, `blockedAt`, `cancelReason`, `reworkReason`, `reopenReason`, `doneAt` | Lifecycle state |
 | `comments` | `[{"id", "at", "by", "text", "updatedAt"?, "updatedBy"?}]` |
 | `attachments` | `[{"id", "name", "size", "mime", "sha256", "createdAt", "by"}]` |
+| `inboxAcknowledged` | `{"<actor>": ["<note id>", …]}`: the findings each actor acknowledged. Set only through `PATCH api/card/{ref}/inbox`; card edits ignore it |
 | `history` | The last 40 `{"at", "ev", "from"?, "to"?, "by"?, "note"?}` entries |
 | `cycles` | Archived completions from rework and reopen |
 | `changedRev` | The board revision that last changed this card |
@@ -270,5 +320,7 @@ Card fields:
 | `by` | The actor label, or `null` for migrated entries whose stamp had none |
 | `summary` | One line, 1–160 characters, no line breaks |
 | `body` | Markdown, at most 32,000 characters, trailing whitespace stripped; `""` when empty |
+| `subtaskId` | Optional: the delegated subtask a worker's note or a generated note is about |
+| `kind` | Optional: `"generated"` for notes the subtask lifecycle writes (results, releases, takeovers, reviews); the inbox ignores them |
 
-Entries are added only through the `note` lifecycle action (or the CLI's `note`). A card PATCH or snapshot that changes `log` is 422.
+Entries are added only through the `note` lifecycle action (or the CLI's `note`) and the subtask lifecycle. A card PATCH or snapshot that changes `log` is 422.

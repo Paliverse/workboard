@@ -496,8 +496,15 @@ html[data-theme="dark"] .toast .btn { background: rgb(0 0 0 / .1); }
 .check-row .box .i { width: 12px; height: 12px; stroke-width: 2.4; }
 .check-row.done .box { background: var(--fg); border-color: var(--fg); color: var(--bg); }
 .check-row .text { flex: 1; min-width: 0; padding: 1px 0; border: 0; background: transparent; resize: none; field-sizing: content; font-size: var(--t-sm); line-height: 1.5; color: var(--fg); }
+.check-content { flex: 1; min-width: 0; }
+.check-content > .text { width: 100%; }
+.subtask-assignment { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; color: var(--fg-3); font-size: var(--t-xs); }
+.subtask-result { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-2); font-size: var(--t-xs); }
+.subtask-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.subtask-add .field { flex: 1; min-width: 150px; }
+.subtask-add label { display: flex; align-items: center; gap: 5px; color: var(--fg-3); font-size: var(--t-xs); }
 .check-row.done .text { color: var(--fg-3); }
-.check-row .row-tools { display: flex; opacity: 0; }
+.check-row .row-tools { display: flex; align-items: center; gap: 4px; opacity: 0; }
 .check-row:hover .row-tools, .check-row:focus-within .row-tools { opacity: 1; }
 .check-children { margin-left: 22px; }
 .file-row { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 6px 8px; margin: 0 -8px; border-radius: var(--r-md); }
@@ -786,6 +793,7 @@ button.tl-row:hover { background: var(--fill-1); }
         <nav class="nav" id="nav" aria-label="Views">
           <button class="nav-item" data-view="board"><svg class="i"><use href="#i-board"/></svg>Board<span class="count" data-count="total"></span></button>
           <button class="nav-item" data-view="ready"><svg class="i"><use href="#i-ready"/></svg>Ready now<span class="count" data-count="ready"></span></button>
+          <button class="nav-item" data-view="inbox"><svg class="i"><use href="#i-comment"/></svg>Inbox<span class="count" data-inbox-count></span></button>
           <button class="nav-item" data-view="rework"><svg class="i"><use href="#i-rework"/></svg>Rework<span class="count" data-count="rework"></span></button>
           <button class="nav-item" data-view="canceled"><svg class="i"><use href="#i-canceled"/></svg>Canceled<span class="count" data-count="canceled"></span></button>
           <button class="nav-item" data-view="insights"><svg class="i"><use href="#i-insights"/></svg>Insights</button>
@@ -1086,7 +1094,8 @@ const WB = window.WB = {};
       for (const f of fields) {
         const id = `dlg-${f.name}`;
         let input;
-        if (f.options) input = h('select', { class: 'input', id }, f.options.map(o => h('option', { value: o.value, text: o.label, selected: o.value === f.value })));
+        if (f.type === 'checkbox') input = h('input', { id, type: 'checkbox', checked: !!f.value });
+        else if (f.options) input = h('select', { class: 'input', id }, f.options.map(o => h('option', { value: o.value, text: o.label, selected: o.value === f.value })));
         else if (f.multiline) input = h('textarea', { class: 'input', id, rows: 3, placeholder: f.placeholder || '', value: f.value || '', style: { height: 'auto', padding: '8px 10px', resize: 'vertical', fieldSizing: 'content', minHeight: '72px', maxHeight: '40vh' } });
         else input = h('input', { class: 'input', id, type: f.type || 'text', placeholder: f.placeholder || '', value: f.value || '' });
         inputs[f.name] = input;
@@ -1103,7 +1112,7 @@ const WB = window.WB = {};
         e.preventDefault();
         if (okBtn.disabled) return;
         const values = {};
-        for (const f of fields) values[f.name] = f.options ? inputs[f.name].value : String(inputs[f.name].value).trim();
+        for (const f of fields) values[f.name] = f.type === 'checkbox' ? inputs[f.name].checked : f.options ? inputs[f.name].value : String(inputs[f.name].value).trim();
         finish(values);
       });
       scrim.addEventListener('pointerdown', () => finish(null));
@@ -1153,6 +1162,7 @@ const WB = window.WB = {};
         if (res?.document) setDoc(res.document, { source: 'self' });
         return { ok: true, res };
       } catch (err) {
+        scheduleRender({});  // Re-render from state: an optimistic move rolls back even when the revision is unchanged.
         reportWriteError(err, quiet);
         return { ok: false, status: err.status, error: err.message, data: err.data };
       }
@@ -1176,6 +1186,7 @@ const WB = window.WB = {};
     lifecycle: (id, action, details = {}) => write('PATCH', `api/card/${enc(id)}/lifecycle`, () => ({ action, details })),
     structure: operation => write('PATCH', 'api/structure', () => ({ operation })),
     comment: (id, operation) => write('PATCH', `api/card/${enc(id)}/comments`, () => ({ operation })),
+    acknowledge: (id, noteIds) => write('PATCH', `api/card/${enc(id)}/inbox`, () => ({ noteIds })),
     upload: (id, file) => {
       if (file.size > 10 * 1024 * 1024) { toast(`${file.name} is larger than 10 MiB`, { error: true }); return Promise.resolve({ ok: false, status: 413 }); }
       const mime = /^[\w.+-]+\/[\w.+-]+$/.test(file.type) ? file.type : 'application/octet-stream';
@@ -2006,6 +2017,8 @@ const WB = window.WB = {};
     menu(e.currentTarget, [
       { label: 'New card', icon: 'new', hint: 'C', run: newCardDialog },
       'sep',
+      { label: 'Export board ZIP', icon: 'download', run: exportBoard },
+      'sep',
       { label: 'Sort cards by newest', icon: 'sort', run: async () => { if (await confirm({ title: 'Sort every column by newest first?', body: 'This replaces the manual card order in each column. Column positions stay the same.', ok: 'Sort cards' })) WB.api.structure({ type: 'sort-cards', mode: 'created-desc' }); } },
       { label: 'Reset column layout', icon: 'reset', run: resetColumns },
       { label: 'In Progress limit…', icon: 'layers', run: setWip },
@@ -2017,6 +2030,18 @@ const WB = window.WB = {};
       { label: 'Refresh', icon: 'rework', run: () => refresh() },
     ], { align: 'end' });
   });
+
+  async function exportBoard() {
+    try {
+      const response = await fetch('api/export', { cache: 'no-store' });
+      if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Export failed'); }
+      const url = URL.createObjectURL(await response.blob());
+      const link = h('a', { href: url, download: `${BOARD}.zip` });
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      toast('Board export downloaded');
+    } catch (error) { toast(error.message, { error: true, ms: 7000 }); }
+  }
 
   function setZoom(z, announce = true) {
     S.zoom = Math.round(Math.min(1.6, Math.max(0.6, z)) * 100) / 100;
@@ -2097,7 +2122,7 @@ const WB = window.WB = {};
   const viewHost = $('#view-host');
   let viewInner = null;
   WB.setView = name => {
-    if (!['board', 'ready', 'rework', 'canceled', 'insights', 'git', 'calendar'].includes(name)) name = 'board';
+    if (!['board', 'ready', 'inbox', 'rework', 'canceled', 'insights', 'git', 'calendar'].includes(name)) name = 'board';
     const changed = name !== S.view;
     S.view = name;
     for (const el of document.querySelectorAll('.nav-item[data-view]')) { if (el.dataset.view === name) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current'); }
@@ -2618,13 +2643,6 @@ const WB = window.WB = {};
     return null;
   }
   const nodeOf = (tree, sid) => locate(tree, sid)?.node;
-  function nextSubId(tree) {
-    let max = 0;
-    const walk = list => { for (const s of list || []) { const m = /(\d+)$/.exec(s.id); if (m) max = Math.max(max, Number(m[1])); walk(s.children); } };
-    walk(tree);
-    return `s-${max + 1}`;
-  }
-  const newSub = (tree, text) => ({ id: nextSubId(tree), text, done: false, createdAt: now(), doneAt: null, collapsed: false, children: [] });
   function countTree(list, visible = true, n = { done: 0, total: 0, shown: 0 }) {
     for (const s of list || []) {
       n.total++;
@@ -2663,10 +2681,20 @@ const WB = window.WB = {};
     'subtask-done': 'checked off subtasks',
     'subtask-undone': 'reopened subtasks',
     'subtask-rm': 'removed subtasks',
+    'subtask-delegate': 'made a subtask claimable',
+    'subtask-claim': 'claimed a subtask',
+    'subtask-release': 'released a subtask',
+    'subtask-takeover': 'took over a subtask',
+    'subtask-configure': 'configured a subtask',
+    'subtask-block': 'blocked a subtask',
+    'subtask-resume': 'resumed a subtask',
+    'subtask-accept': 'accepted a subtask result',
+    'subtask-request-changes': 'requested changes on a subtask',
     note: 'added a note',
   };
   // Events whose note is a human-written reason worth showing.
-  const REASONED = new Set(['start', 'move', 'blocked', 'unblocked', 'cancel', 'rework', 'reopened', 'bug', 'improve', 'takeover']);
+  const REASONED = new Set(['start', 'move', 'blocked', 'unblocked', 'cancel', 'rework', 'reopened', 'bug', 'improve', 'takeover',
+    'subtask-release', 'subtask-takeover', 'subtask-block', 'subtask-request-changes']);
   function describe(e) {
     // Legacy entries carry only from/to: a null origin is creation, anything else a move.
     const ev = e.ev || (e.to ? (e.from == null ? 'created' : 'move') : null);
@@ -3036,22 +3064,34 @@ const WB = window.WB = {};
     const count = counter();
     const list = h('div', { class: 'checklist' });
     let all = false;
+    const folds = new Map();
+    let foldRevision = 0;
     const more = moreBtn(() => { all = true; flush(); });
+    const change = (op, ids, details = {}) => edit(id, () => api.lifecycle(id, 'subtask', { op, ids, ...details }));
+    const delegated = h('input', { type: 'checkbox', attrs: { 'aria-label': 'Make new subtasks claimable' } });
+    const claimable = h('label', {}, delegated, 'Claimable');
     const add = onEnterAdd(h('input', { class: 'field', placeholder: 'Add subtask…', attrs: { 'aria-label': 'Add subtask' } }),
-      text => editTree(id, tree => { tree.push(newSub(tree, text)); }));
-    slot(c => json(c.subtasks) + all, c => {
+      text => change('add', [], { texts: [text], delegated: delegated.checked }));
+    const addRow = h('div', { class: 'subtask-add' }, add, claimable);
+    // Delegation controls are for whoever owns the In Progress parent; everyone else sees a plain checklist.
+    const leads = c => c.column === 'inprogress' && c.activeOwner === WB.state.actor;
+    slot(c => json([c.subtasks, c.activeOwner, c.column, WB.state.actor]) + all + foldRevision, c => {
       const tree = c.subtasks || [];
+      claimable.hidden = !leads(c);
+      if (claimable.hidden) delegated.checked = false;
       const n = countTree(tree);
       put(count, n.total ? [ui.progress(n.done, n.total), `${n.done}/${n.total}`] : null);
       const a = document.activeElement;
       const keep = list.contains(a) && a.classList.contains('box') ? a.parentNode.dataset.sid : null;
       let left = all ? Infinity : SUB_CAP;
-      const rows = items => {
+      const rows = (items, inheritedLock = false) => {
         const out = [];
         for (const s of items) {
           if (left-- <= 0) break;
-          out.push(row(s));
-          if (s.children?.length && !s.collapsed) out.push(h('div', { class: 'check-children' }, rows(s.children)));
+          const locked = inheritedLock || (!!s.delegation?.owner && s.delegation.owner !== WB.state.actor);
+          const collapsed = folds.get(s.id) ?? s.collapsed;
+          out.push(row(s, c, locked, collapsed));
+          if (s.children?.length && !collapsed) out.push(h('div', { class: 'check-children' }, rows(s.children, locked)));
         }
         return out;
       };
@@ -3065,26 +3105,92 @@ const WB = window.WB = {};
     } });
     list.addEventListener('focusout', e => { if (!list.contains(e.relatedTarget)) flush(); });
 
-    function row(s) {
+    function row(s, c, locked, collapsed) {
       const kids = s.children || [];
+      const assignment = s.delegation;
+      const mine = assignment?.owner === WB.state.actor;
+      const lead = leads(c);
       const text = h('textarea', { class: 'text', rows: 1, attrs: { 'aria-label': 'Subtask' } });
       setBase(text, s.text);
+      text.readOnly = locked;
       bindText(text, v => editTree(id, tree => { const node = nodeOf(tree, s.id); if (!node) return false; node.text = v; }), { enter: true, required: true });
-      const box = h('button', { class: 'box', type: 'button', attrs: { role: 'checkbox', 'aria-checked': String(!!s.done), 'aria-label': s.text || 'Subtask' },
-        on: { click: () => toggle(s.id, el, box) } }, icon('check'));
-      const el = h('div', { class: s.done ? 'check-row done' : 'check-row', dataset: { sid: s.id } }, box, text,
-        kids.length ? iconBtn(s.collapsed ? 'right' : 'down', s.collapsed ? `Show ${kids.length} sub-items` : 'Hide sub-items',
-          () => editTree(id, tree => { const node = nodeOf(tree, s.id); if (!node) return false; node.collapsed = !node.collapsed; })) : null,
-        h('span', { class: 'row-tools' },
+      const box = h('button', { class: 'box', type: 'button', disabled: assignment ? !mine || c.column !== 'inprogress' || assignment.state === 'blocked' : locked,
+        attrs: { role: 'checkbox', 'aria-checked': String(!!s.done), 'aria-label': s.text || 'Subtask' },
+        on: { click: () => toggle(s, el, box) } }, icon('check'));
+      const status = h('div', { class: 'subtask-assignment' });
+      const button = (label, run) => h('button', { class: 'btn xs', type: 'button', on: { click: run } }, label);
+      if (assignment) {
+        status.append(h('span', { text: `${s.id} · ${assignment.state}${assignment.owner ? ` · @${assignment.owner}` : ''}` }));
+        if (assignment.review?.required) status.append(h('span', { text: `Review: ${assignment.review.state || 'required'}` }));
+        if (assignment.scope?.length) status.append(h('span', { text: `Scope: ${assignment.scope.join(', ')}` }));
+        if (assignment.dependsOn?.length) status.append(h('span', { text: `After: ${assignment.dependsOn.join(', ')}` }));
+        if (assignment.state === 'available' && c.column === 'inprogress') {
+          status.append(button('Claim', async () => {
+            try {
+              const data = await api.get(`api/card/${encodeURIComponent(id)}/scopes?subtask=${encodeURIComponent(s.id)}`);
+              if (data.conflicts.length && !await ui.confirm({ title: 'Overlapping active scopes',
+                body: data.conflicts.map(x => `${x.subtaskId} · @${x.owner}: ${x.overlaps.map(p => `${p.scope} / ${p.otherScope}`).join(', ')}`).join('\n') + '\nCoordinate these paths before editing.', ok: 'Claim anyway' })) return;
+              await change('claim', [s.id]);
+            } catch (error) { ui.toast(error.message, { error: true }); }
+          }));
+          if (lead) status.append(button('Configure…', async () => {
+            const v = await ui.prompt({ title: 'Configure assignment', body: `${s.id}: ${s.text}`, ok: 'Save', fields: [
+              { name: 'scope', label: 'Write scope · relative paths, one per line', multiline: true, value: (assignment.scope || []).join('\n') },
+              { name: 'dependsOn', label: 'Prerequisite assignment IDs · comma separated', value: (assignment.dependsOn || []).join(', ') },
+              { name: 'reviewRequired', label: 'Require Main to accept the result', type: 'checkbox', value: assignment.review?.required },
+            ] });
+            if (v) await change('configure', [s.id], { scope: v.scope.split('\n').map(x => x.trim()).filter(Boolean),
+              dependsOn: v.dependsOn.split(/[\s,]+/).filter(Boolean), reviewRequired: v.reviewRequired });
+          }));
+        } else if (assignment.state === 'claimed' || assignment.state === 'blocked') {
+          const op = mine ? 'release' : 'takeover';
+          status.append(button(mine ? 'Release…' : 'Take over…', async () => {
+            const v = await ui.prompt({ title: mine ? 'Release subtask' : 'Take over subtask',
+              body: `${s.id}: ${s.text}`, ok: mine ? 'Release' : 'Take over',
+              fields: [{ name: 'reason', label: 'Reason and unfinished work', required: true, multiline: true }] });
+            if (v) await change(op, [s.id], { reason: v.reason });
+          }));
+          if (mine && assignment.state === 'blocked') status.append(button('Resume', () => change('resume', [s.id])));
+          if (mine && assignment.state === 'claimed') status.append(button('Block…', async () => {
+            const v = await ui.prompt({ title: 'Block assignment', body: `${s.id}: ${s.text}`, ok: 'Block', fields: [
+              { name: 'reason', label: 'What is blocking the work?', required: true, multiline: true },
+              { name: 'until', label: 'What will unblock it?', required: true, multiline: true },
+            ] });
+            if (v) await change('block', [s.id], v);
+          }));
+        } else if (assignment.state === 'completed' && lead) {
+          const ref = { cardId: id, subtaskId: s.id, num: c.num };
+          if (assignment.review?.state !== 'accepted') status.append(button('Accept', () => WB.review(ref, 'accept')));
+          status.append(button('Request changes…', () => WB.review(ref, 'request-changes')));
+        }
+      }
+      const content = h('div', { class: 'check-content' }, text, status,
+        assignment?.blocker ? h('p', { class: 'subtask-result', text: `Blocked: ${assignment.blocker.reason} · Until: ${assignment.blocker.until}` }) : null,
+        assignment?.review?.state === 'changes_requested' ? h('p', { class: 'subtask-result', text: `Changes requested: ${assignment.review.reason || ''}` }) : null,
+        assignment?.result ? h('p', { class: 'subtask-result', text: assignment.result }) : null);
+      const el = h('div', { class: s.done ? 'check-row done' : 'check-row', dataset: { sid: s.id } }, box, content,
+        kids.length ? iconBtn(collapsed ? 'right' : 'down', collapsed ? `Show ${kids.length} sub-items` : 'Hide sub-items', () => {
+          if (!locked) return editTree(id, tree => { const node = nodeOf(tree, s.id); if (!node) return false; node.collapsed = !collapsed; });
+          folds.set(s.id, !collapsed); foldRevision++; flush();
+        }) : null,
+        locked ? null : h('span', { class: 'row-tools' },
+          lead && !assignment && !s.done ? [h('span', { class: 'faint mono', text: s.id }), button('Make claimable', () => change('delegate', [s.id]))] : null,
           iconBtn('plus', 'Add sub-item', () => addChild(s.id, el)),
           iconBtn('trash', 'Delete subtask', () => remove(s))));
       return el;
     }
-    function toggle(sid, el, box) {
+    async function toggle(s, el, box) {
+      if (s.delegation) {
+        if (s.done) return change('undone', [s.id]);
+        const v = await ui.prompt({ title: 'Complete contribution', body: `${s.id}: ${s.text}`,
+          ok: 'Complete subtask', fields: [{ name: 'result', label: 'Result, evidence and limitations', required: true, multiline: true }] });
+        if (v) return change('done', [s.id], { result: v.result });
+        return;
+      }
       const done = !el.classList.contains('done');
       const show = on => { el.classList.toggle('done', on); box.setAttribute('aria-checked', String(on)); };
       show(done);
-      editTree(id, tree => { const node = nodeOf(tree, sid); if (!node) return false; node.done = done; node.doneAt = done ? now() : null; })
+      change(done ? 'done' : 'undone', [s.id])
         .then(r => { if (!r.ok) show(!done); });
     }
     // A local draft row under the parent; it becomes a real subtask once it has text.
@@ -3101,12 +3207,7 @@ const WB = window.WB = {};
         const v = text.value.trim();
         if (!v) { draft.remove(); flush(); return; }
         text.removeAttribute('aria-invalid');
-        const r = await editTree(id, tree => {
-          const node = nodeOf(tree, sid);
-          if (!node) return false;
-          (node.children ||= []).push(newSub(tree, v));
-          node.collapsed = false;
-        });
+        const r = await change('add', [], { texts: [v], parent: sid, delegated: delegated.checked });
         if (!r.ok) { text.setAttribute('aria-invalid', 'true'); return; }
         draft.remove();
         flush();
@@ -3115,15 +3216,18 @@ const WB = window.WB = {};
     async function remove(s) {
       const n = countTree(s.children).total;
       if (n && !await ui.confirm({ title: 'Delete subtask?', body: `“${s.text}” and its ${n} sub-item${n === 1 ? '' : 's'} will be removed.`, ok: 'Delete', danger: true })) return;
-      editTree(id, tree => { const hit = locate(tree, s.id); if (!hit) return false; hit.list.splice(hit.i, 1); });
+      change('rm', [s.id]);
     }
-    return section('Subtasks', count, null, list, more, add);
+    return section('Subtasks', count, null, list, more, addRow);
   }
+
+  // Core's rule: the author, the card's active owner, or anyone when no author is recorded.
+  const moderates = (c, by) => !by || by === WB.state.actor || c.activeOwner === WB.state.actor;
 
   function attachments(id) {
     const count = counter();
     const list = h('div', {});
-    slot(c => json(c.attachments), c => {
+    slot(c => json([c.attachments, c.activeOwner, WB.state.actor]), c => {
       const files = c.attachments || [];
       count.textContent = files.length || '';
       put(list, files.map(a => h('div', { class: 'file-row' },
@@ -3131,9 +3235,9 @@ const WB = window.WB = {};
         h('div', { class: 'main' },
           h('a', { class: 'name', href: api.attachmentUrl(id, a.id), download: a.name, title: a.name, text: a.name }),
           h('div', { class: 'meta', text: [fmtSize(a.size || 0), a.by, ui.relTime(a.createdAt)].filter(Boolean).join(' · ') })),
-        iconBtn('x', `Remove ${a.name}`, async () => {
+        moderates(c, a.by) ? iconBtn('x', `Remove ${a.name}`, async () => {
           if (await ui.confirm({ title: `Remove ${a.name}?`, body: 'The file will be detached from this card.', ok: 'Remove', danger: true })) api.detach(id, a.id);
-        }))));
+        }) : null)));
     });
     return section('Attachments', count,
       h('button', { class: 'btn xs', type: 'button', on: { click: () => fileInput.click() } }, icon('clip', 'sm'), 'Attach'), list);
@@ -3159,26 +3263,26 @@ const WB = window.WB = {};
     const thread = h('div', { class: 'thread' });
     let all = false;
     const more = moreBtn(() => { all = true; flush(); });
-    slot(c => json(c.comments) + all, c => {
+    slot(c => json([c.comments, c.activeOwner, WB.state.actor]) + all, c => {
       const list = c.comments || [];
       count.textContent = list.length || '';
-      put(thread, (all ? list : list.slice(-MSG_CAP)).map(m => message(m)));
+      put(thread, (all ? list : list.slice(-MSG_CAP)).map(m => message(m, c)));
       more.hidden = all || list.length <= MSG_CAP;
       more.textContent = `Show all ${list.length}`;
     }, { busy: () => !!thread.querySelector('textarea') });
 
-    function message(m) {
+    function message(m, c) {
       const text = h('div', { class: 'msg-text', text: m.text });
       return h('div', { class: 'msg' }, ui.avatar(m.by || '?'),
         h('div', { class: 'msg-body' },
           h('div', { class: 'msg-head' },
             h('b', { text: m.by || 'Unknown' }), when(m.at),
             m.updatedAt ? h('span', { title: `Edited ${ui.fmtDateTime(m.updatedAt)}${m.updatedBy ? ` by ${m.updatedBy}` : ''}`, text: 'edited' }) : null,
-            h('span', { class: 'msg-tools' },
+            moderates(c, m.by) ? h('span', { class: 'msg-tools' },
               iconBtn('edit', 'Edit comment', () => editMessage(m, text)),
               iconBtn('trash', 'Delete comment', async () => {
                 if (await ui.confirm({ title: 'Delete comment?', body: 'It will be removed for everyone.', ok: 'Delete', danger: true })) api.comment(id, { type: 'delete', id: m.id });
-              }))),
+              })) : null),
           text));
     }
     function editMessage(m, textEl) {
@@ -3293,13 +3397,15 @@ const WB = window.WB = {};
   const icon = (name, cls) => WB.ui.icon(name, cls);
 
   // Server-backed data survives view switches; `cur` is the one mounted view.
-  const PATHS = {ready: 'api/ready', insights: 'api/stats', git: 'api/git'};
+  const PATHS = {ready: 'api/ready', inbox: 'api/inbox', insights: 'api/stats', git: 'api/git'};
   const VALID = {
     ready: d => Array.isArray(d && d.cards),
+    inbox: d => Array.isArray(d && d.items),
     insights: d => !!d && !!d.stats && typeof d.stats === 'object',
     git: d => !!d && typeof d.state === 'string',
   };
-  const store = {ready: {}, insights: {}, git: {}};   // {data, error, busy, again, timer, at}
+  const store = {ready: {}, inbox: {}, insights: {}, git: {}};   // {data, error, busy, again, timer, at}
+  const inboxCount = document.querySelector('[data-inbox-count]');
   const cal = {month: null, filter: 'all'};           // calendar state lives in memory only
   let cur = null;                                     // {name, host, body, head, sig, …}
 
@@ -3318,23 +3424,26 @@ const WB = window.WB = {};
     clearTimeout(s.timer); s.timer = 0;
     if (s.busy) { s.again = true; return; }
     s.busy = true; s.again = false;
+    const actor = WB.state.actor;
     if (active(kind)) VIEWS[kind].paint();
     Promise.resolve()
-      .then(() => WB.api.get(PATHS[kind]))
+      .then(() => WB.api.get(PATHS[kind] + (kind === 'inbox' ? `?actor=${encodeURIComponent(actor)}` : '')))
       .then(d => {
+        if (kind === 'inbox' && actor !== WB.state.actor) { s.again = true; return; }
         if (!VALID[kind](d)) throw new Error(`Unexpected response from ${PATHS[kind]}`);
         s.data = d; s.error = null; s.at = new Date();
       })
       .catch(e => { s.error = e; })
       .then(() => {
         s.busy = false;
-        if (!active(kind)) return;
-        if (s.again) load(kind); else VIEWS[kind].paint();
+        if (kind === 'inbox') inboxCount.textContent = s.data?.items.length || '';
+        if (kind !== 'inbox' && !active(kind)) return;  // The inbox keeps loading in the background for its nav count.
+        if (s.again) load(kind); else if (active(kind)) VIEWS[kind].paint();
       });
   }
   function schedule(kind) {
     const s = store[kind];
-    if (!s.timer) s.timer = setTimeout(() => { s.timer = 0; if (active(kind)) load(kind); }, 1000);
+    if (!s.timer) s.timer = setTimeout(() => { s.timer = 0; if (kind === 'inbox' || active(kind)) load(kind); }, 1000);
   }
 
   // ── Shared building blocks ──
@@ -3401,6 +3510,57 @@ const WB = window.WB = {};
     // Server order; drop cards the live document says are gone, claimed or moved (refetch follows).
     const all = store.ready.data.cards.map(c => WB.card(c && c.id)).filter(c => c && c.column === 'task' && !c.activeOwner);
     cardList(all, READY, 'ready');
+  }
+
+  const findSubtask = (items, id) => {
+    for (const item of items || []) { if (item.id === id) return item; const child = findSubtask(item.children, id); if (child) return child; }
+    return null;
+  };
+  async function review(row, action) {
+    let details = {};
+    if (action === 'request-changes') {
+      const values = await WB.ui.prompt({ title: 'Request changes', body: `${row.subtaskId} on #${row.num}`, ok: 'Request changes',
+        fields: [{ name: 'reason', label: 'What needs to change?', required: true, multiline: true }] });
+      if (!values) return;
+      details = values;
+    }
+    const result = await WB.api.lifecycle(row.cardId, 'subtask', { op: action, ids: [row.subtaskId], ...details });
+    if (result.ok) load('inbox');
+  }
+  WB.review = review;
+  // One write per card, however many of its findings are acknowledged.
+  async function acknowledge(rows) {
+    const byCard = new Map();
+    for (const row of rows) byCard.set(row.cardId, [...(byCard.get(row.cardId) || []), row.note.id]);
+    for (const [cardId, noteIds] of byCard) if (!(await WB.api.acknowledge(cardId, noteIds)).ok) break;
+    load('inbox');
+  }
+  function paintInbox() {
+    if (noData('inbox', "Couldn't load the inbox")) return;
+    const state = store.inbox, items = state.data.items;
+    cur.ackAll.hidden = items.filter(row => row.kind === 'finding').length < 2;
+    cur.head.p.textContent = `Results, blockers and shared findings for ${WB.state.actor}. Open the parent card for the full handoff.`;
+    show(JSON.stringify([WB.state.actor, state.data.rev, WB.state.rev, state.error && errText(state.error)]), () => [
+      state.error && staleNote('inbox', state.error),
+      ...items.map(row => {
+        const card = WB.card(row.cardId), subtask = findSubtask(card?.subtasks, row.subtaskId);
+        if (!card) return null;
+        const label = { review: 'Result awaiting review', blocker: 'Assignment blocked', finding: 'Shared finding', changes_requested: 'Changes requested' }[row.kind] || row.kind;
+        const tools = h('div', { class: 'tools' });
+        if (row.kind === 'review') tools.append(
+          h('button', { class: 'btn sm primary', type: 'button', on: { click: () => review(row, 'accept') } }, 'Accept result'),
+          h('button', { class: 'btn sm outline', type: 'button', on: { click: () => review(row, 'request-changes') } }, 'Request changes…'));
+        if (row.kind === 'finding') tools.append(h('button', { class: 'btn sm outline', type: 'button', on: { click: () => acknowledge([row]) } }, 'Acknowledge'));
+        const body = row.kind === 'finding' ? [row.note.summary, row.note.body].filter(Boolean).join('\n\n') : row.kind === 'blocker'
+          ? `${row.blocker?.reason || ''}\nUnblocks when: ${row.blocker?.until || ''}`
+          : row.kind === 'changes_requested' ? row.review?.reason : subtask?.delegation?.result;
+        return block(label, row.owner ? `@${row.owner}` : row.note?.by ? `@${row.note.by}` : '',
+          h('button', { class: 'btn sm', type: 'button', on: { click: () => WB.openCard(row.cardId) } }, `#${card.num} ${card.title}`),
+          h('p', { class: 'view-note', text: row.subtaskId ? `${row.subtaskId}${subtask ? ` · ${subtask.text}` : ''}` : 'Shared with the parent' }),
+          h('p', { class: 'subtask-result', text: body || '' }), tools);
+      }),
+      !items.length && empty('done', 'Inbox is clear', 'New results, assignment blockers and shared findings will appear here.'),
+    ]);
   }
 
   const LISTS = {
@@ -3629,6 +3789,15 @@ const WB = window.WB = {};
 
   // ── Registry ──
   const VIEWS = {
+    inbox: {
+      render() {
+        cur.ackAll = h('button', { class: 'btn sm outline', type: 'button', hidden: true,
+          on: { click: () => acknowledge(store.inbox.data.items.filter(row => row.kind === 'finding')) } }, 'Acknowledge all');
+        mount('Inbox', `Review work for ${WB.state.actor}.`, [cur.ackAll, retry('inbox')]); paintInbox(); load('inbox');
+      },
+      paint: paintInbox,
+      update() { paintInbox(); schedule('inbox'); },
+    },
     ready: {
       render() { mount('Ready now', 'Unowned Task cards whose prerequisites are complete — highest priority first.'); paintReady(); load('ready'); },
       paint: paintReady,
@@ -3665,6 +3834,12 @@ const WB = window.WB = {};
   });
 
   WB.views = {render, update};
+  WB.on('actor', () => {
+    store.inbox.data = null; store.inbox.error = null; inboxCount.textContent = '';
+    if (active('inbox')) cur.sig = null;
+    if (WB.state.doc) load('inbox');
+  });
+  WB.on('doc', () => schedule('inbox'));  // Keeps the Inbox nav count current.
 })();
 
 WB._boot();

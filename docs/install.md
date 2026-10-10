@@ -107,7 +107,7 @@ The service runs `workboard serve --service` at login. It serves every registere
 
 ```sh
 workboard service install    # register and start (safe to repeat)
-workboard service status     # registration, running server, version match
+workboard service status     # registration, running server, version and schema match
 workboard service restart    # stop and start again
 workboard service remove     # stop and unregister
 ```
@@ -146,6 +146,18 @@ The `script` channel is detected by the `install-receipt.json` next to the execu
 - `unknown`, anything else, such as a manually unpacked archive: reinstall with `npm install -g @paliverse/workboard` or the install script.
 
 After updating by hand, run `workboard skills install --refresh` and `workboard service restart`.
+
+`workboard service restart` checks the server it started. If that server is another version, or can't read boards this CLI writes, the registered service points at another installation: the command exits 1 with `state`, names the running server's version and executable, and asks you to run `workboard service install`, then `workboard service restart`. `upgrade` restarts through the new version's `service restart`, so the same check guards it. If a later step fails after `upgrade` stopped the server, the error says so; `workboard service restart` brings it back.
+
+`workboard service status` and `workboard doctor` (`server-schema-mismatch`) flag a running server that can't read boards this CLI writes.
+
+### Upgrading to 0.2.0
+
+0.2.0 moves boards to schema 4 for delegated subtasks. The first write from 0.2.0 migrates a board; reading it changes nothing. From then on, 0.1.x CLIs and servers can neither read nor write that board.
+
+- **Restart the server before the first write.** `workboard upgrade` does it. After a manual update (npm, the install script or a new archive), run `workboard service restart`. Update every installation that writes the same boards, and restart running agent sessions.
+- **Windows binary installs:** `upgrade` continues in a temporary copy, so your shell never sees its exit code. Run `workboard service status` or `workboard doctor` afterwards.
+- **Downgrading is unsupported.** The only way back is the last pre-migration snapshot, `~/.workboard/boards/<dir>/.backups/board-<rev>.json` with `"schemaVersion": 3`. Each board keeps only its 10 newest snapshots, so copy it elsewhere if you may need it. To go back, reinstall 0.1.x, stop its server and your agents, and copy the snapshot over the board's `board.json`; every change since the migration is lost.
 
 ## Backups
 

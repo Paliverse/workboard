@@ -7,10 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Delegated subtasks. The card owner keeps the parent card and hands complementary pieces to other agents: `subtask REF add TEXT --delegated` (or `subtask REF delegate ID`) makes work claimable, and `subtask REF configure ID` saves an advisory write scope, prerequisites between subtasks and a required review. Workers `claim`, `block`/`resume`, `release`, complete with `done ID --result TEXT` and reopen with `undone`; `takeover ID --reason TEXT` moves claimed work to another worker. The owner reviews with `accept` or `request-changes ID --reason TEXT`. A parent can't be completed while delegated work is unfinished or a required review is pending, and claims never expire. The board UI and the HTTP API run the same lifecycle, and `digest` shows a `CONTRIBUTIONS @actor` section.
+- Focused context: `context REF --subtask ID`, `--mine` or `--assigned-to ACTOR` returns only the selected subtasks with their ancestors and prerequisites, plus the card's shared comments, notes, attachments and dependencies.
+- `handoff REF --subtask ID --worker ACTOR` prepares a read-only worker brief with its write scope and peers. `--json` adds `commands`, argument arrays to read, claim, publish and complete the subtask. It refuses a subtask whose prerequisites are unfinished (`deps`) and never claims, spawns or messages anything.
+- `note REF --subtask ID` publishes a finding for the subtask you have claimed.
+- `inbox [REF]` lists what needs your attention: results waiting for your review, blockers, requested changes and new findings from others on cards you own. `ack REF NOTE_ID...` acknowledges findings in one write. The board UI has an Inbox view with a count.
+- `add --from REF` creates a card from another card's title, pinned notes, tags, priority and subtasks, with fresh subtask IDs and all progress reset.
+- `export --out PATH` writes a board, its attachments and its archives (and, with `--include-backups`, its backups) to a portable ZIP. `import FILE --name NAME --dir PROJECT` previews the ZIP and `--apply` creates a new board from it. The board menu in the browser downloads the same ZIP.
+- `version --json` reports `apiVersion`, `schemaVersion`, `supportedSchemaVersions` and `capabilities`, as `/health` does.
+- `service restart`, which `upgrade` also runs, checks that the restarted server is this version and can read the boards this CLI writes. If the service starts another installation, it fails with `state` and says to run `workboard service install`. `service status` reports `schemaMatch`, and `doctor` reports a running server that can't read them as the blocker `server-schema-mismatch`.
+
 ### Changed
 
+- **Boards are now written as schema 4.** Reading a schema 1–3 board changes nothing; the first write migrates it. **After that, WorkBoard 0.1.x CLIs and servers can neither read nor write the board.** Restart the server before the first write: `workboard upgrade` does it, and after a manual update run `workboard service restart`. Update every installation that writes the same boards. Downgrading is unsupported; see [Upgrading to 0.2.0](docs/install.md#upgrading-to-020).
 - `context` (and `GET api/card/{ref}/context`) returns only the newest 10 comments and reports the number left out as `omitted.comments`, like the notes timeline; `show` keeps the newest 5. Comment IDs are unchanged, and `--full` still returns every comment. Agents that coordinate through comments no longer pull the whole thread on every read: across 16 real boards, the largest card's `context` dropped from 470 KB to 30 KB.
 - The agent skill no longer asks for `--expected-rev` on `comment` and `note`. They only append, and on a card shared by several agents a guarded comment went stale on every peer's write: two of six agents hit this in a parallel-work test.
+- Editing or deleting a comment and detaching an attachment are limited to the entry's author, the card's owner, or anyone when no author is recorded. Anyone else gets `owned`.
+- HTTP workflow errors carry the CLI's error `code` (`owned`, `state`, `deps`, …) next to `error`. Attachment downloads, like the new export download, refuse requests marked `Sec-Fetch-Site: cross-site` (403).
+- `doctor`: a schema 4 board whose delegated subtasks are inconsistent is the blocker `delegation-invalid`. `legacy-schema` warnings are reported only for the live board, not for its backups and archives.
+
+### Fixed
+
+- If `init` failed after the new board was registered, its rollback could delete the registered board's folder. Rollback now never deletes a folder the registry references.
 
 ## [0.1.3] - 2026-10-10
 

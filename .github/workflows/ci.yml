@@ -55,4 +55,4 @@ jobs:
         run: |
           exe="$GITHUB_WORKSPACE/build/pyinstaller/dist/workboard/workboard"
           if [ "$RUNNER_OS" = Windows ]; then exe="$exe.exe"; fi
-          WORKBOARD_TEST_COMMAND="$exe" python -m unittest tests.test_cli -v
+          WORKBOARD_TEST_COMMAND="$exe" python -m unittest tests.test_cli tests.test_subtasks tests.test_context tests.test_bundles -v

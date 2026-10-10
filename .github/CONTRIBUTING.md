@@ -50,12 +50,15 @@ The tests use only the standard library and need no install: `tests/support.py` 
 | Area | Module |
 |---|---|
 | CLI, schema, locking, backups, recovery | `tests.test_cli` |
+| Delegated subtasks, reviews, blockers, write scopes, the inbox, focused context, handoffs | `tests.test_subtasks`, `tests.test_context` |
+| Their HTTP contracts | `tests.test_delegation_http` |
+| Portable board ZIPs (`export`, `import`) | `tests.test_bundles` |
 | Board store, registry, lookup, worktrees, `config.json` | `tests.test_boards` |
 | HTTP server, browser endpoints, SSE | `tests.test_server` |
-| Skills, service, version, upgrade | `tests.test_setup` |
+| Skills, service, version, upgrade | `tests.test_setup`, `tests.test_upgrade_flow`, `tests.test_upgrade_http` |
 | Doctor | `tests.test_doctor` |
 
-- `WORKBOARD_TEST_COMMAND="path/to/workboard"` runs the CLI tests against a built binary instead of `python -m workboard`.
+- `WORKBOARD_TEST_COMMAND="path/to/workboard" python -m unittest tests.test_cli -v` runs the CLI tests against a built binary instead of `python -m workboard`.
 - `WORKBOARD_TEST_REAL_SERVICE=1` enables tests that register a real OS service. CI sets it; don't set it on your own machine.
 
 Test rules:
@@ -104,6 +107,7 @@ These rules are for maintainers and coding agents changing this repository, on t
 | Path | Owns |
 |---|---|
 | `src/workboard/core.py` | Schema normalization, the board store (`home()`, `boards_dir()`, `deleted_dir()`), the registry, `config.json`, board lookup from project folders and git worktrees, locking, atomic persistence, backups, archives, lifecycle rules and attachments |
+| `src/workboard/bundles.py` | Portable board ZIPs: export, import validation, size limits and staging, called only through `core` |
 | `src/workboard/cli.py` | The argument parser, board commands, one-line and `--json` output, and the error envelope |
 | `src/workboard/server.py` | The per-user HTTP/SSE server, browser mutation endpoints and lifecycle helpers (`server_info`, `stop`, `start_background`, `open_board`) |
 | `src/workboard/web/board.html` | The whole browser UI, served directly with no generated bundle |
@@ -121,6 +125,7 @@ These rules are for maintainers and coding agents changing this repository, on t
 - The registry `~/.workboard/boards.json` (version 2) maps each board name to its `dir` and linked `project`. Change it only through `core` (`create_board`, `link_board`, `delete_registered_board`), which takes the registry lock, then the board lock. `dir` stays a single safe path component, and a project has at most one board. Don't write `boards.json` or `server.json` by hand, and never write `config.json` from code: it belongs to the user.
 - Deleting a board moves its whole folder to `~/.workboard/deleted/`. Nothing is erased.
 - A guarded card mutation is a 409 `stale` only when its card's `changedRev` is greater than the reviewed revision. Board-scoped operations (`wip`, `sweep`, `recover`, `columns-core`, board deletion) and browser writes need the exact board revision. Check under the same board lock as the write.
+- Field edits (`update`, `workpad`, legacy checklist items, browser title, priority, tags, links and order) never check card ownership; lifecycle verbs keep the owner guard. Delegated subtask state changes only through the subtask lifecycle, which checks ownership and state under the board lock, so two workers racing for one subtask get exactly one winner.
 - `--json` mutations carry the identity (`item`/`items`) of any created or changed subtask, comment, attachment or note entry, and JSON errors carry the current `rev`.
 
 ### Server and browser

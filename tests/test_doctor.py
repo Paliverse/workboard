@@ -155,7 +155,7 @@ class DataIntegrityTest(DoctorCase):
         self.assertIn("[board-invalid]", out)
 
         mutations = [
-            lambda doc: doc.update(schemaVersion=4),
+            lambda doc: doc.update(schemaVersion=5),
             lambda doc: doc.update(schemaVersion=True),
             lambda doc: doc.update(schemaVersion="2"),
             lambda doc: doc.update(rev=-1),
@@ -273,21 +273,59 @@ class DataIntegrityTest(DoctorCase):
         self.assertEqual(report["blockers"], [], report)
         self.assertIn("legacy-schema", codes(report, "warnings"))
 
-    def test_v3_timeline_entries_are_validated(self):
+    def test_timeline_entries_are_validated_from_schema_3(self):
         entry = {"id": "a" * 32, "at": "2026-09-24T10:00:00Z", "by": "ada", "summary": "Shipped", "body": ""}
         healthy = [entry, {**entry, "id": "b" * 32, "at": "2026-09-01", "by": None, "body": "- `abc1234`"}]
-        for log in ([entry, dict(entry)], [{**entry, "summary": "two\nlines"}], [{**entry, "summary": " padded"}]):
-            doc = copy.deepcopy(self.doc)
-            doc["cards"][0]["log"] = log
-            write_json(self.board, doc)
-            with self.subTest(log=log):
-                self.assertEqual(codes(self.inspect()), {"log-invalid"})
-        doc = copy.deepcopy(self.doc)
-        doc["cards"][0]["log"] = healthy
-        write_json(self.board, doc)
+
+        def document(version, log):
+            return {"schemaVersion": version, "name": "source", "rev": 4, "nextNum": 2,
+                    "columns": copy.deepcopy(wb.DEFAULT_COLUMNS),
+                    "cards": [{"id": "one", "num": 1, "title": "Review input", "column": "task", "log": log}]}
+
+        for version in (3, wb.SCHEMA_VERSION):
+            for log in ([entry, dict(entry)], [{**entry, "summary": "two\nlines"}], [{**entry, "summary": " padded"}]):
+                write_json(self.board, document(version, log))
+                with self.subTest(version=version, log=log):
+                    self.assertEqual(codes(self.inspect()), {"log-invalid"})
+            write_json(self.board, document(version, healthy))
+            report = self.inspect()
+            with self.subTest(version=version):
+                self.assertTrue(report["ok"], report)
+                self.assertEqual("legacy-schema" in codes(report, "warnings"), version != wb.SCHEMA_VERSION)
+
+    def test_recovery_snapshots_keep_their_schema_without_legacy_warnings(self):
+        backup = self.board.parent / wb.BACKUP_DIR / "board-4.json"
+        write_json(backup, {**self.doc, "schemaVersion": 3})
         report = self.inspect()
         self.assertTrue(report["ok"], report)
         self.assertNotIn("legacy-schema", codes(report, "warnings"))
+
+    def test_delegated_subtasks_are_checked_without_writing(self):
+        doc = copy.deepcopy(self.doc)
+        subtask = {"id": "s-1", "text": "Review", "done": False, "createdAt": wb.now_iso(),
+                   "doneAt": None, "children": [], "delegation": {
+                       "state": "claimed", "owner": "Ada", "claimedAt": wb.now_iso(), "result": "",
+                       "scope": ["src/workboard"], "dependsOn": [],
+                       # Core deliberately permits a previously accepted review on claimed work.
+                       "review": {"required": True, "state": "accepted", "by": "Main",
+                                  "at": wb.now_iso(), "reason": ""}, "blocker": None}}
+        doc["cards"][0]["subtasks"] = [subtask]
+        write_json(self.board, doc)
+        before = tree_state(self.root)
+        report = self.inspect()
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(tree_state(self.root), before)
+
+        for field, value in (("scope", ["../outside"]), ("dependsOn", ["missing"]),
+                             ("blocker", {"reason": "stale"})):
+            broken = copy.deepcopy(doc)
+            if field == "blocker":
+                broken["cards"][0]["subtasks"][0]["delegation"].update(state="blocked", blocker=value)
+            else:
+                broken["cards"][0]["subtasks"][0]["delegation"][field] = value
+            write_json(self.board, broken)
+            with self.subTest(field=field):
+                self.assertIn("delegation-invalid", codes(self.inspect()))
 
     def test_links_and_path_traversal_are_rejected(self):
         external = self.root / "same-bytes.json"
@@ -386,12 +424,20 @@ class InstallationTest(DoctorCase):
         agents = Path(install.skill_targets()[0])
         agents.write_text("---\nname: workboard\n---\nold\n", encoding="utf-8")
         self.run_key[install.RUN_VALUE] = '"C:\\old\\workboardw.exe" serve --service'
-        self.server.info = {"app": "workboard", "version": "0.0.1", "pid": 9, "port": 7999}
+        self.server.info = {"app": "workboard", "version": "0.0.1", "pid": 9, "port": 7999,
+                            "supportedSchemaVersions": list(wb.SUPPORTED_SCHEMA_VERSIONS)}
         report = self.inspect()
         self.assertTrue(report["ok"], report)
         self.assertLessEqual({"skill-stale", "service-stale", "server-version-mismatch"}, codes(report, "warnings"))
         self.assertNotIn("skills-missing", codes(report, "warnings"))
         self.assertEqual(report["installation"]["service"]["running"], True)
+
+    def test_a_running_server_that_cannot_read_current_boards_blocks(self):
+        self.server.info = {"app": "workboard", "version": __version__, "pid": 9, "port": 7999,
+                            "supportedSchemaVersions": [1, 2, 3]}
+        code, out = self.cli("doctor", "--json", "--board", "source")
+        self.assertEqual(code, 1)
+        self.assertIn("server-schema-mismatch", codes(json.loads(out)))
 
     def test_path_check_identifies_this_installation(self):
         def version(executable):

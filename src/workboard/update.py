@@ -93,7 +93,7 @@ def latest_version(timeout: float = 5.0) -> str:
 
 def cmd_version(args) -> None:
     channel = detect_channel()
-    result = {"ok": True, "version": __version__, "channel": channel}
+    result = {"ok": True, "version": __version__, "channel": channel, **wb.runtime_info()}
     if args.json:
         import platform
         result.update(python=platform.python_version(), platform=platform.platform(),
@@ -163,7 +163,9 @@ def _new_version(new: list[str]) -> str:
         version = json.loads(proc.stdout.strip().splitlines()[-1])["version"]
     except (OSError, ValueError, IndexError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
         raise wb.WorkflowError(f"the upgraded `{display(new)}` did not report its version: {exc}", 500, "io")
-    return str(version)
+    if proc.returncode or not isinstance(version, str) or not version.strip():
+        raise wb.WorkflowError(f"the upgraded `{display(new)}` did not report its version", 500, "io")
+    return version
 
 
 def _hand_off(channel: str, args) -> None:
@@ -210,18 +212,25 @@ def cmd_upgrade(args) -> None:
     stdout = sys.stderr if args.json else None  # Keep stdout to the final JSON line.
     if running and not server.stop():
         raise wb.WorkflowError("the running WorkBoard server did not stop; close it and retry", 409, "state")
+    changed = False
     try:
         _run_step(command, stdout)
-    except wb.WorkflowError:
-        if running:  # Nothing changed: bring back what we stopped.
+        changed = True
+        new = _new_workboard()
+        version = _new_version(new)
+        _run_step([*new, "skills", "install", "--refresh"], stdout)
+        if restart:
+            _run_step([*new, "service", "restart"], stdout)  # The new restart verifies what it started.
+    except (wb.WorkflowError, OSError) as exc:
+        if running and not changed:  # Nothing changed: bring back what we stopped.
             with contextlib.suppress(wb.WorkflowError, OSError):
                 install.service_restart()
+        if running and server.server_info() is None:
+            raise wb.WorkflowError(
+                f"{exc}; the WorkBoard server stopped for the upgrade (v{running.get('version')}, "
+                f"pid {running.get('pid')}) is not running: run `workboard service restart`",
+                getattr(exc, "status", 500), getattr(exc, "code", "io")) from exc
         raise
-    new = _new_workboard()
-    version = _new_version(new)
-    _run_step([*new, "skills", "install", "--refresh"], stdout)
-    if restart:
-        _run_step([*new, "service", "restart"], stdout)
     if args.json:
         print(json.dumps({**result, "from": __version__, "to": version}, ensure_ascii=False))
     else:

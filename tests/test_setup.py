@@ -26,7 +26,8 @@ from workboard import __version__, cli, install, update
 from workboard import core as wb
 
 BASE = Path()
-RUNNING = {"ok": True, "app": "workboard", "version": __version__, "pid": 4321, "port": 7999}
+RUNNING = {"ok": True, "app": "workboard", "version": __version__, "pid": 4321, "port": 7999,
+           **wb.runtime_info()}
 ARGV = [r"C:\Program Files\WorkBoard\workboardw.exe", "serve", "--service"]
 POSIX_ARGV = ["/opt/Work Board/100%/workboard", "serve", "--service"]
 
@@ -409,7 +410,8 @@ class ServiceTest(ScratchCase):
         self.assertEqual(result["action"], "unchanged")
         self.assertEqual(self.server.calls, ["start_background"], "a running server is left alone")
         _, status = invoke_json("service", "status", "--json")
-        self.assertEqual((status["installed"], status["current"], status["versionMatch"]), (True, True, True))
+        self.assertEqual((status["installed"], status["current"], status["versionMatch"], status["schemaMatch"]),
+                         (True, True, True, True))
 
         _, result = invoke_json("service", "restart", "--json")
         self.assertEqual(self.server.calls[1:], ["stop", "start_background"])
@@ -419,6 +421,29 @@ class ServiceTest(ScratchCase):
         self.assertIsNone(self.server.info)
         _, result = invoke_json("service", "remove", "--json")
         self.assertEqual(result["action"], "absent")
+
+    def test_restart_that_brings_up_another_installation_fails_visibly(self):
+        backend = install.WindowsService(registry=FakeRegistry())
+        self.enterContext(mock.patch.object(install, "_backend", lambda: backend))
+        old = self.home / "old" / "workboard.exe"
+        stale = [{"version": "0.0.1"}, {"supportedSchemaVersions": [1, 2, 3]}, {"supportedSchemaVersions": None}]
+        for difference in stale:
+            with self.subTest(difference=difference):
+                info = {**RUNNING, **difference}
+                self.server.start_background = lambda timeout=10.0, info=info: setattr(self.server, "info", info)
+                wb._atomic_write_json(wb.server_state_path(), {"pid": info["pid"], "executable": str(old)})
+                code, error = invoke_json("service", "restart", "--json")
+                self.assertEqual((code, error["ok"], error["code"]), (1, False, "state"))
+                self.assertIn(str(old), error["error"])
+                self.assertIsNotNone(self.server.info, "the stale server is reported, not stopped again")
+
+    def test_status_flags_a_server_that_cannot_read_current_boards(self):
+        backend = install.WindowsService(registry=FakeRegistry())
+        self.enterContext(mock.patch.object(install, "_backend", lambda: backend))
+        self.server.info = {**RUNNING, "supportedSchemaVersions": [1, 2, 3]}
+        code, status = invoke_json("service", "status", "--json")
+        self.assertEqual((code, status["running"], status["schemaMatch"]), (0, True, False))
+        self.assertIn(install.STALE_SERVER, invoke("service", "status")[1])
 
     def test_setup_reports_skills_and_service(self):
         backend = install.WindowsService(registry=FakeRegistry())
@@ -522,6 +547,8 @@ class VersionTest(ScratchCase):
         code, result = invoke_json("version", "--json")
         self.assertEqual(code, 0)
         self.assertEqual((result["version"], result["channel"]), (__version__, "source"))
+        self.assertEqual({key: result[key] for key in ("apiVersion", "schemaVersion", "capabilities")},
+                         {key: wb.runtime_info()[key] for key in ("apiVersion", "schemaVersion", "capabilities")})
         self.assertEqual(result["executable"], sys.executable)
         self.assertTrue(result["python"] and result["platform"])
         self.assertEqual(invoke("version")[1].strip(), f"workboard {__version__} (source)")
@@ -628,6 +655,22 @@ class UpgradeTest(ScratchCase):
         self.assertEqual((code, error["code"]), (1, "io"))
         self.assertEqual(self.server.calls, ["stop", "stop", "start_background"])
         self.assertIsNotNone(self.server.info)
+
+    def test_failure_after_the_channel_command_names_the_stopped_server(self):
+        self.server.info = dict(RUNNING)
+
+        def run_step(argv, stdout):
+            if argv[-1] == "--refresh":
+                raise wb.WorkflowError("`workboard skills install --refresh` failed with exit code 1", 500, "io")
+
+        self.enterContext(mock.patch.object(update, "_run_step", run_step))
+        self.enterContext(mock.patch.object(update, "_new_version", lambda new: "0.2.0"))
+        self.enterContext(mock.patch("shutil.which", return_value="/new/workboard"))
+        code, error = invoke_json("upgrade", "--channel", "npm", "--json")
+        self.assertEqual((code, error["code"]), (1, "io"))
+        self.assertEqual(self.server.calls, ["stop"], "the replaced installation's server is not restarted")
+        self.assertIn("pid 4321", error["error"])
+        self.assertIn("workboard service restart", error["error"])
 
     def test_frozen_windows_hands_off_to_a_runtime_copy_and_exits(self):
         app = self.home / "Programs" / "WorkBoard"
