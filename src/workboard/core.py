@@ -927,12 +927,12 @@ def normalize_doc(raw: dict) -> dict:
 # written within this window could still change in place within one timestamp tick (NTFS 15.6 ms,
 # Linux jiffies) without a new mtime, so it is parsed again until the window passes.
 _SETTLED_NS = 100_000_000
-_parsed: dict[str, tuple[tuple, bytes]] = {}
+_parsed: dict[str, tuple[tuple, str | bytes]] = {}
 
 
 def load(board_path: Path) -> dict:
-    """Read, validate and normalize board.json. While the file is unchanged, the process reuses its
-    last parse; every caller gets its own copy to mutate."""
+    """Read, validate and normalize board.json. While the file is unchanged, the process reuses what
+    it read; every caller gets its own copy to mutate."""
     key = os.path.normcase(os.path.abspath(board_path))
     try:
         st = os.stat(board_path)
@@ -940,16 +940,19 @@ def load(board_path: Path) -> dict:
     except OSError:
         signature = None  # A replace in progress on Windows; the shared read below retries.
     cached = _parsed.get(key)
-    if signature is not None and cached is not None and cached[0] == signature:
+    reused = signature is not None and cached is not None and cached[0] == signature
+    if reused and isinstance(cached[1], bytes):
         return marshal.loads(cached[1])
-    data = read_text_shared(board_path)
+    data = cached[1] if reused else read_text_shared(board_path)
     try:
         raw = json.loads(data)
     except json.JSONDecodeError as e:
         raise WorkflowError(f"{board_path} is not valid JSON ({e}); restore via workboard recover") from e
     doc = normalize_doc(raw)
-    if signature is not None and time.time_ns() - signature[2] > _SETTLED_NS:
-        _parsed[key] = (signature, marshal.dumps(doc))  # Stat before read: a newer file only forces a reparse.
+    if reused:
+        _parsed[key] = (signature, marshal.dumps(doc))  # Loaded twice: keep a copy that is faster than parsing.
+    elif signature is not None and time.time_ns() - signature[2] > _SETTLED_NS:
+        _parsed[key] = (signature, data)  # Free for a one-shot command. Stat before read: a newer file only reparses.
     else:
         _parsed.pop(key, None)
     return doc

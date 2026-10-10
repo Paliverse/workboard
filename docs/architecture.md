@@ -112,7 +112,7 @@ Each write holds an exclusive lock on the board's `.board.lock` (`fcntl.flock` o
 
 ### Reads
 
-`core.load()` reads, validates and normalizes `board.json`. A process keeps its last parse of each board and reuses it while the file's identity, size and modification time are unchanged. Every save swaps in a new file, so a commit by any process forces a fresh parse. A file modified in the last 100 ms is always parsed again, because an in-place edit within one timestamp tick could keep all three. Each caller gets its own copy, so long-lived processes (`call`, the server) answer reads without parsing the board again.
+`core.load()` reads, validates and normalizes `board.json`. A process keeps what it last read of each board and reuses it while the file's identity, size and modification time are unchanged. The first load keeps only the text it read, so a one-shot command pays nothing; the second load of an unchanged file replaces that text with a parsed copy (Python `marshal`), which later loads copy instead of reading and parsing. Every save swaps in a new file, so a commit by any process forces a fresh read. A file modified in the last 100 ms is always read again, because an in-place edit within one timestamp tick could keep all three. Each caller gets its own copy, so long-lived processes (`call`, the server) answer reads without parsing the board again.
 
 ### Schema safety
 

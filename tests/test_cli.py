@@ -1323,6 +1323,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(wb(["add", "--title", "Original"], root).returncode, 0)
         settled = path.stat().st_mtime_ns - 10 * 10**9
         os.utime(path, ns=(settled, settled))
+        core.load(path)  # The second load of an unchanged file keeps the copy later loads reuse.
         core.load(path)["cards"][0]["title"] = "Mutated by one caller"
         self.assertEqual(core.load(path)["cards"][0]["title"], "Original")
         self.assertEqual(wb(["update", "1", "--title", "Committed"], root).returncode, 0)

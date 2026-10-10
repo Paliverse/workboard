@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- 0.3.1 made a one-shot command's board read slower: the first read in each process also stored a parsed copy for reuse, which only `call` and the server ever reuse. The first read now keeps only the text it read, and the second read of an unchanged board makes the copy. On a 3.7 MB board, the first `context` in a process took 107 ms instead of 133 ms (0.3.0: 116 ms).
+
 ## [0.3.1] - 2026-10-10
 
 ### Changed
