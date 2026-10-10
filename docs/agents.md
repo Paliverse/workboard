@@ -99,7 +99,7 @@ Browser writes use a stricter, board-scoped check: a write fails if anything on 
 
 ## Delegating work to other agents
 
-One agent, called Main here, owns the card. It splits off complementary pieces as delegated subtasks, hands them to workers, and stays responsible for integrating and verifying the whole. Workers claim and complete subtasks; they never own the card. Don't create a separate card just to assign a worker.
+One agent, called Main here, owns the card. It splits off complementary pieces as delegated subtasks, hands them to workers, and stays responsible for integrating and verifying the whole. Workers claim and complete subtasks; they never own the card. Don't create a separate card just to assign a worker. The first delegated subtask (or `ack`) moves the board to schema 4, which WorkBoard 0.1.x can't read or write, so update every installation that uses the board first (see [Upgrading to 0.2.0](install.md#upgrading-to-020)).
 
 Main starts the card, then adds and configures the delegated subtasks:
 

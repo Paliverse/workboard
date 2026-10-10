@@ -111,7 +111,7 @@ class LegacyMigration(unittest.TestCase):
         self.assertEqual((card["notes"], card["log"]), (stamped, []))
         migrated = core.normalize_doc({"schemaVersion": 2, "cards": [{"id": "c", "num": 1, "notes": f"Pinned\n{stamped}"}]})
         self.assertEqual((migrated["schemaVersion"], migrated["cards"][0]["notes"],
-                          len(migrated["cards"][0]["log"])), (4, "Pinned", 1))
+                          len(migrated["cards"][0]["log"])), (3, "Pinned", 1))
         self.assertEqual(core.normalize_doc(migrated), migrated)
         migrated["cards"][0]["notes"] = stamped   # a pinned-notes edit that looks like a stamp stays pinned
         self.assertEqual(core.normalize_doc(migrated)["cards"][0]["notes"], stamped)
@@ -120,7 +120,7 @@ class LegacyMigration(unittest.TestCase):
         doc = core.normalize_doc({"cards": [{"id": "old", "num": 1,
                                              "notes": "Pinned\n[2026-01-02 ada] Legacy v1 note"}]})
         card = doc["cards"][0]
-        self.assertEqual((doc["schemaVersion"], card["notes"]), (4, "Pinned"))
+        self.assertEqual((doc["schemaVersion"], card["notes"]), (3, "Pinned"))
         self.assertEqual([(e["at"], e["by"], e["summary"], e["body"]) for e in card["log"]],
                          [("2026-01-02", "ada", "Legacy v1 note", "")])
 

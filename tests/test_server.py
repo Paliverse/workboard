@@ -634,7 +634,7 @@ class MultiBoardApiTest(unittest.TestCase):
         before = ctx["path"].read_bytes()
         doc = board(ctx)
         served = doc["cards"][0]
-        self.assertEqual((doc["schemaVersion"], served["notes"]), (core.SCHEMA_VERSION, "Pinned context"))
+        self.assertEqual((doc["schemaVersion"], served["notes"]), (3, "Pinned context"))
         self.assertEqual([(item["at"], item["by"], item["summary"], item["body"]) for item in served["log"]],
                          [("2026-09-01", None, "Shipped the parser.", "Tests pass."),
                           ("2026-09-02", "ada", "Fixed nits", "")])

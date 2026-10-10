@@ -15,6 +15,29 @@ from unittest import mock
 from tests.support import last_json, make_env, run, scratch
 from workboard import cli, core
 
+# board.json as WorkBoard 0.1.2 writes it after `init legacy` and one `add` (schema 3).
+V012_BOARD = {
+    "name": "legacy", "rev": 2, "nextNum": 2,
+    "columns": [{"id": column, "name": name, "kind": kind, "stackUnder": None} for column, name, kind in (
+        ("backlog", "Backlog", "todo"), ("task", "Task", "todo"), ("inprogress", "In Progress", "active"),
+        ("done", "Done", "done"), ("blocked", "Blocked", "blocked"))],
+    "cards": [{"num": 1, "id": "old-card-d71267eb5d7a466cbf9c5061694d5175", "code": "", "title": "Old card",
+               "column": "task", "priority": None, "tags": [], "origin": "", "notes": "", "log": [],
+               "writeup": "", "subtasks": [], "links": [],
+               "history": [{"at": "2026-10-10T09:29:57Z", "ev": "created", "by": "Main"}], "cycles": [],
+               "createdAt": "2026-10-10T09:29:57Z", "updatedAt": "2026-10-10T09:29:57Z", "doneAt": None,
+               "reopenReason": None, "blockedReason": None, "unblockWhen": None, "blockedAt": None,
+               "dependsOn": [], "activeOwner": None, "claimedAt": None, "outcome": None, "cancelReason": None,
+               "reworkReason": None, "comments": [], "attachments": [], "verification": [], "reviews": [],
+               "changedRev": 2}],
+    "schemaVersion": 3, "savedAt": "2026-10-10T09:29:57Z", "savedBy": "Main",
+}
+
+
+def schema(path):
+    return json.loads(Path(path).read_bytes())["schemaVersion"]
+
+
 
 class DelegatedSubtasks(unittest.TestCase):
     def setUp(self):
@@ -195,7 +218,7 @@ class DelegatedSubtasks(unittest.TestCase):
         self.rejected(["subtask", "1", "takeover", "s-1", "--reason", "ambiguous target"], "Main", "invalid")
         self.assertEqual(self.json(["inbox"])["items"], [])
 
-    def test_schema_v1_to_v3_read_then_save_v4(self):
+    def test_schema_1_to_3_boards_read_unchanged_and_save_as_3(self):
         path = core.board_file("delegated")
         raw = {
             "schemaVersion": 3, "name": "legacy delegated", "rev": 7, "nextNum": 2,
@@ -211,15 +234,17 @@ class DelegatedSubtasks(unittest.TestCase):
             path.write_bytes(encoded)
             loaded = core.load(path)
             self.assertEqual(path.read_bytes(), encoded, "reads do not rewrite legacy boards")
-            self.assertEqual(loaded["schemaVersion"], 4)
+            self.assertEqual(loaded["schemaVersion"], 3)
             child = loaded["cards"][0]["subtasks"][0]["children"][0]
             self.assertEqual((loaded["vendorDocument"], loaded["cards"][0]["vendorCard"],
                               child["vendorSubtask"]),
                              (candidate["vendorDocument"], candidate["cards"][0]["vendorCard"],
                               candidate["cards"][0]["subtasks"][0]["children"][0]["vendorSubtask"]))
         core.save(path, loaded, by="Main")
-        committed = path.read_bytes()
-        self.assertEqual(json.loads(committed)["schemaVersion"], 4)
+        self.assertEqual(schema(path), 3, "a board without delegation stays readable by 0.1.x")
+        loaded["cards"][0]["subtasks"][0]["children"][0]["delegation"] = {"state": "available"}
+        core.save(path, loaded, by="Main")
+        self.assertEqual(schema(path), 4, "delegation at any depth needs schema 4")
 
         malformed = json.loads(json.dumps(raw))
         malformed["cards"][0]["subtasks"][0]["delegation"] = {
@@ -230,6 +255,44 @@ class DelegatedSubtasks(unittest.TestCase):
         with self.assertRaises(core.WorkflowError):
             core.load(path)
         self.assertEqual(path.read_bytes(), before, "malformed v3 delegation is never repaired on read")
+
+    def plain_lifecycle(self, board):
+        """Ordinary writes on a new card #2, then export and import; each must keep schema 3."""
+        path = core.board_file(board)
+        self.assertEqual(schema(path), 3)
+        for step in (["add", "--title", "Plain"], ["start", "2"], ["note", "2", "--summary", "Plain note"],
+                     ["comment", "2", "add", "Plain comment"], ["subtask", "2", "add", "Plain step"],
+                     ["subtask", "2", "done", "s-1"], ["update", "2", "--title", "Plain renamed"],
+                     ["done", "2", "--writeup", "Finished plainly"]):
+            self.json([*step, "--board", board])
+            self.assertEqual(schema(path), 3, step)
+        bundle, project = self.base / f"{board}.zip", self.base / f"{board}-copy"
+        project.mkdir()
+        self.json(["export", "--out", str(bundle), "--board", board])
+        self.json(["import", str(bundle), "--name", f"{board}-copy", "--dir", str(project), "--apply"])
+        self.assertEqual(schema(core.board_file(f"{board}-copy")), 3)
+        return path
+
+    def test_boards_switch_to_schema_4_only_when_they_use_delegation(self):
+        path = self.plain_lifecycle("delegated")
+        sid = self.json(["subtask", "1", "add", "Delegated piece", "--delegated"])["item"]["id"]
+        self.assertEqual(schema(path), 4)
+        self.json(["subtask", "1", "rm", sid])
+        self.json(["note", "1", "--summary", "No delegation left"])
+        self.assertEqual(schema(path), 4, "a schema 4 board is never downgraded")
+
+        legacy = self.base / "legacy"
+        legacy.mkdir()
+        old = core.create_board("legacy", legacy)
+        old.write_text(json.dumps(V012_BOARD, indent=2), encoding="utf-8")
+        self.plain_lifecycle("legacy")
+        self.json(["start", "1", "--board", "legacy"])
+        finding = self.json(["note", "1", "--summary", "Peer finding", "--board", "legacy"], "Ada")["item"]["id"]
+        self.assertEqual(schema(old), 3)
+        self.json(["ack", "1", finding, "--board", "legacy"])
+        self.assertEqual(schema(old), 4)
+        self.json(["update", "1", "--title", "Plain edit", "--board", "legacy"])
+        self.assertEqual(schema(old), 4)
 
     def test_wrong_actor_is_owned_before_wrong_state(self):
         sid = self.json(["subtask", "1", "add", "Work", "--delegated"])["item"]["id"]

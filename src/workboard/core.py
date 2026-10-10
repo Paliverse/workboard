@@ -30,7 +30,7 @@ from pathlib import Path
 
 from . import __version__
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 4  # Newest schema this build reads and writes; a board moves to it only by using delegation.
 SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, SCHEMA_VERSION)
 API_VERSION = 2
 CAPABILITIES = ("context", "attachment-cli", "shared-attachments", "expected-rev",
@@ -889,7 +889,7 @@ def normalize_doc(raw: dict) -> dict:
         next_num = (max(nums) + 1) if nums else 1
     doc = {
         **raw,
-        "schemaVersion": SCHEMA_VERSION,
+        "schemaVersion": max(version, 3),  # v1/v2 migrate to v3 in memory; v4 stays v4.
         "name": str(raw.get("name") or raw.get("title") or "WorkBoard"),
         "rev": int(raw.get("rev") or 0),
         "nextNum": next_num,
@@ -961,6 +961,13 @@ def list_backups(board_path: Path):
     return sorted([(r, p) for r, p in snaps if r >= 0], key=lambda rp: rp[0], reverse=True)
 
 
+def _uses_schema_4(doc: dict) -> bool:
+    """Delegated subtasks and inbox acknowledgements are the state 0.1.x (schema 3) can't keep consistent."""
+    return any("inboxAcknowledged" in card
+               or any("delegation" in st for st, _ in iter_subtasks(card["subtasks"]))
+               for card in doc["cards"])
+
+
 def _card_content(card: dict) -> str:
     return json.dumps({key: value for key, value in card.items() if key != "changedRev"}, sort_keys=True)
 
@@ -973,8 +980,11 @@ def save(board_path: Path, doc: dict, by: str | None = None) -> int:
     if board_path.exists() and not held:
         load(board_path)  # Reject unsafe on-disk data before creating the lock file.
     with board_lock(board_path):
-        on_disk = load(board_path)["cards"] if board_path.exists() else []
-        doc["schemaVersion"] = SCHEMA_VERSION
+        current = load(board_path) if board_path.exists() else None
+        on_disk = current["cards"] if current else []
+        # Other boards stay schema 3 so 0.1.x can still read and write them; never downgrade a v4 board.
+        doc["schemaVersion"] = (SCHEMA_VERSION if _uses_schema_4(normalized)
+                                or (current and current["schemaVersion"] == SCHEMA_VERSION) else 3)
         doc["rev"] = int(doc.get("rev") or 0) + 1
         previous = {card["id"]: card for card in on_disk}
         for card, canonical in zip(doc["cards"], normalized["cards"]):

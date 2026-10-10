@@ -134,7 +134,7 @@ workboard version --check   # compare with the latest release
 workboard upgrade           # upgrade through the channel you installed with
 ```
 
-`workboard upgrade` stops the running server, upgrades the way you installed (`npm install -g @paliverse/workboard@latest`, or the install script again), refreshes installed skills and restarts the service. `workboard upgrade --dry-run` prints the plan without running it. 0.2.0 migrates each board on its first write to a format 0.1.x can't read; see [Upgrading to 0.2.0](docs/install.md#upgrading-to-020).
+`workboard upgrade` stops the running server, upgrades the way you installed (`npm install -g @paliverse/workboard@latest`, or the install script again), refreshes installed skills and restarts the service. `workboard upgrade --dry-run` prints the plan without running it. 0.2.0 switches a board to a format 0.1.x can't read only when that board first uses delegated subtasks; see [Upgrading to 0.2.0](docs/install.md#upgrading-to-020).
 
 ## Uninstall
 

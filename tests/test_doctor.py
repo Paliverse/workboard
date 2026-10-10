@@ -60,7 +60,7 @@ def write_json(path, value):
 
 
 def make_board(root, name="source"):
-    """A registered board for project root/name, overwritten with a fixed legacy-schema document."""
+    """A registered board for project root/name, overwritten with a fixed schema-2 document normalized to v3."""
     project = root / name
     project.mkdir()
     board = wb.create_board(name, project)
@@ -282,7 +282,7 @@ class DataIntegrityTest(DoctorCase):
                     "columns": copy.deepcopy(wb.DEFAULT_COLUMNS),
                     "cards": [{"id": "one", "num": 1, "title": "Review input", "column": "task", "log": log}]}
 
-        for version in (3, wb.SCHEMA_VERSION):
+        for version in (3, wb.SCHEMA_VERSION):  # Both are current: 0.1.x still writes v3, delegation v4.
             for log in ([entry, dict(entry)], [{**entry, "summary": "two\nlines"}], [{**entry, "summary": " padded"}]):
                 write_json(self.board, document(version, log))
                 with self.subTest(version=version, log=log):
@@ -291,17 +291,17 @@ class DataIntegrityTest(DoctorCase):
             report = self.inspect()
             with self.subTest(version=version):
                 self.assertTrue(report["ok"], report)
-                self.assertEqual("legacy-schema" in codes(report, "warnings"), version != wb.SCHEMA_VERSION)
+                self.assertNotIn("legacy-schema", codes(report, "warnings"))
 
     def test_recovery_snapshots_keep_their_schema_without_legacy_warnings(self):
         backup = self.board.parent / wb.BACKUP_DIR / "board-4.json"
-        write_json(backup, {**self.doc, "schemaVersion": 3})
+        write_json(backup, {**self.doc, "schemaVersion": 2})
         report = self.inspect()
         self.assertTrue(report["ok"], report)
         self.assertNotIn("legacy-schema", codes(report, "warnings"))
 
     def test_delegated_subtasks_are_checked_without_writing(self):
-        doc = copy.deepcopy(self.doc)
+        doc = {**copy.deepcopy(self.doc), "schemaVersion": wb.SCHEMA_VERSION}  # Delegation writes schema 4.
         subtask = {"id": "s-1", "text": "Review", "done": False, "createdAt": wb.now_iso(),
                    "doneAt": None, "children": [], "delegation": {
                        "state": "claimed", "owner": "Ada", "claimedAt": wb.now_iso(), "result": "",

@@ -112,9 +112,9 @@ Each write holds an exclusive lock on the board's `.board.lock` (`fcntl.flock` o
 
 ### Schema safety
 
-Unsupported schema versions and conflicting legacy aliases fail closed. Fields written by the browser (`stackUnder`, `wipLimit`, column order) and unknown extension fields survive every round trip. Server-owned card fields can only be changed through their dedicated actions. The column set is exactly `backlog`, `task`, `inprogress`, `done` and `blocked`. The schema is version 4.
+Unsupported schema versions and conflicting legacy aliases fail closed. Fields written by the browser (`stackUnder`, `wipLimit`, column order) and unknown extension fields survive every round trip. Server-owned card fields can only be changed through their dedicated actions. The column set is exactly `backlog`, `task`, `inprogress`, `done` and `blocked`. This build reads schema versions 1 through 4 and writes 3 or 4.
 
-Versions 1 through 3 load and normalize in memory without changing their bytes. The next successful save emits schema 4, making an old writer reject the board rather than overwrite newer state.
+Versions 1 through 3 load and normalize in memory without changing their bytes. `core.save` writes schema 3 unless the board on disk is already schema 4 or the saved document uses a schema 4 feature: a `delegation` object on any subtask, at any depth, or `inboxAcknowledged` on any card. That save emits schema 4, and the board never goes back to 3, so WorkBoard 0.1.x (schema 3) rejects it rather than overwrite delegated state it can't enforce. Boards that never use delegation stay readable and writable by 0.1.x; schema 1 and 2 boards become schema 3 on their next write, as in 0.1.x.
 
 ### Delegated subtasks
 
@@ -140,9 +140,9 @@ Only the subtask lifecycle in `core.subtask_action` creates or changes this meta
 
 Card field edits never check card ownership (`update`, `workpad`, legacy checklist items, and the browser's title, priority, tags, links and order). Generic replacements (card PATCH, snapshots, card creation) keep omitted delegation metadata, but `core.guard_subtask_replacement` refuses to invent delegation, change delegated state or attribution, or drop, retext or move another worker's claimed, blocked or completed subtask.
 
-### Schema 4 and the notes timeline
+### The notes timeline
 
-Boards are written with `schemaVersion` 4; versions 1 through 3 are still read. A card has two kinds of notes:
+Schema 3 introduced the timeline, and schema 4 keeps it unchanged; versions 1 and 2 are still read. A card has two kinds of notes:
 
 - **Pinned notes** (`notes`): one free-form markdown string for durable context such as acceptance criteria. `update --notes`, `workpad` and the browser's notes editor change it.
 - **Timeline** (`log`): append-only entries `{"id", "at", "by", "summary", "body"}`, oldest first. A worker's subtask note also carries `subtaskId`, and notes the subtask lifecycle writes carry `"kind": "generated"`. Only `note` in the CLI, the `note` lifecycle action and the subtask lifecycle add them. The summary is one line of 1–160 characters and the body is markdown of at most 32,000 characters. The [HTTP API](http-api.md#notes-timeline) lists the entry rules.
@@ -160,7 +160,7 @@ Before version 3, `note` appended `[YYYY-MM-DD actor] text` lines to `notes`. Wh
 - An entry whose body would exceed 32,000 characters stays in the pinned notes verbatim.
 - Migrated entry IDs are deterministic: the first 32 hex digits of `sha256(f"{card_id}\n{index}\n{original_line}")`, so repeated reads of an unmigrated board give the same IDs.
 
-The migration is lossless. Only the `[date actor] ` prefix moves into `at` and `by`; every other non-whitespace character of the old notes survives in order. Reads return the split document, and the next write saves it as version 4, with earlier snapshots kept in `.backups/`. `doctor` reports unmigrated boards with a `legacy-schema` warning and malformed timeline entries with a `log-invalid` blocker.
+The migration is lossless. Only the `[date actor] ` prefix moves into `at` and `by`; every other non-whitespace character of the old notes survives in order. Reads return the split document, and the next write saves it as version 3 (or 4, see [Schema safety](#schema-safety)), with earlier snapshots kept in `.backups/`. `doctor` reports unmigrated schema 1 and 2 boards with a `legacy-schema` warning and malformed timeline entries with a `log-invalid` blocker.
 
 ### Focused context and handoff
 

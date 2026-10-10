@@ -147,17 +147,17 @@ The `script` channel is detected by the `install-receipt.json` next to the execu
 
 After updating by hand, run `workboard skills install --refresh` and `workboard service restart`.
 
-`workboard service restart` checks the server it started. If that server is another version, or can't read boards this CLI writes, the registered service points at another installation: the command exits 1 with `state`, names the running server's version and executable, and asks you to run `workboard service install`, then `workboard service restart`. `upgrade` restarts through the new version's `service restart`, so the same check guards it. If a later step fails after `upgrade` stopped the server, the error says so; `workboard service restart` brings it back.
+`workboard service restart` checks the server it started. If that server is another version, or can't read schema 4 boards, the registered service points at another installation: the command exits 1 with `state`, names the running server's version and executable, and asks you to run `workboard service install`, then `workboard service restart`. `upgrade` restarts through the new version's `service restart`, so the same check guards it. If a later step fails after `upgrade` stopped the server, the error says so; `workboard service restart` brings it back.
 
-`workboard service status` and `workboard doctor` (`server-schema-mismatch`) flag a running server that can't read boards this CLI writes.
+`workboard service status` and `workboard doctor` (`server-schema-mismatch`) flag a running server that can't read boards that use delegated subtasks.
 
 ### Upgrading to 0.2.0
 
-0.2.0 moves boards to schema 4 for delegated subtasks. The first write from 0.2.0 migrates a board; reading it changes nothing. From then on, 0.1.x CLIs and servers can neither read nor write that board.
+0.2.0 adds schema 4 for delegated subtasks. A board stays schema 3, which 0.1.x reads and writes, until its first delegated subtask or inbox acknowledgement (`ack`). That write moves the board to schema 4, and from then on 0.1.x CLIs and servers can neither read nor write it. Boards that never use delegation keep working with 0.1.x, and a schema 4 board never goes back to 3.
 
-- **Restart the server before the first write.** `workboard upgrade` does it. After a manual update (npm, the install script or a new archive), run `workboard service restart`. Update every installation that writes the same boards, and restart running agent sessions.
+- **Restart the server before the first delegated write.** `workboard upgrade` does it. After a manual update (npm, the install script or a new archive), run `workboard service restart`. Before delegating on a board, update every installation that writes it, and restart running agent sessions.
 - **Windows binary installs:** `upgrade` continues in a temporary copy, so your shell never sees its exit code. Run `workboard service status` or `workboard doctor` afterwards.
-- **Downgrading is unsupported.** The only way back is the last pre-migration snapshot, `~/.workboard/boards/<dir>/.backups/board-<rev>.json` with `"schemaVersion": 3`. Each board keeps only its 10 newest snapshots, so copy it elsewhere if you may need it. To go back, reinstall 0.1.x, stop its server and your agents, and copy the snapshot over the board's `board.json`; every change since the migration is lost.
+- **Downgrading a schema 4 board is unsupported.** The only way back is its last snapshot from before the switch, `~/.workboard/boards/<dir>/.backups/board-<rev>.json` with `"schemaVersion": 3`. Each board keeps only its 10 newest snapshots, so copy it elsewhere if you may need it. To go back, reinstall 0.1.x, stop its server and your agents, and copy the snapshot over the board's `board.json`; every change since the switch is lost.
 
 ## Backups
 

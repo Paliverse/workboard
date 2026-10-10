@@ -205,10 +205,9 @@ def _validate_document(raw, path, board, report, budget, blob_cache, *, archive=
     version = raw.get("schemaVersion", 1)
     if not archive or "schemaVersion" in raw:
         version = wb.validate_schema(raw)
-        if version != wb.SCHEMA_VERSION and not recovery:  # Snapshots keep their schema; only the board upgrades.
-            _finding(report, "legacy-schema", f"Supported legacy schema v{version} upgrades on the next write"
-                     + ("; legacy card notes move into the notes timeline" if version < 3 else ""),
-                     path, warning=True)
+        if version < 3 and not recovery:  # Snapshots keep their schema; only the board upgrades.
+            _finding(report, "legacy-schema", f"Supported legacy schema v{version} upgrades to v3 on the next "
+                     "write; legacy card notes move into the notes timeline", path, warning=True)
     log_invalid = False
     cards = raw.get("cards")
     card_ids, numbers = _identities(cards, "cards", nums=True)

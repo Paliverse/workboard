@@ -50,7 +50,7 @@ A 409 is not always a revision conflict: ownership, dependency, WIP and state vi
  "pid": 1234, "port": 7891, "startedAt": "2026-09-24T08:00:00Z", "boards": 3, "registryError": null, "sseClients": 1}
 ```
 
-`boards` is the number of registered boards (`null`, with the reason in `registryError`, when the registry can't be read). Use this route for readiness checks. SSE streams stay open, so network-idle heuristics never settle. `workboard service status`, `service restart` and `doctor` compare `version` and `supportedSchemaVersions` with the CLI.
+`boards` is the number of registered boards (`null`, with the reason in `registryError`, when the registry can't be read). `schemaVersion` is the newest board schema the server reads and writes; each board's own version is in its document (see [Schema](#schema)). Use this route for readiness checks. SSE streams stay open, so network-idle heuristics never settle. `workboard service status`, `service restart` and `doctor` compare `version` and `supportedSchemaVersions` with the CLI.
 
 ### `GET /`
 
@@ -273,9 +273,9 @@ A client should fetch `board.json` on connect and on every `resync-required`, an
 
 ## Schema
 
-The document (`schemaVersion` 4) contains `name`, `title`?, `rev`, `nextNum`, `savedAt`, `savedBy`, `columns` and `cards` (array order is display order), plus optional `tagTaxonomy`, `activeWork` and `activeWorkId`. Unknown top-level keys on disk are preserved. Timestamps are UTC `YYYY-MM-DDTHH:MM:SSZ`.
+The document (`schemaVersion` 3, or 4 once the board uses delegation) contains `name`, `title`?, `rev`, `nextNum`, `savedAt`, `savedBy`, `columns` and `cards` (array order is display order), plus optional `tagTaxonomy`, `activeWork` and `activeWorkId`. Unknown top-level keys on disk are preserved. Timestamps are UTC `YYYY-MM-DDTHH:MM:SSZ`.
 
-Versions 1 through 3 are read unchanged on disk and normalized in memory. The next successful save writes version 4; an older writer then rejects that board rather than risking a stale overwrite. Legacy card notes split into the timeline during normalization.
+Versions 1 through 3 are read unchanged on disk and normalized in memory, and served as version 3. A save writes version 4 when the board already is version 4 or the document has a `delegation` object on any subtask or `inboxAcknowledged` on any card; otherwise it writes version 3, which WorkBoard 0.1.x still reads and writes. A version 4 board is never written as 3 again, and 0.1.x rejects it rather than risking a stale overwrite. Legacy card notes split into the timeline during normalization.
 
 A column is `{"id", "name", "kind", "stackUnder": id|null, "wipLimit"?}`. Only the In Progress `wipLimit` is enforced.
 

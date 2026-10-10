@@ -544,11 +544,11 @@ def _await_server(timeout: float = 10.0) -> dict:
         time.sleep(0.2)
 
 
-STALE_SERVER = "the running server cannot read boards this CLI writes; run `workboard service restart`"
+STALE_SERVER = "the running server cannot read boards that use delegated subtasks; run `workboard service restart`"
 
 
 def reads_current_schema(info: dict) -> bool:
-    """Can this server read boards this CLI writes? Every version's /health lists supportedSchemaVersions."""
+    """Can this server read every schema this CLI writes? Every version's /health lists supportedSchemaVersions."""
     supported = info.get("supportedSchemaVersions")
     return isinstance(supported, list) and wb.SCHEMA_VERSION in supported
 
@@ -606,7 +606,8 @@ def service_restart(backend=None) -> dict:
     # The service definition may start another installation; leaving it up would strand the next board write.
     reads = reads_current_schema(info)
     if info.get("version") != __version__ or not reads:
-        problem = f"is not this v{__version__} installation" if reads else "cannot read boards this CLI writes"
+        problem = (f"is not this v{__version__} installation" if reads
+                   else "cannot read boards that use delegated subtasks")
         raise wb.WorkflowError(
             f"the restarted server (v{info.get('version')}, {_server_executable(info)}) {problem}; the service "
             "starts another installation: run `workboard service install`, then `workboard service restart`",
