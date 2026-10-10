@@ -246,7 +246,7 @@ Replace only `{summary}` and `{result}` (described in `placeholders`) and keep e
 | `review` | the card's owner | `title`, `text`, `result`, `owner`, `review` | Someone else completed a subtask that requires review, and it is still pending. |
 | `blocker` | the card's owner and the worker | `owner`, `blocker` | A delegated subtask is blocked. |
 | `changes_requested` | the worker | `review` | Main requested changes on your subtask. |
-| `finding` | the card's owner | `title`, `note` | Someone else added a note (not a generated one) that you haven't acknowledged. |
+| `finding` | the card's owner | `title`, `note` | Someone else added a note (not a generated one) that you haven't acknowledged. `note.id` is the ID `ack` takes. |
 
 Rows for a card's owner appear only while the card is In Progress. `accept` and `request-changes` clear a review; `resume` or `release` clears a blocker.
 
