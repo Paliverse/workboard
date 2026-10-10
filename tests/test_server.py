@@ -901,12 +901,14 @@ class MultiBoardApiTest(unittest.TestCase):
         stale, conflict, _ = mutate(ctx, f"/api/card/{cid}/comments",
                                     {"operation": {"type": "add", "text": "Stale"}}, rev=revision)
         assert stale == 409 and conflict["rev"] == revision + 1
-        assert mutate(ctx, f"/api/card/{cid}/comments",
-                      {"operation": {"type": "add", "text": "Browser discussion"}})[0] == 200
+        for text in [f"Earlier {n}" for n in range(10)] + ["Browser discussion"]:
+            assert mutate(ctx, f"/api/card/{cid}/comments", {"operation": {"type": "add", "text": text}})[0] == 200
         context = run(["--board", ctx["proj"], "context", cid, "--json"], cwd=self.base, env=self.env)
         assert context.returncode == 0, (context.stdout, context.stderr)
         payload = last_json(context)
-        assert payload["card"]["comments"][-1]["text"] == "Browser discussion"
+        assert [c["text"] for c in payload["card"]["comments"]] == [f"Earlier {n}" for n in range(1, 10)] + [
+            "Browser discussion"]
+        assert payload["omitted"]["comments"] == 1
         assert payload["card"]["attachments"] == [metadata]
         status, http_context, _ = http_req(ctx["url"] + f"/api/card/{cid}/context")
         assert status == 200, {"status": status, "http": http_context}

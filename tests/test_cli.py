@@ -1224,6 +1224,25 @@ class Contracts(unittest.TestCase):
         self.assertEqual([rev for rev, _ in backups], [4, 1])
         self.assertEqual(read_board(backups[0][1]), saved)
 
+    def test_c31_context_and_show_keep_newest_comments(self):
+        root = self.init("discussion", "comment-window")
+        path = core.board_file("discussion")
+        self.assertEqual(wb(["add", "--title", "Busy thread"], root).returncode, 0)
+        with core.board_transaction(path) as doc:
+            for n in range(12):
+                core.comment_action(doc["cards"][0], {"type": "add", "text": f"Comment {n}"}, "tester")
+            core.save(path, doc)
+        full = last_json(wb(["context", "1", "--full", "--json"], root))
+        comments = full["card"]["comments"]
+        self.assertEqual([c["text"] for c in comments], [f"Comment {n}" for n in range(12)])
+        self.assertNotIn("omitted", full)
+        trimmed = last_json(wb(["context", "1", "--json"], root))
+        self.assertEqual(trimmed["card"]["comments"], comments[-10:])
+        self.assertEqual(trimmed["omitted"], {"doneSubtasks": 0, "history": 0, "comments": 2})
+        shown = last_json(wb(["show", "1", "--json"], root))["card"]["comments"]
+        self.assertEqual(shown, comments[-5:])
+        self.assertEqual(last_json(wb(["show", "1", "--full", "--json"], root))["card"]["comments"], comments)
+
 
 if __name__ == "__main__":
     unittest.main()

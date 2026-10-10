@@ -423,6 +423,7 @@ def cmd_show(args):
         out["notes"] = _clip(out.get("notes", ""), 300)
         out["writeup"] = _clip(out.get("writeup", ""), 400)
         out["log"] = [{**entry, "body": _clip(entry["body"], 300)} for entry in out["log"][-5:]]
+        out["comments"] = out["comments"][-5:]
         out["history"] = out["history"][-10:]
     print(json.dumps({"ok": True, "rev": doc["rev"], "card": out} if args.json else out,
                      indent=None if args.json else 2, ensure_ascii=False))
@@ -944,7 +945,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = add("context", cmd_context, "card, discussion, files, readiness, and bounded completed work/history")
     p.add_argument("ref")
-    p.add_argument("--full", action="store_true", help="include all done subtasks, history, and notes")
+    p.add_argument("--full", action="store_true", help="include all done subtasks, history, notes, and comments")
 
     p = add("attachment", cmd_attachment, "list, add, export, or detach a card attachment")
     p.add_argument("ref")

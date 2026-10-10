@@ -1389,9 +1389,9 @@ def attachment_remove(board_path: Path, attachment_id: str) -> None:
 def card_context(board_path: Path, ref: str, full: bool = False) -> dict:
     """One atomic document read; no lock file, unread state, or embedded file bytes.
 
-    Default output keeps comments, pinned notes, and open subtasks whole but trims done
-    subtasks to the 10 most recently completed, history to the last 25, and the note
-    log to the newest 10 entries.
+    Default output keeps pinned notes and open subtasks whole but trims done subtasks
+    to the 10 most recently completed, history to the last 25, and the note log and
+    comments to the newest 10 entries each.
     """
     doc = load(board_path)
     card = resolve_ref(doc, ref)
@@ -1415,7 +1415,8 @@ def card_context(board_path: Path, ref: str, full: bool = False) -> dict:
     if full:
         return context
     done = [st for st, _ in iter_subtasks(card["subtasks"]) if st["done"]]
-    if len(done) <= 10 and len(card["history"]) <= 25 and len(card["log"]) <= 10:
+    if (len(done) <= 10 and len(card["history"]) <= 25 and len(card["log"]) <= 10
+            and len(card["comments"]) <= 10):
         return context
     recent = {id(st) for st in sorted(done, key=lambda st: st.get("doneAt") or "")[-10:]}
 
@@ -1432,9 +1433,11 @@ def card_context(board_path: Path, ref: str, full: bool = False) -> dict:
                "history": max(0, len(card["history"]) - 25)}
     if len(card["log"]) > 10:
         omitted["log"] = len(card["log"]) - 10
+    if len(card["comments"]) > 10:
+        omitted["comments"] = len(card["comments"]) - 10
     if any(omitted.values()):
         context["card"] = {**card, "subtasks": subtasks, "history": card["history"][-25:],
-                           "log": card["log"][-10:]}
+                           "log": card["log"][-10:], "comments": card["comments"][-10:]}
         context["omitted"] = omitted
     return context
 

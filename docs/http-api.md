@@ -112,7 +112,7 @@ Every JSON write response includes `ok`, `rev`, `savedAt`, `savedBy` and the sav
 | `GET api/git` | `{"state": "clean"\|"dirty"\|"not_repo"\|"error"\|"unavailable", "root", "branch", "head", "subject", "ahead", "behind", "staged", "unstaged", "untracked", "conflicted", "files": [{"path", "index", "worktree"}] (at most 200), "truncated", "error", "warning"}`. Never fetches or writes. Git runs with an 8 s budget, so call it on demand rather than on a timer. |
 | `GET api/cards` | `{"column", "cards", "total", "rev"}`. `limit` is clamped to 1–250 (default 50) and `offset` must be 0 or more. Invalid values are 400. |
 | `GET api/card/{ref}` | `{"card", "rev"}` |
-| `GET api/card/{ref}/context` | `{"ok", "board", "schemaVersion", "rev", "card", "dependencies": [{"id", "num", "title", "column", "outcome", "satisfied"}], "missingDependencies", "dependents": [{"num", "id", "title", "column", "outcome"}], "ready", "omitted"?}`. The card is trimmed to the 10 most recent done subtasks, the last 25 history entries and the newest 10 `log` entries; `omitted` reports what was trimmed (`doneSubtasks`, `history`, plus `log` when `log` entries were dropped). |
+| `GET api/card/{ref}/context` | `{"ok", "board", "schemaVersion", "rev", "card", "dependencies": [{"id", "num", "title", "column", "outcome", "satisfied"}], "missingDependencies", "dependents": [{"num", "id", "title", "column", "outcome"}], "ready", "omitted"?}`. The card is trimmed to the 10 most recent done subtasks, the last 25 history entries, the newest 10 `log` entries and the newest 10 comments; `omitted` reports what was trimmed (`doneSubtasks`, `history`, plus `log` and `comments` when those entries were dropped). |
 
 ### `POST board.json`: snapshot save
 

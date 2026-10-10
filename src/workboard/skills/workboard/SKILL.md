@@ -17,7 +17,7 @@ workboard --actor YOUR_LABEL digest
 
 ## Loop
 1. FIRST `digest`: `MINE @actor` lists cards you own plus Blocked cards you blocked; resume them via `query --mine`. For new work use a visible READY ref directly, otherwise `next --json` (compact ready cards, not claims).
-2. `context REF --json`: read all comments, notes, open subtasks, dependencies, dependents, owner, readiness and the attachment manifest; keep `rev`. Use `--full` when `omitted` done subtasks/history/log matter.
+2. `context REF --json`: read recent comments, notes, open subtasks, dependencies, dependents, owner, readiness and the attachment manifest; keep `rev`. Use `--full` when `omitted` done subtasks/history/log/comments matter.
 3. `attachment REF get ID --out NEW_PATH --json` for relevant files, then open that exact file. Exports verify size/SHA256 and never overwrite. A manifest is not inspection; report required files you cannot read.
 4. Claim BEFORE editing: `start REF --expected-rev REV` (a same-actor claim is idempotent). Blocked work uses `resume`; another owner's card needs `takeover --reason`.
 5. Work: bulk `subtask REF add T1 T2`, `note`, `comment`, `attachment REF add`. Guard card mutations with the rev from your last context read or your own last successful mutation; chaining is correct. JSON returns `actor`, `rev` and the created/changed `item` or bulk `items` with IDs.
