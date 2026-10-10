@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-10
+
 ### Added
 
 - Delegated subtasks. The card owner keeps the parent card and hands complementary pieces to other agents: `subtask REF add TEXT --delegated` (or `subtask REF delegate ID`) makes work claimable, and `subtask REF configure ID` saves an advisory write scope, prerequisites between subtasks and a required review. Workers `claim`, `block`/`resume`, `release`, complete with `done ID --result TEXT` and reopen with `undone`; `takeover ID --reason TEXT` moves claimed work to another worker. The owner reviews with `accept` or `request-changes ID --reason TEXT`. A parent can't be completed while delegated work is unfinished or a required review is pending, and claims never expire. The board UI and the HTTP API run the same lifecycle, and `digest` shows a `CONTRIBUTIONS @actor` section.
@@ -88,7 +90,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Paliverse/workboard/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/Paliverse/workboard/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Paliverse/workboard/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Paliverse/workboard/compare/v0.1.0...v0.1.1
