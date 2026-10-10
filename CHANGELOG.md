@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-10
+
 ### Changed
 
 - The card's owner can change the scope of a delegated subtask a worker has already claimed or blocked: `subtask REF configure ID --scope PATH...` or `--clear-scope` keeps the claim, the worker and any result, and records the change in the card history. Prerequisites and the review requirement still change only while the subtask is available. Approving extra files mid-work no longer means leaving the saved scope wrong.
@@ -106,7 +108,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Paliverse/workboard/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Paliverse/workboard/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/Paliverse/workboard/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Paliverse/workboard/compare/v0.1.1...v0.1.2
