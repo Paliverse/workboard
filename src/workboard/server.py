@@ -171,8 +171,13 @@ def open_board(args) -> None:
 # ===== per-board helpers =====
 
 def _require_board_present(board: Path) -> None:
-    if not board.is_file():
-        raise FileNotFoundError(board)
+    # On Windows another thread's save (ReplaceFileW) briefly hides board.json;
+    # only a lasting absence means the board is missing.
+    deadline = time.monotonic() + (1.0 if os.name == "nt" else 0.0)
+    while not board.is_file():
+        if time.monotonic() >= deadline:
+            raise FileNotFoundError(board)
+        time.sleep(0.01)
 
 
 def _doc(board: Path) -> dict:

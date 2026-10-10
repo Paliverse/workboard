@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, concurrent CLI writers could fail with spurious `lock` timeouts or `io` errors naming a temporary `board.json~RF….TMP` file. Resolving the write path no longer touches the board file another writer is replacing.
+- On Windows, the board page and browser edits could fail with `410 board_missing` while another write was replacing `board.json`. The server now treats only a lasting absence as a missing board.
+
 ## [0.1.2] - 2026-09-26
 
 ### Fixed

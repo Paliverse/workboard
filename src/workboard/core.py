@@ -155,7 +155,8 @@ def require_write_scope(path) -> Path:
     for candidate in (raw, *raw.parents):
         if _has_reparse_point(candidate):
             raise WorkflowError(f"write path crosses a link or reparse point: {raw}", 403)
-    return raw.resolve(strict=False)
+    # Resolving the final component opens the file on Windows and races ReplaceFileW under concurrent writers.
+    return raw.parent.resolve(strict=False) / raw.name
 
 
 def runtime_info() -> dict:
