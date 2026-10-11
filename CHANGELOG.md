@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-10
+
 ### Added
 
 - `handoff --json` adds `requests`, the worker's four steps (read, claim, publish, complete) as `call` requests, and `call`, the argument array that runs them. Workers fill in `{summary}`, `{body}` and `{result}` and send the requests on stdin, so multi-line findings and results survive npm's Windows `workboard.cmd` shim; the argument-array `commands` stay unchanged. The handoff prompt now shows the `call` form.
@@ -152,7 +154,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/Paliverse/workboard/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Paliverse/workboard/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Paliverse/workboard/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Paliverse/workboard/compare/v0.3.0...v0.3.1
