@@ -95,16 +95,15 @@ class CallAndWait(unittest.TestCase):
                                    {"op": "subtask.add", "card": 1, "text": "Worker", "delegated": True},
                                    array=True, pretty=True)
         sid = added["item"]["id"]
-        required, optional, note1, note2 = self.calls(
-            {"op": "subtask.configure", "card": 1, "subtask": sid, "reviewRequired": True,
+        configured, rescoped, note1, note2 = self.calls(
+            {"op": "subtask.configure", "card": 1, "subtask": sid,
              "scope": ["src/a.py", "src/b.py"], "expectedRev": added["rev"]},
-            {"op": "subtask.configure", "card": 1, "subtask": sid, "review-required": False,
+            {"op": "subtask.configure", "card": 1, "subtask": sid,
              "clearScope": False, "scope": ["src/c.py", "tests"], "reason": None},
             {"op": "note", "card": 1, "actor": "Peer", "summary": "one", "body": "first"},
             {"op": "note", "card": 1, "actor": "Peer", "summary": "two", "body": "second"}, pretty=True)
-        self.assertTrue(required["item"]["delegation"]["review"]["required"])
-        self.assertFalse(optional["item"]["delegation"]["review"]["required"])
-        self.assertEqual(optional["item"]["delegation"]["scope"], ["src/c.py", "tests"])
+        self.assertEqual(configured["item"]["delegation"]["scope"], ["src/a.py", "src/b.py"])
+        self.assertEqual(rescoped["item"]["delegation"]["scope"], ["src/c.py", "tests"])
         ack, inbox = self.calls(
             {"op": "ack", "card": 1, "notes": [note1["item"]["id"], note2["item"]["id"]]},
             {"op": "inbox", "card": 1})
@@ -178,6 +177,8 @@ class CallAndWait(unittest.TestCase):
             ({"op": "wait", "card": 1, "subtasks": [one]}, "subtask"),
             ({"op": "context", "card": "-h"}, "card"),
             ({"op": "attachment.get", "card": 1, "id": "-h", "out": "copy.txt"}, "id"),
+            ({"op": "subtask.configure", "card": 1, "subtask": one, "reviewRequired": True}, "reviewRequired"),
+            ({"op": "subtask.add", "card": 1, "text": "Child", "parent": one}, "parent"),
         ]
         *results, shown = self.calls(*[request for request, _ in cases], {"op": "show", "card": 1}, ok=False)
         for (request, key), result in zip(cases, results):
@@ -212,6 +213,16 @@ class CallAndWait(unittest.TestCase):
         self.assertEqual([card["num"] for card in self.calls({"op": "query", "column": "review"})[0]["cards"]], [1])
         self.assertEqual([card["num"] for card in self.json(["list", "--column", "review"])["cards"]], [1])
 
+    def test_add_into_in_progress_runs_start_checks(self):
+        started = self.calls({"op": "add", "title": "Started", "column": "inprogress"})[0]
+        self.assertEqual((started["column"], started["activeOwner"]), ("inprogress", "Main"))
+        before = Path(self.board).read_bytes()
+        waiting, shipped = self.calls({"op": "add", "title": "Waiting", "column": "in-progress", "on": 1},
+                                      {"op": "add", "title": "Shipped", "column": "done"}, ok=False)
+        self.assertEqual((waiting["status"], waiting["code"]), (409, "deps"))
+        self.assertEqual((shipped["status"], shipped["code"]), (409, "state"))
+        self.assertEqual(Path(self.board).read_bytes(), before)
+
     def test_add_pins_notes_from_the_request_or_stdin(self):
         added = self.calls({"op": "add", "title": "Pinned", "notes": "Acceptance: one\nAcceptance: two"})[0]
         piped = self.cli(["add", "--title", "Piped", "--notes-stdin", "--json"], input="Acceptance: piped\n")
@@ -237,32 +248,39 @@ class CallAndWait(unittest.TestCase):
         for result in (unknown, zero):
             self.assertEqual((result["status"], result["code"]), (422, "invalid"))
 
-    def test_handoff_fields_takeover_read_only_scope_and_result_on_stdin(self):
+    def test_handoff_is_slim_takes_over_and_runs_through_call(self):
         added = self.calls({"op": "start", "card": 1},
                            {"op": "subtask.add", "card": 1, "text": "Review", "delegated": True})[1]
         sid = added["item"]["id"]
         self.calls({"op": "subtask.claim", "card": 1, "subtask": sid, "actor": "Ada"})
         request = {"op": "handoff", "card": 1, "subtask": sid, "worker": "Grace"}
-        handoff, short, unknown = self.calls(request, {**request, "fields": "prompt"},
-                                             {**request, "fields": "prompt,nope"}, ok=False)
+        handoff = self.calls(request)[0]
+        self.assertEqual(set(handoff), {"ok", "rev", "num", "worker", "previousOwner", "writeScope",
+                                        "scopeWarnings", "requests", "prompt"})
         self.assertEqual((handoff["previousOwner"], handoff["writeScope"]), ("Ada", []))
-        self.assertEqual(handoff["requests"]["claim"],
-                         {"op": "subtask.takeover", "card": 1, "subtask": sid, "reason": "{reason}"})
-        self.assertEqual(handoff["commands"]["claim"][3:6], ["subtask", "1", "takeover"])
-        self.assertIn("--reason={reason}", handoff["commands"]["claim"])
-        self.assertIn("reason", handoff["placeholders"])
-        self.assertIn("read-only", handoff["prompt"])
-        self.assertEqual(short, {key: handoff[key] for key in ("ok", "rev", "num", "prompt")})
-        self.assertEqual((unknown["status"], unknown["code"]), (422, "invalid"))
+        self.assertEqual(handoff["requests"]["claim"], {"op": "subtask.takeover", "card": 1, "subtask": sid,
+                                                        "reason": "{reason}", "board": "calls", "actor": "Grace"})
+        for text in ("read-only: edit no files", "{reason}", "`workboard call`",
+                     json.dumps(handoff["requests"], ensure_ascii=False)):
+            self.assertIn(text, handoff["prompt"])
+        text = self.cli(["handoff", "1", "--subtask", sid, "--worker", "Grace"])
+        self.assertEqual(text.stdout, handoff["prompt"])
+        for option, value in (("--write-scope", "src"), ("--fields", "prompt"), ("--peer", "Ada=agent://x")):
+            removed = self.cli(["handoff", "1", "--subtask", sid, "--worker", "Grace", option, value])
+            self.assertEqual(removed.returncode, 2, option)
+        worker = ["call"]  # The requests name their board and actor; no shell-quoted names on the command line.
         claim = {**handoff["requests"]["claim"], "reason": "Main reassigned the review"}
-        taken = self.cli(handoff["call"][1:], input=json.dumps(claim) + "\n")
+        taken = self.cli(worker, input=json.dumps(claim) + "\n")
         self.assertEqual(taken.returncode, 0, taken.stdout + taken.stderr)
         self.assertEqual(last_json(taken)["item"]["delegation"]["owner"], "Grace")
         again = self.calls(request)[0]
         self.assertIsNone(again["previousOwner"])
-        self.assertEqual(again["requests"]["claim"], {"op": "subtask.claim", "card": 1, "subtask": sid})
-        self.assertNotIn("reason", again["placeholders"])
-        completed = self.cli(again["commands"]["complete"][1:], input="Verified\nby the review")
+        self.assertEqual(again["requests"]["claim"],
+                         {"op": "subtask.claim", "card": 1, "subtask": sid, "board": "calls", "actor": "Grace"})
+        self.assertNotIn("{reason}", again["prompt"])
+        self.assertLess(len(again["prompt"]), 1500)
+        complete = {**again["requests"]["complete"], "result": "Verified\nby the review"}
+        completed = self.cli(worker, input=json.dumps(complete) + "\n")
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertEqual(last_json(completed)["item"]["delegation"]["result"], "Verified\nby the review")
 
@@ -275,9 +293,9 @@ class CallAndWait(unittest.TestCase):
         handoff = self.calls({"op": "handoff", "card": 1, "subtask": sid, "worker": "Grace"})[0]
         steps = handoff["requests"]
         self.assertEqual(list(steps), ["read", "claim", "resume", "publish", "complete"])
-        self.assertEqual(list(handoff["commands"]), list(steps))
+        self.assertIn("CI is green", handoff["prompt"])
         flow = [{**steps["claim"], "reason": "Ada is gone"}, steps["resume"], {**steps["complete"], "result": "Fixed"}]
-        done = self.cli(handoff["call"][1:], input="\n".join(map(json.dumps, flow)) + "\n")
+        done = self.cli(["--board=calls", "--actor=Grace", "call"], input="\n".join(map(json.dumps, flow)) + "\n")
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertEqual(json.loads(done.stdout.splitlines()[-1])["item"]["delegation"]["state"], "completed")
 
@@ -326,8 +344,7 @@ class CallAndWait(unittest.TestCase):
         added = self.calls({"op": "subtask.add", "card": 1, "texts": ["Worker", "Legacy"]})[0]
         sid, legacy = [item["id"] for item in added["items"]]
         self.calls({"op": "subtask.delegate", "card": 1, "subtask": sid},
-                   {"op": "subtask.configure", "card": 1, "subtask": sid, "scope": ["src"],
-                    "reviewRequired": True},
+                   {"op": "subtask.configure", "card": 1, "subtask": sid, "scope": ["src"]},
                    {"op": "handoff", "card": 1, "subtask": sid, "worker": "Worker"},
                    {"op": "subtask.claim", "card": 1, "subtask": sid, "actor": "Worker"},
                    {"op": "subtask.release", "card": 1, "subtask": sid, "actor": "Worker", "reason": "pause"},
@@ -421,7 +438,7 @@ class CallAndWait(unittest.TestCase):
         self.assertEqual((result["ok"], result["status"], result["code"], result["rev"]),
                          (False, 404, "io", None))
 
-    def test_wait_subtask_ignores_siblings_and_observes_own_subtree(self):
+    def test_wait_subtask_ignores_siblings_and_observes_itself(self):
         added = self.calls({"op": "subtask.add", "card": 1, "texts": ["Watched", "Sibling"]})[0]
         watched, sibling = [item["id"] for item in added["items"]]
         sibling_only = self.wait_with_writer(
@@ -429,25 +446,35 @@ class CallAndWait(unittest.TestCase):
             lambda: self.calls({"op": "subtask.done", "card": 1, "subtask": sibling}))
         self.assertFalse(sibling_only["changed"])
         self.assertFalse(sibling_only["subtask"]["done"])
+        self.assertEqual(sibling_only["notes"], [])
         baseline = sibling_only["rev"]
         own = self.wait_with_writer(
             ["--subtask", watched, "--after", baseline, "--timeout", 3],
             lambda: self.calls({"op": "subtask.done", "card": 1, "subtask": watched}))
         self.assertTrue(own["changed"])
         self.assertEqual(own["subtask"], {"id": watched, "done": True, "delegation": None})
-        descendant = self.wait_with_writer(
-            ["--subtask", watched, "--after", own["rev"], "--timeout", 3],
-            lambda: self.calls({"op": "subtask.add", "card": 1, "parent": watched, "text": "Child"}))
-        self.assertTrue(descendant["changed"])
 
-    def test_wait_subtask_observes_a_note_on_that_subtask(self):
+    def test_wait_subtask_returns_the_new_notes_on_that_subtask(self):
         added = self.calls({"op": "start", "card": 1}, {"op": "subtask.add", "card": 1, "text": "Asked"})[1]
         sid = added["item"]["id"]
+        self.calls({"op": "note", "card": 1, "subtask": sid, "summary": "Worker's question"})
         answered = self.wait_with_writer(
             ["--subtask", sid, "--timeout", 3],
             lambda: self.calls({"op": "note", "card": 1, "subtask": sid, "summary": "Main's answer"}))
         self.assertTrue(answered["changed"])
         self.assertEqual(answered["subtask"]["id"], sid)
+        self.assertEqual([(note["summary"], note["by"]) for note in answered["notes"]], [("Main's answer", "Main")])
+
+    def test_wait_subtask_catching_up_returns_notes_posted_after_your_own(self):
+        sid = self.calls({"op": "start", "card": 1},
+                         {"op": "subtask.add", "card": 1, "text": "Asked", "delegated": True})[1]["item"]["id"]
+        self.calls({"op": "subtask.claim", "card": 1, "subtask": sid, "actor": "Ada"})
+        asked = self.calls({"op": "note", "card": 1, "subtask": sid, "summary": "Worker's question", "actor": "Ada"})[0]
+        self.calls({"op": "note", "card": 1, "subtask": sid, "summary": "Main's answer"})  # Before Ada waits.
+        caught = self.calls({"op": "wait", "card": 1, "subtask": sid, "after": asked["rev"], "timeout": 1,
+                             "actor": "Ada"})[0]
+        self.assertTrue(caught["changed"])
+        self.assertEqual([note["summary"] for note in caught["notes"]], ["Main's answer"])
 
     def test_wait_immediate_after_bounds_and_missing_subtask(self):
         note, added = self.calls({"op": "note", "card": 1, "summary": "already changed"},

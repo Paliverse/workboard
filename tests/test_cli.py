@@ -166,15 +166,15 @@ class BoardLifecycle(unittest.TestCase):
         self.assertEqual(done.returncode, 0, detail(done))
         self.assertIn("1/2 done", done.stdout)
         nest = wb(["subtask", "1", "add", "nested leaf", "--parent", "s-2"], self.proj)
-        self.assertEqual(nest.returncode, 0, detail(nest))
-        self.assertIn("[s-3]", nest.stdout)
-        s2 = next(s for s in self.show("1", "--full")["subtasks"] if s["id"] == "s-2")
-        self.assertIn("s-3", [child["id"] for child in s2.get("children", [])])
+        self.assertEqual(nest.returncode, 2, detail(nest))  # Subtasks are one flat list.
+        third = wb(["subtask", "1", "add", "step three"], self.proj)
+        self.assertEqual(third.returncode, 0, detail(third))
+        self.assertIn("[s-3]", third.stdout)
         removed = wb(["subtask", "1", "rm", "s-1"], self.proj)
         self.assertEqual(removed.returncode, 0, detail(removed))
         self.assertIn("[s-1]", removed.stdout)
         self.assertIn("removed", removed.stdout)
-        self.assertEqual([s["id"] for s in self.show("1", "--full")["subtasks"]], ["s-2"])
+        self.assertEqual([s["id"] for s in self.show("1", "--full")["subtasks"]], ["s-2", "s-3"])
         for sid in ("s-2", "s-3"):
             proc = wb(["subtask", "1", "done", sid], self.proj)
             self.assertEqual(proc.returncode, 0, detail(proc))
@@ -184,6 +184,9 @@ class BoardLifecycle(unittest.TestCase):
         pulse = last_json(wb(["digest", "--json"], self.proj))
         self.assertEqual(next(c for c in pulse["attention"] if c["num"] == 1)["owner"], "tester")
         self.assertIn(1, [c["num"] for c in pulse["mine"]])
+        self.assertEqual({tuple(row) for row in pulse["mine"]}, {("num", "title", "column")})
+        self.assertEqual(pulse["sweepCandidateCount"], 0)
+        self.assertNotIn("sweepCandidates", pulse)
 
     def test_c05_update_fields(self):
         u = wb(["update", "2", "--title", "Renamed Card", "--priority", "low",
@@ -204,16 +207,13 @@ class BoardLifecycle(unittest.TestCase):
         self.assertEqual((entry["summary"], entry["body"], entry["by"]), ("hello note", "detail line", "tester"))
         self.assertTrue(entry["at"].startswith(utc_today()), entry)
 
-    def test_c07_done_requires_writeup_and_active_work(self):
+    def test_c07_done_requires_writeup_and_closes_task_work(self):
         before = self.board.read_bytes()
         no_writeup = wb(["done", "2"], self.proj)
-        no_claim = wb(["done", "2", "--writeup", "not started"], self.proj)
         self.assertNotEqual(no_writeup.returncode, 0)
-        self.assertNotEqual(no_claim.returncode, 0)
         self.assertEqual(self.board.read_bytes(), before)
-        start = wb(["start", "2"], self.proj)
-        good = wb(["done", "2", "--writeup", "shipped it"], self.proj)
-        self.assertEqual((start.returncode, good.returncode), (0, 0), (detail(start), detail(good)))
+        good = wb(["done", "2", "--writeup", "shipped it"], self.proj)  # Task work closes without start.
+        self.assertEqual(good.returncode, 0, detail(good))
         card = next(c for c in read_board(self.board)["cards"] if c["num"] == 2)
         self.assertEqual((card["column"], card["outcome"], card["writeup"]),
                          ("done", "completed", "shipped it"))
@@ -909,13 +909,13 @@ class Contracts(unittest.TestCase):
         self.assertTrue(context["dependencies"][0]["satisfied"])
         self.assertEqual(context["missingDependencies"], ["lost-dep"])
         self.assertFalse(context["ready"])
-        self.assertEqual(context["omitted"], {"doneSubtasks": 2, "history": 5})
-        visible = {item["id"] for item, _ in core.iter_subtasks(context["card"]["subtasks"])}
-        self.assertLessEqual({"step", "ancestor", "open-child", "done-11"}, visible)
-        self.assertFalse({"done-0", "done-1"} & visible)
+        self.assertEqual(context["omitted"], {"doneSubtasks": 3, "history": 30})
+        visible = {item["id"] for item in context["card"]["subtasks"]}  # Nesting flattens in pre-order.
+        self.assertLessEqual({"step", "open-child", "done-11"}, visible)
+        self.assertFalse({"ancestor", "done-0", "done-1"} & visible)
         self.assertEqual(context["card"]["notes"], subject["notes"].strip())
         self.assertEqual(context["card"]["comments"], subject["comments"])
-        self.assertEqual(context["card"]["history"], subject["history"][-25:])
+        self.assertNotIn("history", context["card"])
         full = last_json(wb(["context", "1", "--full", "--json"], root))
         self.assertNotIn("omitted", full)
         self.assertEqual(full["card"], actual["cards"][0])
@@ -1078,7 +1078,7 @@ class Contracts(unittest.TestCase):
         claimed = last_json(claim)
         self.assertEqual(claimed["rev"], last_json(changed_y)["rev"] + 1)
         self.assertEqual(claimed["activeOwner"], "Agent-X")
-        current = last_json(wb(["context", x["id"], "--json"], root))
+        current = last_json(wb(["context", x["id"], "--full", "--json"], root))  # History comes only with full.
         self.assertEqual(current["card"]["changedRev"], claimed["rev"])
         path = core.board_file("card guards")
         before = path.read_bytes()
@@ -1136,7 +1136,7 @@ class Contracts(unittest.TestCase):
                                   "delegation": claimed} for i in range(10)] if num == 1 else []}))
             doc["cards"].append(core.normalize_card({
                 "num": 25, "id": "card-25", "title": "Card 25", "column": "done", "outcome": "canceled",
-                "cancelReason": "c" * 300, "doneAt": core.now_iso()}))
+                "cancelReason": "c" * 300, "doneAt": "2020-01-01T00:00:00Z"}))
             doc["nextNum"] = 26
             core.save(path, doc, by="Main")
         lines = wb(["digest", "--actor", "Main"], root).stdout.splitlines()
@@ -1150,7 +1150,8 @@ class Contracts(unittest.TestCase):
                      "  … +4 more (query --column inprogress)", "  … +4 more (query --column blocked)"):
             self.assertIn(more, lines)
         self.assertLessEqual(max(map(len, lines)), 200, max(lines, key=len))
-        self.assertEqual(len(last_json(wb(["digest", "--json", "--actor", "Main"], root))["contributions"]), 10)
+        pulse = last_json(wb(["digest", "--json", "--actor", "Main"], root))
+        self.assertEqual((len(pulse["contributions"]), pulse["sweepCandidateCount"]), (10, 1))
 
     def test_c27_bulk_subtasks_are_atomic_and_idempotent(self):
         root = self.init("bulk", "bulk-subtasks")
@@ -1262,7 +1263,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(len(log), 12)
         self.assertNotIn("omitted", full)
         trimmed = last_json(wb(["context", "1", "--json"], root))
-        self.assertEqual(trimmed["omitted"], {"doneSubtasks": 0, "history": 0, "log": 2})
+        self.assertEqual(trimmed["omitted"], {"doneSubtasks": 0, "history": len(full["card"]["history"]), "log": 2})
         self.assertEqual(trimmed["card"]["log"], log[-10:])
         self.assertEqual(trimmed["card"]["notes"], full["card"]["notes"])
 
@@ -1313,7 +1314,8 @@ class Contracts(unittest.TestCase):
         self.assertNotIn("omitted", full)
         trimmed = last_json(wb(["context", "1", "--json"], root))
         self.assertEqual(trimmed["card"]["comments"], comments[-10:])
-        self.assertEqual(trimmed["omitted"], {"doneSubtasks": 0, "history": 0, "comments": 2})
+        self.assertEqual(trimmed["omitted"], {"doneSubtasks": 0, "history": len(full["card"]["history"]),
+                                              "comments": 2})
         shown = last_json(wb(["show", "1", "--json"], root))["card"]["comments"]
         self.assertEqual(shown, comments[-5:])
         self.assertEqual(last_json(wb(["show", "1", "--full", "--json"], root))["card"]["comments"], comments)
@@ -1384,11 +1386,12 @@ class AddFrom(unittest.TestCase):
                             "--priority", "critical", "--tag", "reusable", "--on", prerequisite])["id"]
         self.json(["update", source, "--notes", "Acceptance: producer and consumer agree"])
         self.json(["start", source])
-        checklist = self.json(["subtask", source, "add", "Checklist"])["item"]["id"]
+        dropped, checklist, _ = [item["id"] for item in self.json(
+            ["subtask", source, "add", "Dropped", "Checklist", "Second step"])["items"]]
+        self.json(["subtask", source, "rm", dropped])  # The gap makes the copy's fresh IDs differ.
         producer, consumer = self.add("Producer", "Consumer", ref=source)
-        self.json(["subtask", source, "add", "Nested", "--parent", checklist])
         self.json(["subtask", source, "done", checklist])
-        self.action("configure", producer, "--review-required", "--scope", "src/producer.py", ref=source)
+        self.action("configure", producer, "--scope", "src/producer.py", ref=source)
         self.action("configure", consumer, "--on", producer, "--scope", "src/consumer.py", ref=source)
         self.action("claim", producer, actor="Ada", ref=source)
         self.action("done", producer, "--result", "Producer verified", actor="Ada", ref=source)
@@ -1409,7 +1412,7 @@ class AddFrom(unittest.TestCase):
         self.assertEqual([row["ev"] for row in card["history"]], ["created"])
         rows = [item for item, _ in core.iter_subtasks(card["subtasks"])]
         self.assertEqual([(item["id"], item["text"], item["done"]) for item in rows],
-                         [("s-1", "Checklist", False), ("s-2", "Nested", False),
+                         [("s-1", "Checklist", False), ("s-2", "Second step", False),
                           ("s-3", "Producer", False), ("s-4", "Consumer", False)])
         self.assertNotIn("delegation", rows[0])
         copied_producer, copied_consumer = rows[2]["delegation"], rows[3]["delegation"]

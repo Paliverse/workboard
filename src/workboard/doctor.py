@@ -293,8 +293,13 @@ def _validate_document(raw, path, board, report, budget, blob_cache, *, archive=
         raise
     # normalize_doc migrates pre-v3 notes into the timeline, rewriting `notes` and `log` by design.
     skip = frozenset({"notes", "log"}) if not archive and version < 3 else frozenset()
-    for change in _normalization_changes(raw, normalized, skip=skip):
+    # Nested checklists load flat in pre-order, and every delegated result needs review: both by design.
+    expected = {**raw, "cards": [{**card, "subtasks": wb.flatten_subtasks(card["subtasks"])}
+                                 if card.get("subtasks") else card for card in cards]}
+    for change in _normalization_changes(expected, normalized, skip=skip):
         budget.take()
+        if re.match(r"\$\.cards\[\d+\]\.subtasks\[\d+\]\.delegation\.review\.required:", change):
+            continue
         # A timeline entry normalization would still rewrite (untrimmed summary/body) breaks the v3 log rules.
         code = "log-invalid" if re.match(r"\$\.cards\[\d+\]\.log\b", change) else "normalization-loss"
         _finding(report, code, change, path)

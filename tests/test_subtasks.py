@@ -138,33 +138,43 @@ class DelegatedSubtasks(unittest.TestCase):
         self.assertEqual([entry["subtaskId"] for entry in pulse["contributions"]], [two])
         for actor, sid in (("Ada", one), ("Grace", two)):
             self.json(["subtask", "1", "done", sid, "--result", "verified contribution; see notes"], actor)
+        self.rejected(["done", "1", "--writeup", "results not accepted yet"], "Main", "state")
+        self.json(["subtask", "1", "accept", one, two])
         context = self.json(["context", "1", "--full"])
         self.assertEqual(context["card"]["activeOwner"], "Main")
         self.assertEqual(context["card"]["column"], "inprogress")
         self.rejected(["done", "1", "--writeup", "worker integration"], "Ada", "owned")
         self.json(["done", "1", "--writeup", "Main integrated and verified", "--expected-rev", context["rev"]])
 
-    def test_nested_assignment_boundaries_and_independent_children(self):
-        root = self.json(["subtask", "1", "add", "Delegated tree", "--delegated"])["item"]["id"]
-        child = self.json(["subtask", "1", "add", "Legacy detail", "--parent", root])["item"]["id"]
-        independent = self.json(["subtask", "1", "add", "Independent child", "--parent", root, "--delegated"])["item"]["id"]
-        self.json(["start", "1"])
-        self.json(["subtask", "1", "claim", root], "Ada")
-        self.json(["subtask", "1", "claim", independent], "Grace")
-        # Legacy checklist items inside a claimed subtree stay editable by anyone, the claimant included.
-        self.json(["subtask", "1", "done", child], "Ada")
-        nested = self.json(["subtask", "1", "add", "nested expansion", "--parent", child])["item"]["id"]
-        self.json(["subtask", "1", "rm", nested], "Grace")
-        self.rejected(["subtask", "1", "rm", root], "Main", "owned")
-        self.rejected(["subtask", "1", "rm", independent], "Ada", "owned")
-        self.rejected(["subtask", "1", "delegate", child], "Ada", "owned")
-        self.json(["subtask", "1", "done", independent, "--result", "independent child verified"], "Grace")
-        self.json(["subtask", "1", "done", root, "--result", "tree contribution verified"], "Ada")
-        saved = self.json(["context", "1", "--full"])["card"]["subtasks"][0]
-        self.assertEqual(saved["by"], "Main")
-        self.assertEqual([item["id"] for item in saved["children"]], [child, independent])
-        self.assertEqual((saved["children"][0]["done"], saved["children"][0]["doneBy"]), (True, "Ada"))
-        self.assertNotIn("delegation", saved["children"][0])
+    def test_nested_boards_load_flat_in_pre_order_with_delegations_intact(self):
+        path = core.board_file("delegated")
+        claimed = {"state": "claimed", "owner": "Ada", "claimedAt": "2026-10-01T00:00:00Z", "result": "",
+                   "scope": ["src"], "vendorAssignment": 1}
+        completed = {"state": "completed", "owner": "Grace", "claimedAt": "2026-10-01T00:00:00Z",
+                     "result": "Verified", "dependsOn": ["root"], "review": {"required": False, "state": "pending"}}
+        with core.board_transaction(path) as doc:
+            card = doc["cards"][0]
+            card["subtasks"] = [
+                {"id": "root", "text": "Root", "done": False, "collapsed": True, "delegation": claimed, "children": [
+                    {"id": "plain", "text": "Plain child", "done": True, "doneBy": "Ada", "children": [
+                        {"id": "deep", "text": "Delegated grandchild", "done": True, "delegation": completed}]}]},
+                {"id": "last", "text": "Top-level sibling", "done": False, "children": []}]
+            core.save(path, doc, by="Main")
+        before = path.read_bytes()
+        loaded = core.load(path)["cards"][0]["subtasks"]
+        self.assertEqual(path.read_bytes(), before, "flattening on load writes nothing")
+        self.assertEqual([(st["id"], st["text"], st["done"]) for st in loaded],
+                         [("root", "Root", False), ("plain", "Plain child", True),
+                          ("deep", "Delegated grandchild", True), ("last", "Top-level sibling", False)])
+        self.assertFalse(any("children" in st or "collapsed" in st for st in loaded))
+        self.assertEqual(loaded[1]["doneBy"], "Ada")
+        root, deep = loaded[0]["delegation"], loaded[2]["delegation"]
+        self.assertEqual((root["state"], root["owner"], root["scope"], root["vendorAssignment"]),
+                         ("claimed", "Ada", ["src"], 1))
+        self.assertEqual((deep["state"], deep["owner"], deep["result"], deep["dependsOn"], deep["review"]["required"]),
+                         ("completed", "Grace", "Verified", ["root"], True))
+        self.assertEqual([st["id"] for st in self.json(["context", "1"])["card"]["subtasks"]],
+                         ["root", "plain", "deep", "last"])
 
     def test_paused_and_canceled_work_keeps_claims_recoverable(self):
         sid = self.json(["subtask", "1", "add", "Work", "--delegated"])["item"]["id"]
@@ -217,7 +227,9 @@ class DelegatedSubtasks(unittest.TestCase):
         doc["cards"][0]["subtasks"].append(dict(doc["cards"][0]["subtasks"][0]))
         core.save(path, doc)
         self.rejected(["subtask", "1", "takeover", "s-1", "--reason", "ambiguous target"], "Main", "invalid")
-        self.assertEqual(self.json(["inbox"])["items"], [])
+        # The inbox walk tolerates the duplicate ID and lists every claim held on Main's card.
+        self.assertEqual([(row["kind"], row["subtaskId"], row["owner"]) for row in self.json(["inbox"])["items"]],
+                         [("claim", a, "Ada"), ("claim", b, "Grace"), ("claim", a, "Ada")])
 
     def test_schema_1_to_3_boards_read_unchanged_and_save_as_3(self):
         path = core.board_file("delegated")
@@ -236,16 +248,16 @@ class DelegatedSubtasks(unittest.TestCase):
             loaded = core.load(path)
             self.assertEqual(path.read_bytes(), encoded, "reads do not rewrite legacy boards")
             self.assertEqual(loaded["schemaVersion"], 3)
-            child = loaded["cards"][0]["subtasks"][0]["children"][0]
+            parent, child = loaded["cards"][0]["subtasks"]
             self.assertEqual((loaded["vendorDocument"], loaded["cards"][0]["vendorCard"],
-                              child["vendorSubtask"]),
+                              parent["vendorSubtask"], child["vendorSubtask"]),
                              (candidate["vendorDocument"], candidate["cards"][0]["vendorCard"],
-                              candidate["cards"][0]["subtasks"][0]["children"][0]["vendorSubtask"]))
+                              {"root": True}, {"nested": True}))
         core.save(path, loaded, by="Main")
         self.assertEqual(schema(path), 3, "a board without delegation stays readable by 0.1.x")
-        loaded["cards"][0]["subtasks"][0]["children"][0]["delegation"] = {"state": "available"}
+        loaded["cards"][0]["subtasks"][1]["delegation"] = {"state": "available"}
         core.save(path, loaded, by="Main")
-        self.assertEqual(schema(path), 4, "delegation at any depth needs schema 4")
+        self.assertEqual(schema(path), 4, "delegation on a formerly nested item needs schema 4")
 
         malformed = json.loads(json.dumps(raw))
         malformed["cards"][0]["subtasks"][0]["delegation"] = {
@@ -320,14 +332,13 @@ class DelegatedSubtasks(unittest.TestCase):
             self.assertIn(sid, self.rejected(["subtask", "1", *args], "Ada", "state")["error"])
 
     def test_generic_replacement_edits_checklists_but_not_delegated_state(self):
-        root = self.json(["subtask", "1", "add", "Delegated tree", "--delegated"])["item"]["id"]
-        self.json(["subtask", "1", "add", "Legacy detail", "--parent", root])
+        root = self.json(["subtask", "1", "add", "Delegated work", "--delegated"])["item"]["id"]
+        self.json(["subtask", "1", "add", "Legacy detail"])
         self.json(["start", "1"])
         self.json(["subtask", "1", "claim", root], "Ada")
         current = core.load(core.board_file("delegated"))["cards"][0]["subtasks"]
         edited = copy.deepcopy(current)
-        edited[0]["collapsed"] = True
-        edited[0]["children"][0].update(done=True, text="Legacy detail, clarified")
+        edited[1].update(done=True, text="Legacy detail, clarified")
         core.guard_subtask_replacement(current, edited, "Main")
         for change, code in ((lambda items: items[0].update(done=True), "state"),
                              (lambda items: items[0]["delegation"].update(owner="Main"), "state"),
@@ -387,7 +398,8 @@ class DelegatedSubtasks(unittest.TestCase):
                              (True, actor, actor, f"Verified by {actor}"))
         findings = [entry for entry in context["card"]["log"] if entry["summary"].startswith("finding:")]
         self.assertEqual(sorted((entry["subtaskId"], entry["by"]) for entry in findings), sorted(winners.items()))
-        self.json(["done", "1", "--writeup", "Main integrated six results", "--expected-rev", context["rev"]])
+        accepted = self.json(["subtask", "1", "accept", *ids])
+        self.json(["done", "1", "--writeup", "Main integrated six results", "--expected-rev", accepted["rev"]])
 
 
 class DelegationWorkflow(unittest.TestCase):
@@ -450,11 +462,10 @@ class DelegationWorkflow(unittest.TestCase):
 
     def test_review_request_changes_recompletion_and_acceptance_keep_evidence(self):
         sid, = self.add("Reviewed contribution")
-        configured = self.action("configure", sid, "--review-required")
-        self.assertTrue(configured["item"]["delegation"]["review"]["required"])
         self.action("claim", sid, actor="Ada")
         first = self.action("done", sid, "--result", "First result with test evidence", actor="Ada")
-        self.assertEqual(first["item"]["delegation"]["review"]["state"], "pending")
+        self.assertEqual((first["item"]["delegation"]["review"]["state"],
+                          first["item"]["delegation"]["review"]["required"]), ("pending", True))
         self.assertIn(sid, self.reject(["done", self.ref, "--writeup", "Premature integration"], "state")["error"])
         self.assertEqual(self.attention(), "REVIEW PENDING")  # Every subtask is ticked, but done would refuse.
         self.reject(["subtask", self.ref, "accept", sid], "owned", "Ada")
@@ -483,22 +494,29 @@ class DelegationWorkflow(unittest.TestCase):
         self.json(["done", self.ref, "--writeup", "Integrated both revisions and verified empty input",
                    "--expected-rev", context["rev"]])
 
-    def test_review_gate_is_opt_in_and_available_configuration_is_owned(self):
+    def test_every_result_needs_acceptance_and_available_configuration_is_owned(self):
         sid, = self.add("Existing worker flow")
-        self.reject(["subtask", self.ref, "configure", sid, "--review-required"], "owned", "Ada")
-        self.action("configure", sid, "--scope", "src/worker.py", "--review-required")
-        cleared = self.action("configure", sid, "--clear-scope", "--clear-deps", "--no-review-required")
+        self.reject(["subtask", self.ref, "configure", sid, "--scope", "src/worker.py"], "owned", "Ada")
+        self.action("configure", sid, "--scope", "src/worker.py")
+        cleared = self.action("configure", sid, "--clear-scope", "--clear-deps")
         self.assertEqual(cleared["item"]["delegation"]["scope"], [])
-        self.assertFalse(cleared["item"]["delegation"]["review"]["required"])
         self.action("claim", sid, actor="Ada")
-        self.reject(["subtask", self.ref, "configure", sid, "--review-required"], "state")
+        self.reject(["subtask", self.ref, "configure", sid, "--clear-deps"], "state")
         self.action("done", sid, "--result", "Legacy worker behavior verified", actor="Ada")
+        with core.board_transaction(self.path) as doc:  # A result saved while review was opt-in.
+            core.resolve_ref(doc, self.ref)["subtasks"][0]["delegation"]["review"]["required"] = False
+            core.save(self.path, doc, by="Main")
+        self.assertFalse(json.loads(self.path.read_bytes())["cards"][0]["subtasks"][0]["delegation"]["review"]["required"])
+        self.assertTrue(core.resolve_ref(core.load(self.path), self.ref)["subtasks"][0]["delegation"]["review"]["required"])
+        self.assertIn(sid, self.reject(["done", self.ref, "--writeup", "Unaccepted integration"], "state")["error"])
+        self.assertEqual(self.attention(), "REVIEW PENDING")
+        self.action("accept", sid)
         result = self.json(["done", self.ref, "--writeup", "Integration remains compatible"])
         self.assertEqual(result["column"], "done")
 
     def test_parent_owner_rescopes_and_annotates_running_work(self):
         sid, other = self.add("Running work", "Prerequisite")
-        self.action("configure", sid, "--scope", "src/a.py", "--review-required")
+        self.action("configure", sid, "--scope", "src/a.py")
         claimed = self.action("claim", sid, actor="Ada")["item"]["delegation"]
         widened = self.action("configure", sid, "--scope", "src/a.py", "--scope", "src/b.py")
         delegation = widened["item"]["delegation"]
@@ -511,7 +529,7 @@ class DelegationWorkflow(unittest.TestCase):
         self.assertEqual(item["delegation"]["scope"], ["src/a.py", "src/b.py"])
         narrowed = self.reject(["subtask", self.ref, "configure", sid, "--scope", "src/b.py"], "state")
         self.assertIn("src/a.py", narrowed["error"])  # Held work keeps the paths its worker may be editing.
-        for extra in (["--on", other], ["--clear-deps"], ["--review-required"], ["--no-review-required"]):
+        for extra in (["--on", other], ["--clear-deps"]):
             self.reject(["subtask", self.ref, "configure", sid, "--scope", "src/c.py", *extra], "state")
         self.reject(["subtask", self.ref, "configure", sid, "--scope", "src/c.py"], "owned", "Ada")
         self.action("block", sid, "--reason", "Needs a schema", "--until", "Schema lands", actor="Ada")
@@ -523,7 +541,7 @@ class DelegationWorkflow(unittest.TestCase):
         self.reject(note, "owned", "Grace")
         entry = self.json(note)["item"]
         self.assertEqual((entry["subtaskId"], entry["by"]), (sid, "Main"))
-        self.assertEqual([row["kind"] for row in self.inbox()], ["blocker"])
+        self.assertEqual([row["kind"] for row in self.inbox()], ["blocker", "claim"])
         self.action("resume", sid, actor="Ada")
         self.action("done", sid, "--result", "Both files verified", actor="Ada")
         self.reject(["subtask", self.ref, "configure", sid, "--scope", "src/c.py"], "state")
@@ -562,7 +580,7 @@ class DelegationWorkflow(unittest.TestCase):
         for actor in ("Main", "Grace"):
             self.reject(["subtask", self.ref, "resume", sid], "owned", actor)
             self.reject(["subtask", self.ref, "release", sid, "--reason", "Hand off"], "owned", actor)
-        self.assertEqual([row["kind"] for row in self.inbox()], ["blocker"])
+        self.assertEqual([row["kind"] for row in self.inbox()], ["blocker", "claim"])
         self.assertEqual([row["kind"] for row in self.inbox("Ada")], ["blocker"])
         self.assertIn(sid, self.reject(["done", self.ref, "--writeup", "Still blocked"], "state")["error"])
         resumed = self.action("resume", sid, actor="Ada")
@@ -598,7 +616,6 @@ class DelegationWorkflow(unittest.TestCase):
 
     def test_transitive_prerequisites_gate_claims_and_parent_completion(self):
         producer, middle, consumer, unrelated = self.add("Producer", "Middle", "Consumer", "Unrelated")
-        self.action("configure", producer, "--review-required")
         self.action("configure", middle, "--on", producer)
         self.action("configure", consumer, "--on", middle)
         self.assertIn(producer, self.reject(["subtask", self.ref, "claim", middle], "deps", "Bert")["error"])
@@ -613,6 +630,8 @@ class DelegationWorkflow(unittest.TestCase):
         self.action("claim", unrelated, actor="Dara")
         self.action("done", producer, "--result", "Producer reverified", actor="Ada")
         self.action("accept", producer)
+        self.reject(["subtask", self.ref, "claim", consumer], "deps", "Chen")  # Middle's result awaits acceptance.
+        self.action("accept", middle)
         self.action("claim", consumer, actor="Chen")
         self.action("done", consumer, "--result", "Consumer verified", actor="Chen")
         self.action("done", unrelated, "--result", "Unrelated verified", actor="Dara")
@@ -664,8 +683,6 @@ class DelegationWorkflow(unittest.TestCase):
 
     def test_inbox_reviews_findings_and_batched_acknowledgement_per_parent_owner(self):
         worker, own, unreviewed = self.add("Worker finding", "Main finding", "Unreviewed contribution")
-        for sid in (worker, own):
-            self.action("configure", sid, "--review-required")
         self.action("claim", worker, actor="Ada")
         self.action("claim", own)
         self.action("claim", unreviewed, actor="Bert")
@@ -676,12 +693,12 @@ class DelegationWorkflow(unittest.TestCase):
         self.action("done", worker, "--result", "Worker result verified", actor="Ada")
         self.action("done", own, "--result", "Main's own part verified")
         self.action("done", unreviewed, "--result", "Unreviewed part verified", actor="Bert")
-        # Every result someone else completed waits for the parent owner; review.required says if Done waits too.
+        # Every result someone else completed waits for the parent owner, and Done waits on accepting it.
         rows = self.inbox()
         self.assertEqual([(row["kind"], row["subtaskId"]) for row in rows],
                          [("review", worker), ("review", unreviewed), ("finding", worker), ("finding", None)])
-        self.assertEqual([row["review"]["required"] for row in rows[:2]], [True, False])
-        self.action("accept", unreviewed)  # Accepting clears it, as for required reviews.
+        self.assertEqual([row["review"]["required"] for row in rows[:2]], [True, True])
+        self.action("accept", unreviewed)  # Accepting clears it.
         self.reject(["ack", self.ref, finding["id"]], "owned", "Ada")
         self.reject(["ack", self.ref, finding["id"], own_note["id"]], "not_found")
         history = len(core.resolve_ref(core.load(self.path), self.ref)["history"])
@@ -705,7 +722,7 @@ class DelegationWorkflow(unittest.TestCase):
 
     def test_lifecycle_round_trip_keeps_extension_fields(self):
         sid, = self.add("Extension-aware contribution")
-        self.action("configure", sid, "--review-required", "--scope", "src/extension.py")
+        self.action("configure", sid, "--scope", "src/extension.py")
         with core.board_transaction(self.path) as doc:
             card = core.resolve_ref(doc, self.ref)
             item = card["subtasks"][0]
@@ -752,3 +769,57 @@ class DelegationWorkflow(unittest.TestCase):
         ref = f"#{prerequisite['num']}"
         self.assertIn(ref, self.reject(["start", dependent], "deps")["error"])
         self.assertIn(ref, self.reject(["depends", self.ref, "--on", prerequisite["id"]], "deps")["error"])
+
+    def test_inbox_lists_claims_held_by_others_with_their_last_activity(self):
+        held, own, _ = self.add("Held by a worker", "Held by Main", "Unclaimed")
+        claimed = self.action("claim", held, actor="Ada")["item"]["delegation"]
+        self.action("claim", own)
+        num = core.resolve_ref(core.load(self.path), self.ref)["num"]
+        self.assertEqual(self.inbox(), [{"kind": "claim", "cardId": self.ref, "num": num, "subtaskId": held,
+                                         "owner": "Ada", "state": "claimed", "claimedAt": claimed["claimedAt"],
+                                         "lastActivityAt": claimed["claimedAt"]}])
+        note = self.json(["note", self.ref, "--subtask", held, "--summary", "Halfway there"], "Ada")["item"]
+        self.action("block", held, "--reason", "Waiting", "--until", "Input arrives", actor="Ada")
+        rows = self.inbox()
+        self.assertEqual([row["kind"] for row in rows], ["blocker", "claim", "finding"])
+        self.assertEqual((rows[1]["state"], rows[1]["claimedAt"], rows[1]["lastActivityAt"]),
+                         ("blocked", claimed["claimedAt"], note["at"]))
+        self.assertEqual([row["kind"] for row in self.inbox("Ada")], ["blocker"])  # Only the card's owner sees claims.
+        self.action("resume", held, actor="Ada")
+        self.action("done", held, "--result", "Verified", actor="Ada")
+        self.assertNotIn("claim", [row["kind"] for row in self.inbox()])
+
+    def test_done_from_task_keeps_owner_and_card_dependency_checks(self):
+        prerequisite = self.json(["add", "--title", "Prerequisite"])
+        dependent = self.json(["add", "--title", "Dependent", "--on", prerequisite["id"]])["id"]
+        ref = f"#{prerequisite['num']}"
+        self.assertIn(ref, self.reject(["done", dependent, "--writeup", "Too early"], "deps")["error"])
+        self.reject(["done", self.ref, "--writeup", "Not my card"], "owned", "Grace")
+        done = self.json(["done", prerequisite["id"], "--writeup", "Finished straight from Task"])
+        self.assertEqual((done["column"], done["outcome"], done["activeOwner"]), ("done", "completed", None))
+        self.assertEqual(self.json(["done", dependent, "--writeup", "Prerequisite shipped"])["column"], "done")
+        self.reject(["done", dependent, "--writeup", "Twice"], "state")
+        self.json(["block", self.ref, "--reason", "Waiting", "--until", "Input arrives"])
+        self.reject(["done", self.ref, "--writeup", "Still blocked"], "state")
+
+    def test_create_card_in_progress_claims_it_under_the_start_rules(self):
+        doc = core.load(self.path)
+        prerequisite = core.create_card(doc, "Main", title="Prerequisite", column="backlog")
+        with self.assertRaises(core.WorkflowError) as caught:
+            core.create_card(doc, "Main", title="Waits", column="in-progress", depends_on=[prerequisite["id"]])
+        self.assertEqual((caught.exception.status, caught.exception.code), (409, "deps"))
+        full = core.load(self.path)
+        next(column for column in full["columns"] if column["id"] == "inprogress")["wipLimit"] = 1
+        for target, column, code in ((full, "inprogress", "wip"), (core.load(self.path), "done", "state"),
+                                     (core.load(self.path), "nowhere", "invalid")):
+            with self.assertRaises(core.WorkflowError) as caught:
+                core.create_card(target, "Main", title="Elsewhere", column=column)
+            self.assertEqual(caught.exception.code, code)
+        with core.board_transaction(self.path) as doc:
+            card = core.create_card(doc, "Ada", title=" Claimed on creation ", column="inprogress")
+            core.save(self.path, doc, by="Ada")
+        saved = core.resolve_ref(core.load(self.path), card["id"])
+        self.assertEqual((saved["title"], saved["column"], saved["activeOwner"],
+                          [entry["ev"] for entry in saved["history"]]),
+                         ("Claimed on creation", "inprogress", "Ada", ["created", "start"]))
+        self.assertTrue(saved["claimedAt"])

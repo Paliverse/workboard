@@ -412,14 +412,12 @@ class MultiBoardApiTest(unittest.TestCase):
         first, second = create(ctx, "First"), create(ctx, "Second")
         status, edited, _ = mutate(ctx, f"/api/card/{second['id']}", {
             "card": {"id": second["id"], "title": "Second edited", "notes": "durable notes",
-                     "subtasks": [{"id": "s1", "text": "parent", "collapsed": True,
-                                   "children": [{"id": "s2", "text": "child", "done": True}]}]},
+                     "subtasks": [{"id": "s1", "text": "parent"}, {"id": "s2", "text": "child", "done": True}]},
             "position": {"before": first["id"]}})
         assert status == 200 and edited["positioned"], edited
         assert edited["card"]["num"] == second["num"]
         assert edited["card"]["createdAt"] == second["createdAt"]
-        assert edited["card"]["subtasks"][0]["collapsed"] is True
-        assert edited["card"]["subtasks"][0]["children"][0]["done"] is True
+        assert [(st["id"], st["done"]) for st in edited["card"]["subtasks"]] == [("s1", False), ("s2", True)]
         assert [c["id"] for c in board(ctx)["cards"]][-2:] == [second["id"], first["id"]]
         doc = board(ctx)
         doc["columns"][0], doc["columns"][1] = doc["columns"][1], doc["columns"][0]
@@ -465,7 +463,7 @@ class MultiBoardApiTest(unittest.TestCase):
         assert life(ctx, wid, "dependencies", {"ids": [str(uuid.uuid4())]})[0] == 422
         assert life(ctx, wid, "start")[0] == 409
         assert mutate(ctx, f"/api/card/{wid}", {"card": {"column": "inprogress"}})[0] == 409
-        assert life(ctx, pid, "complete", {"writeup": "Cannot skip claim"})[0] == 409
+        assert life(ctx, wid, "complete", {"writeup": "Cannot skip prerequisites"})[1]["code"] == "deps"
         assert life(ctx, pid, "start")[0] == 200
         assert life(ctx, pid, "submit", {"summary": "Completed prerequisite"})[0] == 422
         assert life(ctx, pid, "submit", {"summary": "Completed prerequisite",
@@ -1013,6 +1011,8 @@ class MultiBoardApiTest(unittest.TestCase):
             self.assertEqual(completed["item"]["delegation"]["owner"], actor)
             self.assertEqual(completed["card"]["column"], "inprogress")
         self.assertEqual(life(ctx, cid, "complete", {"writeup": "Worker cannot integrate"}, actor=consumer)[0], 409)
+        self.assertEqual(life(ctx, cid, "complete", {"writeup": "Results await acceptance"})[0], 409)
+        self.assertEqual(life(ctx, cid, "subtask", {"op": "accept", "ids": [one, two]})[0], 200)
         self.assertEqual(life(ctx, cid, "complete", {"writeup": "Main integrated both contributions"})[0], 200)
 
     def test_generic_http_edits_cannot_bypass_delegated_ownership(self):

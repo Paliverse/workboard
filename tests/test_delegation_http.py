@@ -44,7 +44,12 @@ class DelegationHTTP(unittest.TestCase):
     def test_review_scope_dependencies_block_and_inbox(self):
         ctx = self.new_board()
         card_id, ids = self.parent(ctx)
-        self.assignment(ctx, card_id, "configure", ids=[ids[0]], scope=["src"], reviewRequired=True)
+        before = board(ctx)
+        status, removed, _ = life(ctx, card_id, "subtask", {"op": "configure", "ids": [ids[0]], "scope": ["src"],
+                                                            "reviewRequired": True}, actor="Main")
+        self.assertEqual((status, removed["code"]), (422, "invalid"), removed)
+        self.assertEqual(board(ctx), before)
+        self.assignment(ctx, card_id, "configure", ids=[ids[0]], scope=["src"])
         self.assignment(ctx, card_id, "configure", ids=[ids[1]], scope=["src/tests"], dependsOn=[ids[0]])
         status, denied, _ = life(ctx, card_id, "subtask", {"op": "configure", "ids": [ids[0]], "scope": ["other"]}, actor="Worker")
         self.assertEqual(status, 409, denied)
@@ -68,10 +73,12 @@ class DelegationHTTP(unittest.TestCase):
         self.assertEqual(self.inbox(ctx), [])
         self.assignment(ctx, card_id, "claim", ids=[ids[1]], actor="Verifier")
         self.assignment(ctx, card_id, "done", ids=[ids[1]], actor="Verifier", result="Verification passed")
-        row, = self.inbox(ctx)  # Results without required review still reach the parent owner.
-        self.assertEqual((row["kind"], row["subtaskId"], row["review"]["required"]), ("review", ids[1], False))
+        row, = self.inbox(ctx)  # Every result reaches the parent owner, and Done waits on accepting it.
+        self.assertEqual((row["kind"], row["subtaskId"], row["review"]["required"]), ("review", ids[1], True))
+        self.assertEqual(life(ctx, card_id, "complete", {"writeup": "Unaccepted"}, actor="Main")[0], 409)
         self.assignment(ctx, card_id, "accept", ids=[ids[1]])
         self.assertEqual(self.inbox(ctx), [])
+        self.assertEqual(life(ctx, card_id, "complete", {"writeup": "Both results accepted"}, actor="Main")[0], 200)
 
     def test_findings_acknowledge_many_in_one_write(self):
         ctx = self.new_board()
@@ -100,21 +107,26 @@ class DelegationHTTP(unittest.TestCase):
 
     def test_checklist_boolean_fields_are_not_truthiness_coerced(self):
         ctx = self.new_board()
-        card = create(ctx, "Checklist", subtasks=[{"id": "parent", "text": "Parent", "children": [
-            {"id": "child", "text": "Check this", "done": False, "collapsed": False}]}])
+        card = create(ctx, "Checklist", subtasks=[{"id": "parent", "text": "Parent"},
+                                                  {"id": "child", "text": "Check this", "done": False}])
         before = board(ctx)
-        for key in ("done", "collapsed"):
-            for invalid in ("false", 1, None):
-                tree = copy.deepcopy(card["subtasks"])
-                tree[0]["children"][0][key] = invalid
-                status, rejected, _ = mutate(ctx, f"/api/card/{card['id']}", {"card": {"subtasks": tree}})
-                self.assertEqual(status, 422, (key, invalid, rejected))
-                self.assertEqual(board(ctx), before)
+        for invalid in ("false", 1, None):
+            tree = copy.deepcopy(card["subtasks"])
+            tree[1]["done"] = invalid
+            status, rejected, _ = mutate(ctx, f"/api/card/{card['id']}", {"card": {"subtasks": tree}})
+            self.assertEqual(status, 422, (invalid, rejected))
+            self.assertEqual(board(ctx), before)
         tree = copy.deepcopy(card["subtasks"])
-        tree[0]["children"][0]["done"] = True
+        tree[1]["done"] = True
         status, changed, _ = mutate(ctx, f"/api/card/{card['id']}", {"card": {"subtasks": tree}})
         self.assertEqual(status, 200, changed)
-        self.assertTrue(changed["card"]["subtasks"][0]["children"][0]["done"])
+        self.assertTrue(changed["card"]["subtasks"][1]["done"])
+        stale = [{"id": "parent", "text": "Parent", "collapsed": True, "children": [{"id": "child", "text": "Kept"}]}]
+        status, flattened, _ = mutate(ctx, f"/api/card/{card['id']}", {"card": {"subtasks": stale}})
+        self.assertEqual(status, 200, flattened)  # A stale nested client keeps its items, flat.
+        self.assertEqual([(st["id"], st["text"]) for st in flattened["card"]["subtasks"]],
+                         [("parent", "Parent"), ("child", "Kept")])
+        self.assertFalse(any("children" in st or "collapsed" in st for st in flattened["card"]["subtasks"]))
 
 
 if __name__ == "__main__":

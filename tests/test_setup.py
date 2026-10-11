@@ -584,7 +584,7 @@ class UpgradeTest(ScratchCase):
         self.forbid_execution()
         downloads = "https://github.com/Paliverse/workboard/releases/latest/download"
         cases = [
-            ("npm", False, ["npm", "install", "-g", "@paliverse/workboard@latest"]),
+            ("npm", False, ["npm", "install", "-g", "--prefer-online", "@paliverse/workboard@latest"]),
             ("script", True, ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
                               f"irm {downloads}/install.ps1 | iex"]),
             ("script", False, ["sh", "-c", f"curl -fsSL {downloads}/install.sh | sh"]),
@@ -610,7 +610,8 @@ class UpgradeTest(ScratchCase):
         self.registry[install.RUN_VALUE] = "anything"
         _, result = invoke_json("upgrade", "--dry-run", "--channel", "npm", "--json")
         self.assertEqual(result["steps"], [
-            f"stop the running server (v{__version__}, pid 4321)", "npm install -g @paliverse/workboard@latest",
+            f"stop the running server (v{__version__}, pid 4321)",
+            "npm install -g --prefer-online @paliverse/workboard@latest",
             "workboard skills install --refresh", "workboard service restart"])
         self.assertEqual(self.server.calls, [])
 
@@ -638,7 +639,8 @@ class UpgradeTest(ScratchCase):
         self.enterContext(mock.patch("shutil.which", return_value="/new/workboard"))
         code, out = invoke("upgrade", "--channel", "npm", "--after-pid", "4242")
         self.assertEqual(code, 0)
-        self.assertEqual(events, [("wait", 4242), "stop", ["npm", "install", "-g", "@paliverse/workboard@latest"],
+        self.assertEqual(events, [("wait", 4242), "stop",
+                                  ["npm", "install", "-g", "--prefer-online", "@paliverse/workboard@latest"],
                                   ["/new/workboard", "skills", "install", "--refresh"],
                                   ["/new/workboard", "service", "restart"]])
         self.assertTrue(out.startswith("upgrade plan (npm):"), out)
@@ -648,7 +650,8 @@ class UpgradeTest(ScratchCase):
         self.server.info = dict(RUNNING)
 
         def fail(argv, stdout):
-            raise wb.WorkflowError("`npm install -g @paliverse/workboard@latest` failed with exit code 1", 500, "io")
+            raise wb.WorkflowError("`npm install -g --prefer-online @paliverse/workboard@latest` failed with exit "
+                                   "code 1", 500, "io")
 
         self.enterContext(mock.patch.object(update, "_run_step", fail))
         code, error = invoke_json("upgrade", "--channel", "npm", "--json")

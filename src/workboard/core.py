@@ -638,9 +638,20 @@ def _norm_scope(value) -> list[str]:
     return normalized
 
 
+def flatten_subtasks(items) -> list[dict]:
+    """Legacy nested checklists as one list in pre-order (parent before its children), without
+    `children` or `collapsed`; every other item field is kept."""
+    flat = []
+    for item in items:
+        if not isinstance(item, dict) or (item.get("children") is not None and not isinstance(item["children"], list)):
+            raise WorkflowError("subtasks must be objects with an array of children")
+        flat.append(item if "children" not in item and "collapsed" not in item else
+                    {key: value for key, value in item.items() if key not in ("children", "collapsed")})
+        flat.extend(flatten_subtasks(item.get("children") or []))
+    return flat
+
+
 def _norm_subtask(st: dict) -> dict:
-    if not isinstance(st, dict) or (st.get("children") is not None and not isinstance(st["children"], list)):
-        raise WorkflowError("subtasks must be objects with an array of children")
     normalized = {
         **st,
         "id": str(st.get("id", "")),
@@ -648,8 +659,6 @@ def _norm_subtask(st: dict) -> dict:
         "done": bool(st.get("done", False)),
         "createdAt": st.get("createdAt"),
         "doneAt": st.get("doneAt"),
-        "collapsed": bool(st.get("collapsed", False)),
-        "children": [_norm_subtask(c) for c in (st.get("children") or [])],
     }
     if "delegation" in st:
         delegation = st["delegation"]
@@ -679,9 +688,9 @@ def _norm_subtask(st: dict) -> dict:
                                                     for item in depends_on)):
             raise WorkflowError("delegation dependsOn must be an array of subtask IDs")
         review = delegation.get("review", {})
-        if not isinstance(review, dict) or type(review.get("required", False)) is not bool \
+        if not isinstance(review, dict) \
                 or review.get("state", "pending") not in ("pending", "accepted", "changes_requested"):
-            raise WorkflowError("subtask review must have required and a valid state")
+            raise WorkflowError("subtask review must have a valid state")
         for key in ("by", "at", "reason"):
             if review.get(key) is not None and not isinstance(review[key], str):
                 raise WorkflowError(f"subtask review {key} must be text or null")
@@ -694,11 +703,12 @@ def _norm_subtask(st: dict) -> dict:
                     raise WorkflowError(f"subtask blocker {key} must be nonempty text")
         elif blocker is not None:
             raise WorkflowError("only blocked delegated work may have blocker details")
+        # Every result needs acceptance; required stays true so older WorkBoard versions agree.
         normalized["delegation"] = {**delegation, "state": state, "owner": owner,
                                      "claimedAt": claimed_at, "result": result,
                                      "scope": _norm_scope(delegation.get("scope", [])),
                                      "dependsOn": list(dict.fromkeys(depends_on)),
-                                     "review": {**review, "required": review.get("required", False),
+                                     "review": {**review, "required": True,
                                                 "state": review.get("state", "pending"),
                                                 "by": review.get("by"), "at": review.get("at"),
                                                 "reason": review.get("reason", "")},
@@ -807,7 +817,7 @@ def normalize_card(raw: dict) -> dict:
         "origin": str(raw.get("origin") or ""),
         "notes": str(raw.get("notes") or ""),
         "writeup": str(raw.get("writeup") or ""),
-        "subtasks": [_norm_subtask(s) for s in (raw.get("subtasks") or [])],
+        "subtasks": [_norm_subtask(s) for s in flatten_subtasks(raw.get("subtasks") or [])],
         "links": list(dict.fromkeys(str(l) for l in
                                    (raw.get("links", raw.get("linkedCards")) or []))),
         "history": list(raw.get("history") or []),
@@ -1069,27 +1079,17 @@ def save(board_path: Path, doc: dict, by: str | None = None) -> int:
 
 def card_copy(source: dict, by: str) -> dict:
     """Requirements `add --from` copies: title, pinned notes, tags, priority and the
-    subtask tree with fresh s-N IDs and reset completion/delegation state."""
-    by, at, ids, delegations = validate_actor(by), now_iso(), {}, []
-
-    def copy(items):
-        result = []
-        for item in items:
-            ids[item["id"]] = new_id = f"s-{len(ids) + 1}"
-            fresh = {"id": new_id, "text": item["text"], "done": False, "createdAt": at,
-                     "doneAt": None, "by": by, "children": copy(item["children"]), "collapsed": False}
-            delegation = item.get("delegation")
-            if delegation:
-                fresh["delegation"] = {"state": "available", "scope": list(delegation["scope"]),
-                                       "dependsOn": list(delegation["dependsOn"]),
-                                       "review": {"required": delegation["review"]["required"]}}
-                delegations.append(fresh["delegation"])
-            result.append(fresh)
-        return result
-
-    subtasks = copy(source["subtasks"])
-    for delegation in delegations:
-        delegation["dependsOn"] = [ids[dep] for dep in delegation["dependsOn"]]
+    checklist with fresh s-N IDs and reset completion/delegation state."""
+    by, at = validate_actor(by), now_iso()
+    ids = {item["id"]: f"s-{number}" for number, item in enumerate(source["subtasks"], 1)}
+    subtasks = []
+    for number, item in enumerate(source["subtasks"], 1):
+        fresh = {"id": f"s-{number}", "text": item["text"], "done": False, "createdAt": at,
+                 "doneAt": None, "by": by}
+        if delegation := item.get("delegation"):
+            fresh["delegation"] = {"state": "available", "scope": list(delegation["scope"]),
+                                   "dependsOn": [ids[dep] for dep in delegation["dependsOn"]]}
+        subtasks.append(fresh)
     return {"title": source["title"], "notes": source["notes"], "tags": list(source["tags"]),
             "priority": source["priority"], "subtasks": subtasks}
 
@@ -1201,7 +1201,8 @@ def _dependencies_satisfied(card: dict, by_id: dict) -> bool:
                for dep in (card.get("dependsOn") or []))
 
 
-def _require_start(doc: dict, card: dict, ids: list | None = None) -> None:
+def _require_start(doc: dict, card: dict, ids: list | None = None, *, wip: bool = True) -> None:
+    """Card prerequisites (deps), then, unless wip is false, the In Progress WIP limit (wip)."""
     by_id = {c["id"]: c for c in doc["cards"]}
     unmet = [f"#{by_id[dep]['num']} ({'canceled' if by_id[dep]['column'] == 'done' else by_id[dep]['column']})"
              if dep in by_id else f"{dep} (missing)"
@@ -1214,7 +1215,7 @@ def _require_start(doc: dict, card: dict, ids: list | None = None) -> None:
         raise WorkflowError(f"unmet prerequisites: {', '.join(unmet)}; {hint}", 409, "deps")
     column = next((c for c in doc["columns"] if c["id"] == "inprogress"), {})
     limit = column.get("wipLimit")
-    if card["column"] != "inprogress" and type(limit) is int and limit > 0:
+    if wip and card["column"] != "inprogress" and type(limit) is int and limit > 0:
         active = sum(c["column"] == "inprogress" for c in doc["cards"])
         if active >= limit:
             raise WorkflowError(
@@ -1361,14 +1362,19 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
         _require_start(doc, card)
         destination = "inprogress"
     elif action == "complete":
-        if frm != "inprogress":
-            raise WorkflowError("completion requires In Progress; start the card first", 409, "state")
+        if frm == "done":
+            raise WorkflowError(f"{fmt_ref(card)} is already Done; rework or reopen it to change the result",
+                                409, "state")
+        if frm == "blocked":
+            raise WorkflowError("use resume with a resolution note", 409, "state")
         if blocking := unaccepted_delegations(card):
             raise WorkflowError(f"delegated work keeps {fmt_ref(card)} open: " + "; ".join(
                 f"{st['id']} awaits review (subtask.accept or subtask.request-changes)"
                 if st["delegation"]["state"] == "completed" else f"{st['id']} is {st['delegation']['state']}"
                 + (f" by {st['delegation']['owner']}" if st["delegation"]["owner"] else "")
                 for st in blocking), 409, "state")
+        if frm != "inprogress":  # Started work keeps its claim even if a prerequisite was reworked since.
+            _require_start(doc, card, wip=False)
         destination = "done"
     elif action == "block":
         if frm == "done":
@@ -1407,7 +1413,6 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
             card.setdefault("subtasks", []).append({
                 "id": f"{prefix}{n}", "text": f"fix bug: {reason}" if action == "bug" else reason,
                 "done": False, "createdAt": now_iso(), "doneAt": None, "by": by,
-                "children": [], "collapsed": False,
             })
             if action == "bug" and "bug" not in card["tags"]:
                 card["tags"].append("bug")
@@ -1433,6 +1438,36 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
         card["activeOwner"] = card["claimedAt"] = None
     hist(card, event, by=by, note=note, frm=frm, to=destination)
     touch(card)
+    return card
+
+
+def create_card(doc: dict, by: str, *, title, column="task", priority=None, tags=(), origin="", notes=None,
+                depends_on=(), source=None) -> dict:
+    """Add one card to `doc`; the caller saves. In Progress applies the start rules and the creator owns it.
+    `source` copies requirements as `add --from` does; a None title, priority or notes comes from it."""
+    by = validate_actor(by)
+    copied = card_copy(source, by) if source is not None else {}
+    title = _required_text(copied.get("title") if title is None else title, "card title")
+    try:
+        column = ensure_column(doc, column)["id"]
+    except RefError as e:
+        raise WorkflowError(str(e)) from e
+    if column not in ("backlog", "task", "inprogress"):
+        raise WorkflowError("new cards enter Backlog, Task, or In Progress; use lifecycle commands for later "
+                            "stages", 409, "state")
+    card = normalize_card({
+        "num": new_num(doc), "id": unique_id(doc, title), "title": title,
+        "column": "task" if column == "inprogress" else column,
+        "priority": copied.get("priority") if priority is None else priority,
+        "tags": list(dict.fromkeys([*copied.get("tags", []), *tags])),
+        "origin": origin, "notes": copied.get("notes", "") if notes is None else notes,
+        "subtasks": copied.get("subtasks", [])})
+    hist(card, "created", by=by, note=origin or None)
+    doc["cards"].append(card)
+    if depends_on:
+        workflow_action(doc, card, "dependencies", {"ids": list(depends_on)}, by)
+    if column == "inprogress":
+        workflow_action(doc, card, "start", {}, by)
     return card
 
 
@@ -1606,8 +1641,8 @@ def card_context(board_path: Path, ref: str, full: bool = False, *,
     """One atomic document read; no lock file, unread state, or embedded file bytes.
 
     Default output keeps pinned notes and open subtasks whole but trims done subtasks
-    to the 10 most recently completed, history to the last 25, and the note log and
-    comments to the newest 10 entries each.
+    to the 10 most recently completed, leaves out history (counted in omitted), and
+    trims the note log and comments to the newest 10 entries each.
     """
     return _card_context_from_doc(load(board_path), board_path, ref, full,
                                   subtask_id=subtask_id, assigned_to=assigned_to)
@@ -1634,24 +1669,9 @@ def _card_context_from_doc(doc: dict, board_path: Path, ref: str, full: bool = F
             selected = [sid for sid, (st, _) in index.items()
                         if (st.get("delegation") or {}).get("owner") == assigned_to]
             focus = {"assignedTo": assigned_to}
-        included, ancestors = set(), set()
-        for sid in selected:
-            included.update(st["id"] for st, _ in iter_subtasks([index[sid][0]]))
-            parent = index[sid][1]
-            while parent is not None:
-                ancestors.add(parent["id"])
-                parent = index[parent["id"]][1]
-        ancestors -= included
-        keep = included | ancestors
-
-        def focused(items):
-            return [{**st, "children": focused(st["children"])}
-                    for st in items if st["id"] in keep]
-
-        card = {**card, "subtasks": focused(card["subtasks"])}
-        unrelated = len(index) - len(keep)
-        focus.update(matchedSubtaskIds=selected,
-                     ancestorIds=[sid for sid in index if sid in ancestors])
+        card = {**card, "subtasks": [st for st in card["subtasks"] if st["id"] in selected]}
+        unrelated = len(index) - len(selected)
+        focus["matchedSubtaskIds"] = selected
     by_id = {item["id"]: item for item in doc["cards"]}
     dependencies, missing = [], []
     for dependency_id in card["dependsOn"]:
@@ -1686,75 +1706,49 @@ def _card_context_from_doc(doc: dict, board_path: Path, ref: str, full: bool = F
         context["omitted"] = {"unrelatedSubtasks": unrelated}
     if full:
         return context
-    done = [st for st, _ in iter_subtasks(card["subtasks"]) if st["done"]]
-    if (len(done) <= 10 and len(card["history"]) <= 25 and len(card["log"]) <= 10
-            and len(card["comments"]) <= 10):
-        return context
+    done = [st for st in card["subtasks"] if st["done"]]
     recent = {id(st) for st in sorted(done, key=lambda st: st.get("doneAt") or "")[-10:]}
-
-    def prune(items):
-        kept = []
-        for st in items:
-            children = prune(st["children"])
-            if not st["done"] or id(st) in recent or children:
-                kept.append({**st, "children": children})
-        return kept
-
-    # A requested assignment and its descendants must survive completed-work trimming.
-    subtasks = prune(card["subtasks"]) if len(done) > 10 and focus is None else card["subtasks"]
-    omitted = {"doneSubtasks": len(done) - sum(st["done"] for st, _ in iter_subtasks(subtasks)),
-               "history": max(0, len(card["history"]) - 25)}
+    # A requested assignment must survive completed-work trimming.
+    subtasks = card["subtasks"] if focus is not None else [
+        st for st in card["subtasks"] if not st["done"] or id(st) in recent]
+    omitted = {"doneSubtasks": len(card["subtasks"]) - len(subtasks), "history": len(card["history"])}
     if len(card["log"]) > 10:
         omitted["log"] = len(card["log"]) - 10
     if len(card["comments"]) > 10:
         omitted["comments"] = len(card["comments"]) - 10
+    context["card"] = {**{key: value for key, value in card.items() if key != "history"}, "subtasks": subtasks,
+                       "log": card["log"][-10:], "comments": card["comments"][-10:]}
     if any(omitted.values()):
-        context["card"] = {**card, "subtasks": subtasks, "history": card["history"][-25:],
-                           "log": card["log"][-10:], "comments": card["comments"][-10:]}
         context.setdefault("omitted", {}).update(omitted)
     return context
 
 
-def subtask_handoff(board_path: Path, ref: str, subtask_id: str, by: str,
-                    worker: str, write_scope: list[str] | None, peers: list[str]) -> dict:
+def subtask_handoff(board_path: Path, ref: str, subtask_id: str, by: str, worker: str) -> dict:
     """Validate and describe a read-only handoff; no claim, spawn, or message."""
     by, worker = validate_actor(by), validate_actor(worker)
     if worker == by:
         raise WorkflowError("worker must differ from the parent owner")
-    peer_rows, labels = [], set()
-    for peer in peers:
-        label, separator, reference = peer.partition("=")
-        if not separator:
-            raise WorkflowError("peer must be ACTOR=REFERENCE")
-        label = validate_actor(label)
-        reference = _required_text(reference, "peer reference", 4000)
-        if label == worker or label in labels:
-            raise WorkflowError("peer labels must be distinct and cannot name the worker")
-        labels.add(label)
-        peer_rows.append({"actor": label, "reference": reference})
     doc = load(board_path)
     context = _card_context_from_doc(doc, board_path, ref, subtask_id=subtask_id)
-    card, parent = context["card"], resolve_ref(doc, context["card"]["id"])
+    card = resolve_ref(doc, context["card"]["id"])
     _require_parent_owner(card, by, "handoff")
-    item = _subtask_index(card)[context["focus"]["subtaskId"]][0]
+    index = _subtask_index(card)
+    item = index[context["focus"]["subtaskId"]][0]
     sid, assignment = item["id"], item.get("delegation")
     if assignment is None:
         raise WorkflowError(f"{sid} is a plain checklist item; delegate it first", 409, "state")
-    # An empty scope means read-only work; claimed or blocked work held by another actor is a takeover.
-    scopes = _norm_scope(write_scope) if write_scope is not None else list(assignment["scope"])
+    # An empty saved scope means read-only work; claimed or blocked work held by another actor is a takeover.
     state, holder = assignment["state"], assignment["owner"]
     previous = holder if state in ("claimed", "blocked") and holder != worker else None
     if state not in ("available", "claimed") and previous is None:
         raise WorkflowError(f"{sid} is {state}" + (f" by {holder}" if holder else "") + "; hand off available "
                             "work, or claimed or blocked work held by another worker", 409, "state")
-    if unmet := _unmet_prerequisites(_subtask_index(parent), sid):
+    if unmet := _unmet_prerequisites(index, sid):
         raise WorkflowError(f"{sid} waits on prerequisites: {'; '.join(unmet)}", 409, "deps")
-    return {"ok": True, "board": context["board"], "rev": context["rev"],
-            "cardId": card["id"], "num": card["num"], "title": card["title"],
-            "parentOwner": by, "worker": worker, "previousOwner": previous, "assignment": item,
-            "scopeWarnings": scope_conflicts(doc, parent, sid, scope=scopes),
-            "ancestorIds": context["focus"]["ancestorIds"], "writeScope": scopes,
-            "peers": peer_rows, "origin": card.get("origin"), "notes": card["notes"]}
+    return {"ok": True, "board": context["board"], "rev": context["rev"], "num": card["num"],
+            "title": card["title"], "worker": worker, "previousOwner": previous, "assignment": item,
+            "scopeWarnings": scope_conflicts(doc, card, sid), "writeScope": list(assignment["scope"]),
+            "origin": card["origin"], "notes": card["notes"]}
 
 
 def _attachment_member(card: dict, attachment_id: str) -> dict:
@@ -1998,35 +1992,32 @@ def _require_parent_owner(card: dict, by: str, action: str) -> None:
 def guard_subtask_replacement(current, incoming, by: str) -> None:
     """Generic replacements may edit checklists but never forge, change, or drop delegated state."""
     by = validate_actor(by)
-    incoming_rows = [(st, parent) for st, parent in iter_subtasks(incoming or []) if isinstance(st, dict)]
-    incoming_ids = [st.get("id") for st, _ in incoming_rows]
+    incoming_rows = [st for st in incoming or [] if isinstance(st, dict)]
+    incoming_ids = [st.get("id") for st in incoming_rows]
     if len(incoming_ids) != len(set(incoming_ids)):
         raise WorkflowError("replacement subtasks must have unique IDs")
-    incoming_by_id = {st.get("id"): (st, parent) for st, parent in incoming_rows}
-    current_ids = {st.get("id") for st, _ in iter_subtasks(current or []) if isinstance(st, dict)}
-    for replacement, _ in incoming_rows:
+    incoming_by_id = {st.get("id"): st for st in incoming_rows}
+    current_ids = {st.get("id") for st in current or [] if isinstance(st, dict)}
+    for replacement in incoming_rows:
         if replacement.get("id") not in current_ids and "delegation" in replacement:
             raise WorkflowError("new delegated work must use the subtask lifecycle action", 409, "state")
-    # Legacy descendants of delegated work stay freely editable; each delegated item is checked itself.
-    for existing, existing_parent in iter_subtasks(current or []):
+    for existing in current or []:
         delegation = existing.get("delegation") or {}
-        row = incoming_by_id.get(existing.get("id"))
+        replacement = incoming_by_id.get(existing.get("id"))
         if not delegation:
-            if row and "delegation" in row[0]:
+            if replacement and "delegation" in replacement:
                 raise WorkflowError("delegate checklist work through its lifecycle action", 409, "state")
             continue
         held = (delegation.get("state") in ("claimed", "blocked", "completed")
                 and delegation.get("owner") != by)
-        if row is None:
+        if replacement is None:
             if held:
                 raise WorkflowError("cannot remove another worker's delegated subtask", 409, "owned")
             continue
-        replacement, replacement_parent = row
         if any(key in replacement and replacement.get(key) != existing.get(key)
                for key in ("done", "doneAt", "doneBy", "delegation")):
             raise WorkflowError("delegated state must change through its lifecycle action", 409, "state")
-        if held and ((replacement_parent or {}).get("id") != (existing_parent or {}).get("id")
-                     or replacement.get("text", existing.get("text")) != existing.get("text")):
+        if held and replacement.get("text", existing.get("text")) != existing.get("text"):
             raise WorkflowError("cannot replace another worker's delegated subtask", 409, "owned")
 
 
@@ -2067,7 +2058,7 @@ def _validate_subtask_dependencies(index: dict) -> None:
 
 
 def _unmet_prerequisites(index: dict, subtask_id: str) -> list[str]:
-    """Transitive prerequisites of one delegated subtask that are not done yet, each with its state."""
+    """Transitive prerequisites of one delegated subtask not yet completed and accepted, each with its state."""
     pending = list((index[subtask_id][0].get("delegation") or {}).get("dependsOn") or [])
     seen, unmet = set(), []
     while pending:
@@ -2078,9 +2069,8 @@ def _unmet_prerequisites(index: dict, subtask_id: str) -> list[str]:
         delegation = index[dependency][0].get("delegation") or {}
         state, review = delegation.get("state"), delegation.get("review") or {}
         if state != "completed":
-            needs = "completion and acceptance" if review.get("required") else "completion"
-            unmet.append(f"{dependency} is {state} (needs {needs})")
-        elif review.get("required") and review.get("state") != "accepted":
+            unmet.append(f"{dependency} is {state} (needs completion and acceptance)")
+        elif review.get("state") != "accepted":
             unmet.append(f"{dependency} is completed (needs acceptance)")
         pending.extend(delegation.get("dependsOn") or [])
     return unmet
@@ -2093,14 +2083,23 @@ def _scope_overlaps(left: str, right: str) -> bool:
     return left == right or left.startswith(right + "/") or right.startswith(left + "/")
 
 
-def scope_conflicts(doc: dict, card: dict, subtask_id: str, *, scope: list[str] | None = None) -> list[dict]:
+def _claim_row(card: dict, item: dict) -> dict:
+    """Who holds one claimed or blocked delegated subtask, and since when it last showed activity."""
+    delegation = item["delegation"]
+    claimed = delegation.get("claimedAt")
+    activity = [entry["at"] for entry in card.get("log") or [] if entry.get("subtaskId") == item["id"]]
+    return {"cardId": card["id"], "num": card["num"], "subtaskId": item["id"], "owner": delegation.get("owner"),
+            "state": delegation["state"], "claimedAt": claimed,
+            "lastActivityAt": max(filter(None, [claimed, *activity]), default=None)}
+
+
+def scope_conflicts(doc: dict, card: dict, subtask_id: str) -> list[dict]:
     if not any(candidate is card for candidate in doc.get("cards") or []):
         raise WorkflowError("scope conflicts must use the current board card", 409)
     index = _subtask_index(card)
     if subtask_id not in index or not index[subtask_id][0].get("delegation"):
         raise WorkflowError("scope conflicts require delegated work", 409, "state")
-    target = index[subtask_id][0]["delegation"]
-    target_scope = target.get("scope") or [] if scope is None else _norm_scope(scope)
+    target_scope = index[subtask_id][0]["delegation"].get("scope") or []
     rows = []
     for other_card in doc.get("cards") or []:
         if other_card.get("column") == "done":
@@ -2115,12 +2114,7 @@ def scope_conflicts(doc: dict, card: dict, subtask_id: str, *, scope: list[str] 
             overlaps = [(left, right) for left in target_scope for right in delegation.get("scope") or []
                         if _scope_overlaps(left, right)]
             if overlaps:
-                claimed = delegation.get("claimedAt")
-                activity = [entry["at"] for entry in other_card.get("log") or [] if entry.get("subtaskId") == sid]
-                rows.append({"cardId": other_card["id"], "num": other_card["num"],
-                             "subtaskId": sid, "owner": delegation.get("owner"), "state": delegation["state"],
-                             "claimedAt": claimed, "lastActivityAt": max(filter(None, [claimed, *activity]),
-                                                                         default=None),
+                rows.append({**_claim_row(other_card, item),
                              "overlaps": [{"scope": left, "otherScope": right} for left, right in overlaps]})
     return rows
 
@@ -2131,13 +2125,14 @@ def inbox(doc: dict, by: str, ref=None) -> list[dict]:
     rows = []
     for card in cards:
         main = card.get("column") == "inprogress" and card.get("activeOwner") == by
+        accepted = set()
         # A tolerant walk: legacy checklists with duplicate IDs must not break the inbox.
         for item, _ in iter_subtasks(card.get("subtasks") or []):
             delegation = item.get("delegation")
             if not delegation:
                 continue
             sid, review, state, owner = item["id"], delegation["review"], delegation["state"], delegation["owner"]
-            # Every unaccepted result reaches the parent owner; review.required says whether Done waits on it.
+            # Every unaccepted result reaches the parent owner, and Done waits on accepting it.
             if main and state == "completed" and owner != by and review["state"] != "accepted":
                 rows.append({"kind": "review", "num": card["num"], "cardId": card["id"],
                              "title": card["title"], "text": item["text"], "result": delegation["result"],
@@ -2145,13 +2140,22 @@ def inbox(doc: dict, by: str, ref=None) -> list[dict]:
             if (main or owner == by) and state == "blocked":
                 rows.append({"kind": "blocker", "num": card["num"], "cardId": card["id"],
                              "subtaskId": sid, "owner": owner, "blocker": delegation["blocker"]})
+            if main and state in ("claimed", "blocked") and owner != by:
+                rows.append({"kind": "claim", **_claim_row(card, item)})
             if owner == by and review["state"] == "changes_requested":
                 rows.append({"kind": "changes_requested", "num": card["num"], "cardId": card["id"],
                              "subtaskId": sid, "review": review})
+            if review["state"] == "accepted":
+                accepted.add(sid)
         if main:
             acknowledged = set((card.get("inboxAcknowledged") or {}).get(by) or [])
-            for entry in card.get("log") or []:
-                if entry.get("by") != by and entry.get("kind") != "generated" and entry["id"] not in acknowledged:
+            log = card.get("log") or []
+            # Notes on an accepted subtask posted before its (latest) acceptance were part of that review.
+            cut = {entry["subtaskId"]: i for i, entry in enumerate(log) if entry.get("kind") == "generated"
+                   and entry.get("subtaskId") in accepted and entry.get("summary") == f"accepted {entry['subtaskId']}"}
+            for i, entry in enumerate(log):
+                if (entry.get("by") != by and entry.get("kind") != "generated" and entry["id"] not in acknowledged
+                        and i > cut.get(entry.get("subtaskId"), -1)):
                     rows.append({"kind": "finding", "num": card["num"], "cardId": card["id"],
                                  "title": card["title"], "subtaskId": entry.get("subtaskId"), "note": entry})
     return rows
@@ -2230,21 +2234,17 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
         texts = [_required_text(text, "subtask text") for text in texts]
         if details.get("delegated"):
             guard_card_edit(card, by)
-        parent_id = details.get("parent")
-        if parent_id is not None and (not isinstance(parent_id, str) or parent_id not in existing):
-            raise WorkflowError(f"no subtask {parent_id}", 404, "not_found")
-        parent = existing.get(parent_id)
-        destination = parent["children"] if parent else card.setdefault("subtasks", [])
+        destination = card.setdefault("subtasks", [])
         number, selected = len(existing) + 1, []
         for text in texts:
             while f"s-{number}" in existing:
                 number += 1
             item = {"id": f"s-{number}", "text": text, "done": False, "createdAt": now_iso(),
-                    "doneAt": None, "by": by, "children": [], "collapsed": False}
+                    "doneAt": None, "by": by}
             if details.get("delegated"):
                 item["delegation"] = {"state": "available", "owner": None,
                                       "claimedAt": None, "result": "", "scope": [], "dependsOn": [],
-                                      "review": {"required": False, "state": "pending", "by": None,
+                                      "review": {"required": True, "state": "pending", "by": None,
                                                  "at": None, "reason": ""}, "blocker": None}
             destination.append(item)
             existing[item["id"]] = item
@@ -2261,26 +2261,20 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
         raise WorkflowError(f"no subtask {missing} on {fmt_ref(card)}", 404, "not_found")
     selected_items = [existing[item] for item in ids]
     if action == "rm":
-        removed = [st for root in selected_items for st, _ in iter_subtasks([root])]
-        if any(st.get("delegation") for st in removed):
+        if any(st.get("delegation") for st in selected_items):
             guard_card_edit(card, by)
-        held = next((st for st in removed if (st.get("delegation") or {}).get("state") in
+        held = next((st for st in selected_items if (st.get("delegation") or {}).get("state") in
                      ("claimed", "blocked", "completed") and st["delegation"]["owner"] != by), None)
         if held is not None:
             raise WorkflowError(f"cannot remove {held['id']}: it is held by {held['delegation']['owner']}",
                                 409, "owned")
-        remove_ids = {st["id"] for st in removed}
+        remove_ids = set(ids)
         dependents = [sid for sid, (st, _) in index.items() if sid not in remove_ids
                       and remove_ids.intersection((st.get("delegation") or {}).get("dependsOn") or [])]
         if dependents:
             raise WorkflowError(f"cannot remove prerequisites of {', '.join(dependents)}; "
                                 "clear their dependencies first", 409, "state")
-
-        def remove(items):
-            items[:] = [item for item in items if item["id"] not in remove_ids]
-            for item in items:
-                remove(item["children"])
-        remove(card.get("subtasks") or [])
+        card["subtasks"] = [item for item in card["subtasks"] if item["id"] not in remove_ids]
         hist(card, "subtask-rm", by=by, note=", ".join(ids))
         touch(card)
         return selected_items
@@ -2314,6 +2308,9 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
               if action in ("release", "takeover", "block", "request-changes") else None)
     until = _required_text(details.get("until"), "subtask unblock condition") if action == "block" else None
     result = _required_text(details.get("result"), "subtask result") if action == "done" else None
+    if action == "configure" and "reviewRequired" in details:
+        raise WorkflowError("reviewRequired was removed: every delegated result needs subtask.accept "
+                            "before the card's done; drop the field")
     delegation = selected.get("delegation")
     if action == "delegate":
         guard_card_edit(card, by)
@@ -2323,7 +2320,7 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
             return [selected]
         selected["delegation"] = {"state": "available", "owner": None,
                                   "claimedAt": None, "result": "", "scope": [], "dependsOn": [],
-                                  "review": {"required": False, "state": "pending", "by": None,
+                                  "review": {"required": True, "state": "pending", "by": None,
                                              "at": None, "reason": ""}, "blocker": None}
     else:
         if delegation is None:
@@ -2340,8 +2337,7 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
         state, owner = delegation["state"], delegation["owner"]
         if action == "configure":
             # The parent owner may re-scope running work; claim, owner, result and review stay untouched.
-            scope_only = (state in ("claimed", "blocked") and "scope" in details
-                          and not {"dependsOn", "reviewRequired"} & details.keys())
+            scope_only = state in ("claimed", "blocked") and "scope" in details and "dependsOn" not in details
             if state != "available" and not scope_only:
                 raise WorkflowError("configure requires available delegated work; claimed or blocked work "
                                     "accepts only a scope change", 409, "state")
@@ -2353,16 +2349,13 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
                 if dropped:
                     raise WorkflowError(f"{selected['id']} is {state} by {owner}, who may be editing "
                                         f"{', '.join(dropped)}; send the saved paths plus the new ones", 409, "state")
-            required = details.get("reviewRequired", delegation["review"]["required"])
             depends_on = details.get("dependsOn", delegation["dependsOn"])
-            if type(required) is not bool:
-                raise WorkflowError("reviewRequired must be a boolean")
             if (not isinstance(depends_on, list) or any(not isinstance(item, str) or not item for item in depends_on)):
                 raise WorkflowError("dependsOn must be an array of subtask IDs")
             delegation["scope"] = scope
             delegation["dependsOn"] = list(dict.fromkeys(depends_on))
             if not scope_only:
-                delegation["review"] = {"required": required, "state": "pending", "by": None,
+                delegation["review"] = {"required": True, "state": "pending", "by": None,
                                         "at": None, "reason": ""}
             _validate_subtask_dependencies(index)
         elif action == "accept":
@@ -2461,11 +2454,10 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
 
 
 def unaccepted_delegations(card: dict) -> list[dict]:
-    """Delegated subtasks that keep the card from Done: unfinished, or awaiting a required review."""
+    """Delegated subtasks that keep the card from Done: unfinished, or completed but not accepted yet."""
     return [st for st, _ in iter_subtasks(card.get("subtasks") or [])
             if (delegation := st.get("delegation")) and (
-                delegation["state"] != "completed"
-                or delegation["review"]["required"] and delegation["review"]["state"] != "accepted")]
+                delegation["state"] != "completed" or delegation["review"]["state"] != "accepted")]
 
 
 def stage_attention(card: dict, stale_hours: int = 24) -> str | None:

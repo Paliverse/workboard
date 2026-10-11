@@ -79,7 +79,7 @@ workboard digest   # a short summary of the board
 
 On Windows, `~` is `%USERPROFILE%`. Restart running agent sessions so they load the skill. Give each agent its own label with `--actor NAME` or `WORKBOARD_ACTOR`. Agents only need the CLI; they never need the server. See [docs/agents.md](docs/agents.md).
 
-A card's owner can hand complementary pieces of it to other agents as delegated subtasks and stay responsible for the whole. `workboard handoff` prepares each worker's brief; workers claim their subtask, publish findings and complete it with evidence; the owner reviews results in `workboard inbox`, then accepts them or requests changes. See [Delegating work](docs/agents.md#delegating-work-to-other-agents).
+A card's owner can hand complementary pieces of it to other agents as delegated subtasks and stay responsible for the whole. `workboard handoff` prepares each worker's brief; workers claim their subtask, publish findings and complete it with evidence; the owner reviews results in `workboard inbox`, then accepts them or requests changes. See [Delegated subtasks](docs/cli.md#delegated-subtasks).
 
 Codex's default sandbox only lets commands write inside the project, and boards live in `~/.workboard`. `setup` therefore adds `~/.workboard` to the writable folders in Codex's `config.toml` (skip it with `--no-codex`). See [docs/install.md](docs/install.md#codex).
 
@@ -88,7 +88,7 @@ Codex's default sandbox only lets commands write inside the project, and boards 
 - Views: Board, Ready now, Inbox, Rework, Canceled, Insights, Git (local and read-only) and Calendar, each with live counts.
 - Drag cards between and within columns. Drag a column sideways to reorder it, or onto another column to stack it vertically. Moves and layout changes can be undone with Ctrl+Z.
 - Cards open in a side panel for title, priority, tags, dependencies, links, subtasks, notes, write-up, files, activity and comments. The card's owner can make subtasks claimable, configure them, and accept results or request changes; workers claim, block, resume and release their delegated subtasks. Lifecycle actions go through the same server-side checks as the CLI.
-- The Inbox lists results waiting for your review, blockers and new findings for the current actor, with Accept result, Request changes… and Acknowledge (Acknowledge all for several findings).
+- The Inbox lists results waiting for your review, blockers, new findings and running assignments for the current actor, with Accept result, Request changes… and Acknowledge (Acknowledge all for several findings).
 - Card notes are a collapsible timeline, newest first and grouped by day. Each entry shows a one-line summary and expands to its markdown body. Pinned notes above it hold durable context such as acceptance criteria, and Add note appends an entry from the browser.
 - Live updates arrive over Server-Sent Events. Only changed cards are patched, and a field you are editing is never overwritten.
 - Search with Ctrl/Cmd+K or `/`, filter by status, priority, owner, outcome, rework or tag, and choose a System, Light or Dark theme. `C` creates a card, `[` toggles the sidebar and Esc closes the top layer.
@@ -134,7 +134,7 @@ workboard version --check   # compare with the latest release
 workboard upgrade           # upgrade through the channel you installed with
 ```
 
-`workboard upgrade` stops the running server, upgrades the way you installed (`npm install -g @paliverse/workboard@latest`, or the install script again), refreshes installed skills and restarts the service. `workboard upgrade --dry-run` prints the plan without running it. 0.2.0 switches a board to a format 0.1.x can't read only when that board first uses delegated subtasks; see [Upgrading to 0.2.0](docs/install.md#upgrading-to-020).
+`workboard upgrade` stops the running server, upgrades the way you installed (`npm install -g --prefer-online @paliverse/workboard@latest`, or the install script again), refreshes installed skills and restarts the service. `workboard upgrade --dry-run` prints the plan without running it. 0.2.0 switches a board to a format 0.1.x can't read only when that board first uses delegated subtasks; see [Upgrading to 0.2.0](docs/install.md#upgrading-to-020).
 
 ## Uninstall
 
@@ -150,7 +150,7 @@ Then remove the program: `npm uninstall -g @paliverse/workboard`, or delete the 
 ## Documentation
 
 - [Installation](docs/install.md): channels, setup and Codex access, the background service, backups, uninstalling and troubleshooting
-- [Agents](docs/agents.md): how agents find the board, harness skill paths, actors, concurrency etiquette and delegating work to other agents
+- [Agents](docs/agents.md): how agents find the board, harness skill paths, actors, `call` requests and scripting; the protocol itself is the bundled skill
 - [CLI reference](docs/cli.md): every command and flag
 - [HTTP API](docs/http-api.md): server and per-board endpoints
 - [Architecture](docs/architecture.md): modules, the board store and lookup, locking and the server

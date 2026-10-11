@@ -380,7 +380,7 @@ _CARD_EDITABLE = frozenset({
     "subtasks", "links", "lastTouchedSubtask", "meta", "agentRuns",
 })
 # delegation passes through only so guard_subtask_replacement can refuse any change to it.
-_SUBTASK_EDITABLE = frozenset({"id", "text", "done", "createdAt", "doneAt", "collapsed", "delegation"})
+_SUBTASK_EDITABLE = frozenset({"id", "text", "done", "createdAt", "doneAt", "delegation"})
 
 
 def _editable_card(raw: dict, current: dict | None = None) -> dict:
@@ -389,25 +389,18 @@ def _editable_card(raw: dict, current: dict | None = None) -> dict:
     if "links" not in raw and "linkedCards" in raw:
         edits["links"] = raw["linkedCards"]
     if "subtasks" in edits:
-        by_id = {item["id"]: item for item, _ in wb.iter_subtasks((current or {}).get("subtasks", []))}
-
-        def merge(items):
-            if not isinstance(items, list):
-                raise BodyError(422, "subtasks must be an array")
-            result = []
-            for item in items:
-                if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-                    raise BodyError(422, "every subtask needs an id")
-                for key in ("done", "collapsed"):
-                    if key in item and type(item[key]) is not bool:
-                        raise BodyError(422, f"subtask {key} must be a boolean")
-                retained = by_id.get(item["id"], {})
-                result.append({**retained, **{key: value for key, value in item.items()
-                                            if key in _SUBTASK_EDITABLE},
-                               "children": merge(item.get("children", retained.get("children", [])))})
-            return result
-
-        edits["subtasks"] = merge(edits["subtasks"])
+        if not isinstance(edits["subtasks"], list):
+            raise BodyError(422, "subtasks must be an array")
+        by_id = {item["id"]: item for item in (current or {}).get("subtasks", [])}
+        result = []
+        for item in wb.flatten_subtasks(edits["subtasks"]):  # A stale nested client keeps its items, flat.
+            if not isinstance(item.get("id"), str):
+                raise BodyError(422, "every subtask needs an id")
+            if "done" in item and type(item["done"]) is not bool:
+                raise BodyError(422, "subtask done must be a boolean")
+            result.append({**by_id.get(item["id"], {}),
+                           **{key: value for key, value in item.items() if key in _SUBTASK_EDITABLE}})
+        edits["subtasks"] = result
     return edits
 
 
@@ -441,19 +434,13 @@ def _op_create_card(doc: dict, op: dict, by: str) -> tuple:
         not isinstance(raw["column"], str) or raw["column"] not in ("backlog", "task", "inprogress")
     ):
         raise BodyError(422, "create in Backlog, Task, or In Progress; close/block via lifecycle actions")
-    card = wb.normalize_card({**_editable_card(raw), "id": raw["id"]})
-    wb.guard_subtask_replacement([], card["subtasks"], by)
-    if not card["title"].strip():
-        raise BodyError(422, "created card needs a title")
-    destination = card["column"]
-    card["num"] = wb.new_num(doc)
-    card["column"] = "task"
-    card["outcome"] = None
-    card["createdAt"] = card["updatedAt"] = wb.now_iso()
-    wb.hist(card, "created", by=by)
-    doc["cards"].append(card)
-    if destination != "task":
-        wb.workflow_action(doc, card, "move", {"to": destination}, by)
+    fields = wb.normalize_card({**_editable_card(raw), "id": raw["id"]})
+    wb.guard_subtask_replacement([], fields["subtasks"], by)
+    card = wb.create_card(doc, by, title=fields["title"], column=raw.get("column", "task"),
+                          priority=fields["priority"], tags=fields["tags"], origin=fields["origin"],
+                          notes=fields["notes"])
+    card.update({key: fields[key] for key in ("code", "writeup", "subtasks", "links", "lastTouchedSubtask",
+                                              "meta", "agentRuns") if key in fields}, id=fields["id"])
     return card, None
 
 
@@ -519,8 +506,6 @@ def _op_update_columns(doc: dict, op: dict) -> None:
 
 def _op_lifecycle(doc: dict, card: dict, action: str, details: dict, by: str):
     if action == "submit":
-        if card["column"] != "inprogress":
-            raise BodyError(422, "complete requires the card to be In Progress")
         summary = details.get("summary")
         verification = details.get("verification")
         if not isinstance(summary, str) or not isinstance(verification, str) \

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `inbox` lists a `claim` row for each delegated subtask another actor holds on the owner's In Progress card, with `owner`, `state` (`claimed` or `blocked`), `claimedAt` and `lastActivityAt` (the latest of the claim and that subtask's notes), so after a restart Main sees what is still running and which worker went quiet. A blocked subtask lists its `blocker` row first. The browser's Inbox shows them as "Assignment in progress" or "Assignment blocked", and its count leaves them out.
+- `wait --subtask` adds `notes` to its result: the entries posted on that subtask while it waited, so a worker reads Main's answer without another `context`. It is `[]` after a timeout or an immediate return.
+
+### Changed
+
+- `done` works from Backlog and Task too, so work found already done needs no `start` first. Outside In Progress the card's dependencies must be completed (`deps`); a Blocked card is `state` (use `resume`), and so is a Done card (use `rework` or `reopen`). The browser's `complete` and `submit` follow the same rule.
+- `add --column inprogress` (`"column":"inprogress"` in `call`) creates and starts a card in one request, with `start`'s dependency and WIP checks, and makes you its owner; a refusal creates nothing. Before, `add` took only Backlog or Task. The browser's card creation uses the same code: titles are trimmed, and a card created In Progress records `start` in its history.
+- Every delegated result needs `subtask accept` before the card's `done`, and before subtasks that list it as a prerequisite can be claimed or handed off. A result whose review wasn't required used to count once completed; existing ones now show REVIEW PENDING in `digest` and the browser until accepted. `review.required` is always `true`, and `doctor` doesn't report the stored `false` it replaces.
+- Subtasks are one flat list. Boards with nested subtasks load flat, each subtask just before the ones it held, keep their delegations, and are saved flat on the next write; `doctor` doesn't report the change. `context --subtask` returns only that subtask (`focus.ancestorIds` is gone), `wait --subtask` watches only that subtask, and `subtask rm` removes only the listed IDs. The browser drops its fold and "Add sub-item" controls.
+- `context` leaves out the card's history unless `--full` (`"full":true`); `omitted.history` counts all of it. Before, it kept the last 25 entries.
+- `handoff` prints a prompt of about six lines: the card, the subtask, the scope (or "read-only: edit no files"), a takeover or blocked line when one applies, the requests on one line for `workboard call`, and a pointer to the skill's Worker section. Card text is JSON-quoted as data. `--json` returns only `ok`, `rev`, `num`, `worker`, `previousOwner`, `writeScope`, `scopeWarnings`, `requests` and `prompt`; `commands`, `placeholders`, `call`, `assignment`, `title`, `cardId`, `board`, `boardName`, `parentOwner`, `origin`, `notes`, `peers` and `ancestorIds` are gone. The write scope is always the subtask's saved one.
+- `digest --json` has `sweepCandidateCount` (a number) instead of the `sweepCandidates` list of card IDs, and its `mine` rows are `{num, title, column}` without `id`.
+- `inbox` leaves out findings on a subtask that come before Main's acceptance of it in the timeline; notes posted later still show.
+- `handoff` requests carry the worker's `board` and `actor`, so the prompt names plain `workboard call` and no board or worker name passes through a shell (names such as `R&D` used to split the command on Windows).
+- The agent skill is shorter (about 1,700 words instead of 2,500). It asks for `expectedRev` only on cards you don't hold, and covers `add` into In Progress, `done` from Task, accepting every result, the slim handoff, inbox `claim` rows and `wait` notes. Rarely used actions left the skill but not the CLI, and its Commands block became a list of ops. [docs/agents.md](docs/agents.md) now points to the skill instead of repeating it.
+
+### Removed
+
+- `subtask add --parent`: subtasks no longer nest. `"parent"` in a `call` request is `invalid` (`subtask.add doesn't take "parent"`).
+- `subtask configure --review-required` and `--no-review-required`, since every result needs acceptance. `"reviewRequired": true` in `call` is `invalid`, and `reviewRequired` in the HTTP `configure` is 422.
+- `handoff --write-scope`, `--peer` and `--fields`. Set the scope with `subtask configure --scope` before the handoff.
+
+### Fixed
+
+- `workboard upgrade` through npm could install the previous version right after a release, because npm answered from its cached package data. It now runs `npm install -g --prefer-online @paliverse/workboard@latest`.
+
 ## [0.3.5] - 2026-10-11
 
 ### Fixed

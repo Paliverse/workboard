@@ -165,7 +165,7 @@ workboard upgrade
 
 | Channel | Command it runs |
 |---|---|
-| `npm` | `npm install -g @paliverse/workboard@latest` |
+| `npm` | `npm install -g --prefer-online @paliverse/workboard@latest` |
 | `script` (Windows) | `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/Paliverse/workboard/releases/latest/download/install.ps1 \| iex"` |
 | `script` (macOS, Linux) | `sh -c "curl -fsSL https://github.com/Paliverse/workboard/releases/latest/download/install.sh \| sh"` |
 

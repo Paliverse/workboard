@@ -302,12 +302,15 @@ class DataIntegrityTest(DoctorCase):
 
     def test_delegated_subtasks_are_checked_without_writing(self):
         doc = {**copy.deepcopy(self.doc), "schemaVersion": wb.SCHEMA_VERSION}  # Delegation writes schema 4.
+        # 0.3.5 wrote children, collapsed and opt-in reviews; loading them flat with required reviews loses nothing.
         subtask = {"id": "s-1", "text": "Review", "done": False, "createdAt": wb.now_iso(),
-                   "doneAt": None, "children": [], "delegation": {
+                   "doneAt": None, "collapsed": True, "children": [
+                       {"id": "s-2", "text": "Nested step", "done": True, "children": [], "collapsed": False}],
+                   "delegation": {
                        "state": "claimed", "owner": "Ada", "claimedAt": wb.now_iso(), "result": "",
                        "scope": ["src/workboard"], "dependsOn": [],
                        # Core deliberately permits a previously accepted review on claimed work.
-                       "review": {"required": True, "state": "accepted", "by": "Main",
+                       "review": {"required": False, "state": "accepted", "by": "Main",
                                   "at": wb.now_iso(), "reason": ""}, "blocker": None}}
         doc["cards"][0]["subtasks"] = [subtask]
         write_json(self.board, doc)

@@ -506,7 +506,6 @@ html[data-theme="dark"] .toast .btn { background: rgb(0 0 0 / .1); }
 .check-row.done .text { color: var(--fg-3); }
 .check-row .row-tools { display: flex; align-items: center; gap: 4px; opacity: 0; }
 .check-row:hover .row-tools, .check-row:focus-within .row-tools { opacity: 1; }
-.check-children { margin-left: 22px; }
 .file-row { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 6px 8px; margin: 0 -8px; border-radius: var(--r-md); }
 .file-row:hover { background: var(--fill-1); }
 .file-row .ic { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r-md); background: var(--fill-1); color: var(--fg-2); flex: none; }
@@ -905,15 +904,11 @@ const WB = window.WB = {};
   const inRework = c => !!c.reworkReason && c.column !== 'done';
   const subtaskStats = card => {
     let done = 0, total = 0, unaccepted = 0;  // unaccepted: delegated work that keeps the card from Done (core.unaccepted_delegations)
-    const walk = list => {
-      for (const s of list || []) {
-        total++; if (s.done) done++;
-        const d = s.delegation;
-        if (d && (d.state !== 'completed' || (d.review && d.review.required && d.review.state !== 'accepted'))) unaccepted++;
-        walk(s.children);
-      }
-    };
-    walk(card.subtasks);
+    for (const s of card.subtasks || []) {
+      total++; if (s.done) done++;
+      const d = s.delegation;
+      if (d && (d.state !== 'completed' || d.review?.state !== 'accepted')) unaccepted++;
+    }
     return { done, total, unaccepted };
   };
   WB.facts = { depsSatisfied, isReady, inRework, subtaskStats };
@@ -938,8 +933,7 @@ const WB = window.WB = {};
     let s = searchCache.get(card);
     if (!s) {
       const parts = [`#${card.num}`, card.title, card.code, card.origin, card.notes, card.writeup, ...(card.tags || [])];
-      const walk = list => { for (const t of list || []) { parts.push(t.text); walk(t.children); } };
-      walk(card.subtasks);
+      for (const t of card.subtasks || []) parts.push(t.text);
       for (const m of card.comments || []) parts.push(m.text);
       for (const e of card.log || []) parts.push(e.summary, e.body);
       s = parts.filter(Boolean).join('\n').toLowerCase();
@@ -1101,8 +1095,7 @@ const WB = window.WB = {};
       for (const f of fields) {
         const id = `dlg-${f.name}`;
         let input;
-        if (f.type === 'checkbox') input = h('input', { id, type: 'checkbox', checked: !!f.value });
-        else if (f.options) input = h('select', { class: 'input', id }, f.options.map(o => h('option', { value: o.value, text: o.label, selected: o.value === f.value })));
+        if (f.options) input = h('select', { class: 'input', id }, f.options.map(o => h('option', { value: o.value, text: o.label, selected: o.value === f.value })));
         else if (f.multiline) input = h('textarea', { class: 'input', id, rows: 3, placeholder: f.placeholder || '', value: f.value || '', style: { height: 'auto', padding: '8px 10px', resize: 'vertical', fieldSizing: 'content', minHeight: '72px', maxHeight: '40vh' } });
         else input = h('input', { class: 'input', id, type: f.type || 'text', placeholder: f.placeholder || '', value: f.value || '' });
         inputs[f.name] = input;
@@ -1119,7 +1112,7 @@ const WB = window.WB = {};
         e.preventDefault();
         if (okBtn.disabled) return;
         const values = {};
-        for (const f of fields) values[f.name] = f.type === 'checkbox' ? inputs[f.name].checked : f.options ? inputs[f.name].value : String(inputs[f.name].value).trim();
+        for (const f of fields) values[f.name] = f.options ? inputs[f.name].value : String(inputs[f.name].value).trim();
         finish(values);
       });
       scrim.addEventListener('pointerdown', () => finish(null));
@@ -1526,7 +1519,6 @@ const WB = window.WB = {};
         { name: 'summary', label: 'What shipped', multiline: true, required: true, placeholder: 'The change and why it matters' },
         { name: 'verification', label: 'How it was verified', multiline: true, required: true, placeholder: 'Checks, tests, or evidence' }] });
       if (!v) return { ok: false };
-      if (c.column !== 'inprogress') { const s = await WB.api.lifecycle(c.id, 'start'); if (!s.ok) return s; }
       const r = await WB.api.lifecycle(c.id, 'submit', v);
       if (r.ok) toast(`Completed ${ref(c)}`);
       return r;
@@ -2640,26 +2632,6 @@ const WB = window.WB = {};
     return input;
   }
 
-  // ── Subtask tree ────────────────────────────────────────────────────
-  function locate(list, sid) {
-    for (let i = 0; i < list.length; i++) {
-      if (list[i].id === sid) return { node: list[i], list, i };
-      const hit = locate(list[i].children || [], sid);
-      if (hit) return hit;
-    }
-    return null;
-  }
-  const nodeOf = (tree, sid) => locate(tree, sid)?.node;
-  function countTree(list, visible = true, n = { done: 0, total: 0, shown: 0 }) {
-    for (const s of list || []) {
-      n.total++;
-      if (s.done) n.done++;
-      if (visible) n.shown++;
-      countTree(s.children, visible && !s.collapsed, n);
-    }
-    return n;
-  }
-
   // ── Activity wording ────────────────────────────────────────────────
   const EVENTS = {
     created: 'created the card',
@@ -3071,8 +3043,6 @@ const WB = window.WB = {};
     const count = counter();
     const list = h('div', { class: 'checklist' });
     let all = false;
-    const folds = new Map();
-    let foldRevision = 0;
     const more = moreBtn(() => { all = true; flush(); });
     const change = (op, ids, details = {}) => edit(id, () => api.lifecycle(id, 'subtask', { op, ids, ...details }));
     const delegated = h('input', { type: 'checkbox', attrs: { 'aria-label': 'Make new subtasks claimable' } });
@@ -3082,45 +3052,32 @@ const WB = window.WB = {};
     const addRow = h('div', { class: 'subtask-add' }, add, claimable);
     // Delegation controls are for whoever owns the In Progress parent; everyone else sees a plain checklist.
     const leads = c => c.column === 'inprogress' && c.activeOwner === WB.state.actor;
-    slot(c => json([c.subtasks, c.activeOwner, c.column, WB.state.actor]) + all + foldRevision, c => {
+    slot(c => json([c.subtasks, c.activeOwner, c.column, WB.state.actor]) + all, c => {
       const tree = c.subtasks || [];
       claimable.hidden = !leads(c);
       if (claimable.hidden) delegated.checked = false;
-      const n = countTree(tree);
-      put(count, n.total ? [ui.progress(n.done, n.total), `${n.done}/${n.total}`] : null);
+      const done = tree.filter(s => s.done).length;
+      put(count, tree.length ? [ui.progress(done, tree.length), `${done}/${tree.length}`] : null);
       const a = document.activeElement;
       const keep = list.contains(a) && a.classList.contains('box') ? a.parentNode.dataset.sid : null;
-      let left = all ? Infinity : SUB_CAP;
-      const rows = (items, inheritedLock = false) => {
-        const out = [];
-        for (const s of items) {
-          if (left-- <= 0) break;
-          const locked = inheritedLock || (!!s.delegation?.owner && s.delegation.owner !== WB.state.actor);
-          const collapsed = folds.get(s.id) ?? s.collapsed;
-          out.push(row(s, c, locked, collapsed));
-          if (s.children?.length && !collapsed) out.push(h('div', { class: 'check-children' }, rows(s.children, locked)));
-        }
-        return out;
-      };
-      put(list, rows(tree));
+      put(list, (all ? tree : tree.slice(0, SUB_CAP)).map(s => row(s, c, !!s.delegation?.owner && s.delegation.owner !== WB.state.actor)));
       if (keep) list.querySelector(`[data-sid="${CSS.escape(keep)}"] > .box`)?.focus({ preventScroll: true });
-      more.hidden = all || n.shown <= SUB_CAP;
-      more.textContent = `Show all ${n.shown}`;
+      more.hidden = all || tree.length <= SUB_CAP;
+      more.textContent = `Show all ${tree.length}`;
     }, { busy: () => {
       const a = document.activeElement;
       return (list.contains(a) && a.tagName === 'TEXTAREA') || [...list.querySelectorAll('textarea')].some(isDirty);
     } });
     list.addEventListener('focusout', e => { if (!list.contains(e.relatedTarget)) flush(); });
 
-    function row(s, c, locked, collapsed) {
-      const kids = s.children || [];
+    function row(s, c, locked) {
       const assignment = s.delegation;
       const mine = assignment?.owner === WB.state.actor;
       const lead = leads(c);
       const text = h('textarea', { class: 'text', rows: 1, attrs: { 'aria-label': 'Subtask' } });
       setBase(text, s.text);
       text.readOnly = locked;
-      bindText(text, v => editTree(id, tree => { const node = nodeOf(tree, s.id); if (!node) return false; node.text = v; }), { enter: true, required: true });
+      bindText(text, v => editTree(id, tree => { const node = tree.find(x => x.id === s.id); if (!node) return false; node.text = v; }), { enter: true, required: true });
       const box = h('button', { class: 'box', type: 'button', disabled: assignment ? !mine || c.column !== 'inprogress' || assignment.state === 'blocked' : locked,
         attrs: { role: 'checkbox', 'aria-checked': String(!!s.done), 'aria-label': s.text || 'Subtask' },
         on: { click: () => toggle(s, el, box) } }, icon('check'));
@@ -3128,7 +3085,7 @@ const WB = window.WB = {};
       const button = (label, run) => h('button', { class: 'btn xs', type: 'button', on: { click: run } }, label);
       if (assignment) {
         status.append(h('span', { text: `${s.id} · ${assignment.state}${assignment.owner ? ` · @${assignment.owner}` : ''}` }));
-        if (assignment.review?.required) status.append(h('span', { text: `Review: ${assignment.review.state || 'required'}` }));
+        status.append(h('span', { text: `Review: ${assignment.review?.state || 'pending'}` }));
         if (assignment.scope?.length) status.append(h('span', { text: `Scope: ${assignment.scope.join(', ')}` }));
         if (assignment.dependsOn?.length) status.append(h('span', { text: `After: ${assignment.dependsOn.join(', ')}` }));
         if (assignment.state === 'available' && c.column === 'inprogress') {
@@ -3144,10 +3101,9 @@ const WB = window.WB = {};
             const v = await ui.prompt({ title: 'Configure assignment', body: `${s.id}: ${s.text}`, ok: 'Save', fields: [
               { name: 'scope', label: 'Write scope · relative paths, one per line', multiline: true, value: (assignment.scope || []).join('\n') },
               { name: 'dependsOn', label: 'Prerequisite assignment IDs · comma separated', value: (assignment.dependsOn || []).join(', ') },
-              { name: 'reviewRequired', label: 'Require Main to accept the result', type: 'checkbox', value: assignment.review?.required },
             ] });
             if (v) await change('configure', [s.id], { scope: v.scope.split('\n').map(x => x.trim()).filter(Boolean),
-              dependsOn: v.dependsOn.split(/[\s,]+/).filter(Boolean), reviewRequired: v.reviewRequired });
+              dependsOn: v.dependsOn.split(/[\s,]+/).filter(Boolean) });
           }));
         } else if (assignment.state === 'claimed' || assignment.state === 'blocked') {
           const op = mine ? 'release' : 'takeover';
@@ -3176,14 +3132,9 @@ const WB = window.WB = {};
         assignment?.review?.state === 'changes_requested' ? h('p', { class: 'subtask-result', text: `Changes requested: ${assignment.review.reason || ''}` }) : null,
         assignment?.result ? h('p', { class: 'subtask-result', text: assignment.result }) : null);
       const el = h('div', { class: s.done ? 'check-row done' : 'check-row', dataset: { sid: s.id } }, box, content,
-        kids.length ? iconBtn(collapsed ? 'right' : 'down', collapsed ? `Show ${kids.length} sub-items` : 'Hide sub-items', () => {
-          if (!locked) return editTree(id, tree => { const node = nodeOf(tree, s.id); if (!node) return false; node.collapsed = !collapsed; });
-          folds.set(s.id, !collapsed); foldRevision++; flush();
-        }) : null,
         locked ? null : h('span', { class: 'row-tools' },
           lead && !assignment && !s.done ? [h('span', { class: 'faint mono', text: s.id }), button('Make claimable', () => change('delegate', [s.id]))] : null,
-          iconBtn('plus', 'Add sub-item', () => addChild(s.id, el)),
-          iconBtn('trash', 'Delete subtask', () => remove(s))));
+          iconBtn('trash', 'Delete subtask', () => change('rm', [s.id]))));
       return el;
     }
     async function toggle(s, el, box) {
@@ -3199,31 +3150,6 @@ const WB = window.WB = {};
       show(done);
       change(done ? 'done' : 'undone', [s.id])
         .then(r => { if (!r.ok) show(!done); });
-    }
-    // A local draft row under the parent; it becomes a real subtask once it has text.
-    function addChild(sid, el) {
-      let kids = el.nextElementSibling;
-      if (!kids?.classList.contains('check-children')) el.after(kids = h('div', { class: 'check-children' }));
-      const text = h('textarea', { class: 'text', rows: 1, placeholder: 'Sub-item', attrs: { 'aria-label': 'New sub-item' } });
-      bases.set(text, '');
-      const draft = h('div', { class: 'check-row' }, h('span', { class: 'box' }), text);
-      kids.append(draft);
-      text.focus();
-      text.addEventListener('keydown', e => { if (isEnter(e)) { e.preventDefault(); text.blur(); } });
-      text.addEventListener('blur', async () => {
-        const v = text.value.trim();
-        if (!v) { draft.remove(); flush(); return; }
-        text.removeAttribute('aria-invalid');
-        const r = await change('add', [], { texts: [v], parent: sid, delegated: delegated.checked });
-        if (!r.ok) { text.setAttribute('aria-invalid', 'true'); return; }
-        draft.remove();
-        flush();
-      });
-    }
-    async function remove(s) {
-      const n = countTree(s.children).total;
-      if (n && !await ui.confirm({ title: 'Delete subtask?', body: `“${s.text}” and its ${n} sub-item${n === 1 ? '' : 's'} will be removed.`, ok: 'Delete', danger: true })) return;
-      change('rm', [s.id]);
     }
     return section('Subtasks', count, null, list, more, addRow);
   }
@@ -3443,7 +3369,7 @@ const WB = window.WB = {};
       .catch(e => { s.error = e; })
       .then(() => {
         s.busy = false;
-        if (kind === 'inbox') inboxCount.textContent = s.data?.items.length || '';
+        if (kind === 'inbox') inboxCount.textContent = s.data?.items.filter(row => row.kind !== 'claim').length || '';  // Running assignments aren't news.
         if (kind !== 'inbox' && !active(kind)) return;  // The inbox keeps loading in the background for its nav count.
         if (s.again) load(kind); else if (active(kind)) VIEWS[kind].paint();
       });
@@ -3519,10 +3445,6 @@ const WB = window.WB = {};
     cardList(all, READY, 'ready');
   }
 
-  const findSubtask = (items, id) => {
-    for (const item of items || []) { if (item.id === id) return item; const child = findSubtask(item.children, id); if (child) return child; }
-    return null;
-  };
   async function review(row, action) {
     let details = {};
     if (action === 'request-changes') {
@@ -3546,13 +3468,14 @@ const WB = window.WB = {};
     if (noData('inbox', "Couldn't load the inbox")) return;
     const state = store.inbox, items = state.data.items;
     cur.ackAll.hidden = items.filter(row => row.kind === 'finding').length < 2;
-    cur.head.p.textContent = `Results, blockers and shared findings for ${WB.state.actor}. Open the parent card for the full handoff.`;
+    cur.head.p.textContent = `Results, blockers, shared findings and running assignments for ${WB.state.actor}. Open the parent card for the full handoff.`;
     show(JSON.stringify([WB.state.actor, state.data.rev, WB.state.rev, state.error && errText(state.error)]), () => [
       state.error && staleNote('inbox', state.error),
       ...items.map(row => {
-        const card = WB.card(row.cardId), subtask = findSubtask(card?.subtasks, row.subtaskId);
-        if (!card) return null;
-        const label = { review: 'Result awaiting review', blocker: 'Assignment blocked', finding: 'Shared finding', changes_requested: 'Changes requested' }[row.kind] || row.kind;
+        const card = WB.card(row.cardId), subtask = card?.subtasks?.find(s => s.id === row.subtaskId);
+        if (!card || (row.kind === 'claim' && row.state === 'blocked')) return null;  // Its blocker row already shows it.
+        const label = { review: 'Result awaiting review', blocker: 'Assignment blocked', finding: 'Shared finding', changes_requested: 'Changes requested',
+          claim: 'Assignment in progress' }[row.kind] || row.kind;
         const tools = h('div', { class: 'tools' });
         if (row.kind === 'review') tools.append(
           h('button', { class: 'btn sm primary', type: 'button', on: { click: () => review(row, 'accept') } }, 'Accept result'),
@@ -3560,7 +3483,8 @@ const WB = window.WB = {};
         if (row.kind === 'finding') tools.append(h('button', { class: 'btn sm outline', type: 'button', on: { click: () => acknowledge([row]) } }, 'Acknowledge'));
         const body = row.kind === 'finding' ? [row.note.summary, row.note.body].filter(Boolean).join('\n\n') : row.kind === 'blocker'
           ? `${row.blocker?.reason || ''}\nUnblocks when: ${row.blocker?.until || ''}`
-          : row.kind === 'changes_requested' ? row.review?.reason : subtask?.delegation?.result;
+          : row.kind === 'changes_requested' ? row.review?.reason
+          : row.kind === 'claim' ? `Last activity: ${WB.ui.relTime(row.lastActivityAt) || 'unknown'}` : subtask?.delegation?.result;
         return block(label, row.owner ? `@${row.owner}` : row.note?.by ? `@${row.note.by}` : '',
           h('button', { class: 'btn sm', type: 'button', on: { click: () => WB.openCard(row.cardId) } }, `#${card.num} ${card.title}`),
           h('p', { class: 'view-note', text: row.subtaskId ? `${row.subtaskId}${subtask ? ` · ${subtask.text}` : ''}` : 'Shared with the parent' }),

@@ -52,7 +52,7 @@ def detect_channel() -> str:
 
 def upgrade_command(channel: str) -> list[str] | None:
     if channel == "npm":
-        return ["npm", "install", "-g", "@paliverse/workboard@latest"]
+        return ["npm", "install", "-g", "--prefer-online", "@paliverse/workboard@latest"]
     if channel == "script":
         if install._WINDOWS:
             return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",

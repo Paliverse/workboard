@@ -204,6 +204,24 @@ class TimelineEntries(unittest.TestCase):
             self.assertIn("Ada", str(caught.exception))
         self.assertEqual([entry["by"] for entry in card["log"]], ["Ada"])
 
+    def test_inbox_hides_findings_posted_before_a_subtask_acceptance(self):
+        accepted = {"state": "completed", "owner": "Ada", "claimedAt": "2026-10-10T10:00:00Z", "result": "Verified",
+                    "review": {"state": "accepted", "by": "Main", "at": "2026-10-10T12:00:00Z"}}
+        claimed = {"state": "claimed", "owner": "Grace", "claimedAt": "2026-10-10T10:00:00Z", "result": ""}
+        log = [{"id": f"{number:032x}", "at": "2026-10-10T12:00:00Z", "by": by, "summary": summary, "body": "",
+                **({"subtaskId": sid} if sid else {}), **({"kind": "generated"} if by == "Main" else {})}
+               for number, by, summary, sid in ((1, "Grace", "Note 1", None),
+                                                (2, "Grace", "Note 2", "s-2"),
+                                                (3, "Ada", "Note 3", "s-1"),
+                                                (4, "Main", "accepted s-1", "s-1"),
+                                                (5, "Ada", "Note 5", "s-1"))]  # Same second, after acceptance.
+        doc = core.normalize_doc({"cards": [{"id": "c", "num": 1, "column": "inprogress", "activeOwner": "Main",
+                                             "log": log, "subtasks": [
+                                                 {"id": "s-1", "text": "Done", "done": True, "delegation": accepted},
+                                                 {"id": "s-2", "text": "Open", "done": False, "delegation": claimed}]}]})
+        findings = [row["note"]["summary"] for row in core.inbox(doc, "Main") if row["kind"] == "finding"]
+        self.assertEqual(findings, ["Note 1", "Note 2", "Note 5"])  # Note 5 is a recheck after acceptance.
+
     def test_normalize_card_refuses_malformed_log(self):
         valid = {"id": "a" * 32, "at": "2026-09-01", "by": None, "summary": "ok", "body": ""}
         for log in ({}, ["entry"], [{**valid, "id": "A" * 32}], [valid, valid],

@@ -118,7 +118,9 @@ Each write holds an exclusive lock on the board's `.board.lock` (`fcntl.flock` o
 
 Unsupported schema versions and conflicting legacy aliases fail closed. Fields written by the browser (`stackUnder`, `wipLimit`, column order) and unknown extension fields survive every round trip. Server-owned card fields can only be changed through their dedicated actions. The column set is exactly `backlog`, `task`, `inprogress`, `done` and `blocked`. This build reads schema versions 1 through 4 and writes 3 or 4.
 
-Versions 1 through 3 load and normalize in memory without changing their bytes. `core.save` writes schema 3 unless the board on disk is already schema 4 or the saved document uses a schema 4 feature: a `delegation` object on any subtask, at any depth, or `inboxAcknowledged` on any card. That save emits schema 4, and the board never goes back to 3, so WorkBoard 0.1.x (schema 3) rejects it rather than overwrite delegated state it can't enforce. Boards that never use delegation stay readable and writable by 0.1.x; schema 1 and 2 boards become schema 3 on their next write, as in 0.1.x.
+Versions 1 through 3 load and normalize in memory without changing their bytes. `core.save` writes schema 3 unless the board on disk is already schema 4 or the saved document uses a schema 4 feature: a `delegation` object on any subtask or `inboxAcknowledged` on any card. That save emits schema 4, and the board never goes back to 3, so WorkBoard 0.1.x (schema 3) rejects it rather than overwrite delegated state it can't enforce. Boards that never use delegation stay readable and writable by 0.1.x; schema 1 and 2 boards become schema 3 on their next write, as in 0.1.x.
+
+A card's subtasks are one flat list. WorkBoard 0.3.5 and earlier let subtasks hold their own subtasks; `core.flatten_subtasks` loads those as one list, each just before the ones it held, with every other field kept, and the next write saves the flat list. `doctor` treats that change as expected, not as normalization loss.
 
 ### Delegated subtasks
 
@@ -127,22 +129,22 @@ A plain checklist subtask has no delegation metadata, so older boards and bulk c
 ```json
 {"state": "available", "owner": null, "claimedAt": null, "result": "",
  "scope": [], "dependsOn": [],
- "review": {"required": false, "state": "pending", "by": null, "at": null, "reason": ""},
+ "review": {"required": true, "state": "pending", "by": null, "at": null, "reason": ""},
  "blocker": null}
 ```
 
 - `state` is `available`, `claimed`, `blocked` or `completed`. `owner` is the worker holding it, and `result` is its completion evidence.
 - `scope` holds saved relative write paths. They are advisory: they feed the handoff's write boundary and overlap warnings, and nothing enforces them on the filesystem.
-- `dependsOn` lists prerequisite subtask IDs on the same card. Cycles are refused. A subtask can be claimed or completed only when every prerequisite, followed through its own prerequisites, is completed and, if it requires review, accepted.
-- `review.state` is `pending`, `accepted` or `changes_requested`. `blocker` is `{"reason", "until", "at", "by"}` while the worker is blocked.
+- `dependsOn` lists prerequisite subtask IDs on the same card. Cycles are refused. A subtask can be claimed or completed only when every prerequisite, followed through its own prerequisites, is completed and accepted.
+- `review.state` is `pending`, `accepted` or `changes_requested`. Every result needs acceptance, so `review.required` is always `true`; a stored `false` from 0.3.5 or earlier loads as `true`, and `doctor` ignores that change. `blocker` is `{"reason", "until", "at", "by"}` while the worker is blocked.
 
 Only the subtask lifecycle in `core.subtask_action` creates or changes this metadata, under the board lock. Ownership and state are checked there, so two workers racing for one subtask get exactly one winner and the other gets `owned`.
 
-- Making work claimable (`add --delegated`, `delegate`) is refused with `owned` when another actor owns the card. Configuring, accepting and requesting changes need the active owner of an In Progress parent. Configuring prerequisites or review needs available work; the scope alone can also grow on claimed or blocked work, which keeps its claim, owner and result. Dropping a saved path there is refused (`state`), since the worker may be editing it.
+- Making work claimable (`add --delegated`, `delegate`) is refused with `owned` when another actor owns the card. Configuring, accepting and requesting changes need the active owner of an In Progress parent. Configuring prerequisites needs available work; the scope alone can also grow on claimed or blocked work, which keeps its claim, owner and result. Dropping a saved path there is refused (`state`), since the worker may be editing it.
 - `claim`, `done`, `undone`, `block` and `resume` need an owned In Progress parent (`state` otherwise). Only the claimant may `release`, `block`, `resume`, complete or reopen its subtask (`owned`, or `state` while nobody holds it); the wrong state for its own subtask is `state`. `takeover` moves claimed or blocked work to the caller.
-- Completion requires a result. Completing, reopening, releasing, taking over, accepting and requesting changes each append a generated timeline note (`"kind": "generated"`, with its `subtaskId`), so the record of who did what survives. Blocking, canceling or pausing the parent keeps claims: nothing expires, and nothing completes the parent automatically. The parent can't be completed while a delegated subtask is unfinished or a required review is not accepted.
+- Completion requires a result. Completing, reopening, releasing, taking over, accepting and requesting changes each append a generated timeline note (`"kind": "generated"`, with its `subtaskId`), so the record of who did what survives. Blocking, canceling or pausing the parent keeps claims: nothing expires, and nothing completes the parent automatically. The parent can't be completed while a delegated subtask is unfinished or its result is not accepted.
 
-Card field edits never check card ownership (`update`, `workpad`, legacy checklist items, and the browser's title, priority, tags, links and order). Generic replacements (card PATCH, snapshots, card creation) keep omitted delegation metadata, but `core.guard_subtask_replacement` refuses to invent delegation, change delegated state or attribution, or drop, retext or move another worker's claimed, blocked or completed subtask.
+Card field edits never check card ownership (`update`, `workpad`, legacy checklist items, and the browser's title, priority, tags, links and order). Generic replacements (card PATCH, snapshots, card creation) keep omitted delegation metadata, but `core.guard_subtask_replacement` refuses to invent delegation, change delegated state or attribution, or drop or retext another worker's claimed, blocked or completed subtask.
 
 ### The notes timeline
 
@@ -168,9 +170,9 @@ The migration is lossless. Only the `[date actor] ` prefix moves into `at` and `
 
 ### Focused context and handoff
 
-Focused context (`context REF --subtask ID`, `--mine` or `--assigned-to ACTOR`) is a read projection. It keeps each selected subtree and its minimal ancestor chain, plus the card's shared metadata, comments, attachments, dependencies and timeline. `focus` records the selection (`subtaskId` or `assignedTo`), `matchedSubtaskIds`, `ancestorIds`, overlapping write scopes (`scopeWarnings`) and each selected subtask's `prerequisites`; `omitted.unrelatedSubtasks` counts the rows left out. Focus grants no authority to change anything.
+Focused context (`context REF --subtask ID`, `--mine` or `--assigned-to ACTOR`) is a read projection. It keeps only the selected subtasks, plus the card's shared metadata, comments, attachments, dependencies and timeline. `focus` records the selection (`subtaskId` or `assignedTo`), `matchedSubtaskIds`, overlapping write scopes (`scopeWarnings`) and each selected subtask's `prerequisites`; `omitted.unrelatedSubtasks` counts the rows left out. Focus grants no authority to change anything. Like any `context` without `--full`, it leaves out the card's history and counts it in `omitted.history`.
 
-`handoff` is read-only too. The active owner of the In Progress parent names a delegated subtask, a worker, write scopes (default: the subtask's saved scope, relative to the board's project root; none means read-only work) and optional peers. Its prerequisites must be complete (`deps` otherwise). Available work, or work already claimed by that worker, gets a claim step; claimed or blocked work held by another actor gets a takeover step and `previousOwner`. It returns the facts, a runtime-agnostic prompt and `commands`: argument arrays for `read`, `claim`, `publish` and `complete`, each starting with `workboard --board=NAME --actor=WORKER` and naming the card by its number, which is never reused. A consumer replaces only the `{summary}` value (and `{reason}` in a takeover) and passes each array as separate arguments; `publish` reads the note body and `complete` the result from standard input. Handoff never claims, spawns a worker or sends a message.
+`handoff` is read-only too. The active owner of the In Progress parent names a delegated subtask and a worker. The write scope is the subtask's saved scope, relative to the board's project root; none means read-only work. Its prerequisites must be completed and accepted (`deps` otherwise). Available work, or work already claimed by that worker, gets a claim step; claimed or blocked work held by another actor gets a takeover step and `previousOwner`, and blocked work a `resume` step. It returns the scope, `scopeWarnings`, `requests` (the worker's steps as `call` requests that name the card by its number, which is never reused) and a short prompt: the card, the subtask, the scope, the `workboard --board=NAME --actor=WORKER call` line and the requests, with card text JSON-quoted as data. A consumer replaces only the `{summary}`, `{body}` and `{result}` values (and `{reason}` in a takeover) and sends each request on the stdin of `call`. Handoff never claims, spawns a worker or sends a message.
 
 ### Portable bundles
 

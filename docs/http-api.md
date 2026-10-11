@@ -121,9 +121,9 @@ Every JSON write response includes `ok`, `rev`, `savedAt`, `savedBy` and the sav
 | `GET api/git` | `{"state": "clean"\|"dirty"\|"not_repo"\|"error"\|"unavailable", "root", "branch", "head", "subject", "ahead", "behind", "staged", "unstaged", "untracked", "conflicted", "files": [{"path", "index", "worktree"}] (at most 200), "truncated", "error", "warning"}`. Never fetches or writes. Git runs with an 8 s budget, so call it on demand rather than on a timer. |
 | `GET api/cards` | `{"column", "cards", "total", "rev"}`. `limit` is clamped to 1–250 (default 50) and `offset` must be 0 or more. Invalid values are 400. |
 | `GET api/card/{ref}` | `{"card", "rev"}` |
-| `GET api/card/{ref}/context` | `{"ok", "board", "schemaVersion", "rev", "num", "card", "dependencies": [{"id", "num", "title", "column", "outcome", "satisfied"}], "missingDependencies", "dependents": [{"num", "id", "title", "column", "outcome"}], "ready", "focus"?, "omitted"?}`. `?full=1` includes every subtask, history and log entry and every comment. By default the card keeps the 10 most recent done subtasks, 25 history entries, the newest 10 log entries and the newest 10 comments, and `omitted` counts the rest (`doneSubtasks`, `history`, plus `log` and `comments` when any were dropped). `?subtask=ID` focuses that subtask's subtree and its ancestors, and `?assignedTo=ACTOR` the subtrees that actor holds; the same comment window, attachments, notes and dependencies are kept, and focused done subtasks are never trimmed. Focus adds `focus: {"subtaskId" or "assignedTo", "matchedSubtaskIds", "ancestorIds", "scopeWarnings", "prerequisites"}` and `omitted.unrelatedSubtasks`. Both selectors together are 422, an unknown subtask 404, and a repeated parameter or a `full` other than `0`/`1` 422; other parameters are ignored. |
+| `GET api/card/{ref}/context` | `{"ok", "board", "schemaVersion", "rev", "num", "card", "dependencies": [{"id", "num", "title", "column", "outcome", "satisfied"}], "missingDependencies", "dependents": [{"num", "id", "title", "column", "outcome"}], "ready", "focus"?, "omitted"?}`. `?full=1` includes every subtask, the card's history, every log entry and every comment. By default the card has no `history`, and keeps the 10 most recent done subtasks, the newest 10 log entries and the newest 10 comments; `omitted` counts what was left out (`doneSubtasks` and `history`, plus `log` and `comments` when any were dropped). `?subtask=ID` focuses that one subtask, and `?assignedTo=ACTOR` the subtasks that actor holds; the same comment window, attachments, notes and dependencies are kept, and focused done subtasks are never trimmed. Focus adds `focus: {"subtaskId" or "assignedTo", "matchedSubtaskIds", "scopeWarnings", "prerequisites"}` and `omitted.unrelatedSubtasks`. Both selectors together are 422, an unknown subtask 404, and a repeated parameter or a `full` other than `0`/`1` 422; other parameters are ignored. |
 | `GET api/card/{ref}/scopes?subtask=ID` | `{"rev", "conflicts": [{"cardId", "num", "subtaskId", "owner", "state", "claimedAt", "lastActivityAt", "overlaps": [{"scope", "otherScope"}]}]}`: claimed or blocked delegated subtasks on any card that isn't Done whose saved scopes overlap this subtask's. `lastActivityAt` is the latest of the claim and that subtask's notes; an old one suggests a worker that is gone. Advisory only. A plain checklist subtask is 409 `state`. |
-| `GET api/inbox?actor=ACTOR` | `{"rev", "items"}` for `actor` (default `user`), the same rows as [`workboard inbox`](cli.md#inbox): `review`, `blocker`, `changes_requested` and `finding`. An unknown or repeated query parameter is 400. |
+| `GET api/inbox?actor=ACTOR` | `{"rev", "items"}` for `actor` (default `user`), the same rows as [`workboard inbox`](cli.md#inbox): `review`, `blocker`, `claim`, `changes_requested` and `finding`. An unknown or repeated query parameter is 400. |
 
 ### `POST board.json`: snapshot save
 
@@ -150,7 +150,7 @@ Every JSON write response includes `ok`, `rev`, `savedAt`, `savedBy` and the sav
 ```
 
 - `card` is required. Other keys in it are dropped, and server-owned fields must be unchanged. For example, a changed `log` is 422 `'log' is server-owned; use its dedicated action`; add timeline entries with the `note` lifecycle action.
-- `subtasks` replaces the whole tree. Every item needs a string `id`, and `done` and `collapsed` must be booleans (422). If an item omits `children`, its existing children are kept. An item that omits `delegation` keeps its stored value. Delegated state changes only through the `subtask` lifecycle action: supplying a `delegation` that differs from the stored one, adding one to a new or plain item, or changing `done`/`doneAt` of a delegated item is refused (409 `state`), and so is dropping, retexting or moving another worker's claimed, blocked or completed subtask (409 `owned`). The same rules apply to snapshots and `create-card`.
+- `subtasks` replaces the whole checklist, a flat list. Every item needs a string `id`, and `done` must be a boolean (422). Items that a client from WorkBoard 0.3.5 or earlier sends with their own subtasks inside are flattened, each just before the ones it held, and their fold state is dropped. An item that omits `delegation` keeps its stored value. Delegated state changes only through the `subtask` lifecycle action: supplying a `delegation` that differs from the stored one, adding one to a new or plain item, or changing `done`/`doneAt` of a delegated item is refused (409 `state`), and so is dropping or retexting another worker's claimed, blocked or completed subtask (409 `owned`). The same rules apply to snapshots and `create-card`.
 - Field edits never check who owns the card. Changing `column` runs the lifecycle `move` action, including its owner, WIP, dependency and state checks.
 - `position` reorders cards within the display order: `before` wins over `after`. It never changes the column.
 - Response adds `card`, `positioned` and `"event": "card-updated"`.
@@ -162,8 +162,8 @@ Body: `{"baseRev", "actor"?, "action", "details": {}}`. If the card has another 
 | `action` | `details` | Allowed from | Effect |
 |---|---|---|---|
 | `start` | `note`? | not Blocked (use `resume`), not Done | In Progress, claimed by the actor. Dependencies and the WIP limit are enforced. A no-op if you already own it. |
-| `submit` | `summary`, `verification` | In Progress | Completes with write-up `summary` + `Verification: verification`. |
-| `complete` | `writeup` | In Progress | Done, outcome `completed`, owner cleared. |
+| `submit` | `summary`, `verification` | Backlog, Task or In Progress | Completes with write-up `summary` + `Verification: verification`, as `complete` does. |
+| `complete` | `writeup` | Backlog, Task or In Progress | Done, outcome `completed`, owner cleared. Outside In Progress, the card's dependencies must be completed (409 `deps`). Every delegated subtask must be completed and accepted (409 `state`). |
 | `block` | `reason`, `until` | not Done | Blocked, owner cleared. |
 | `resume` | `note`, `to`? (`task`\|`inprogress`, default `inprogress`) | Blocked | Leaves Blocked. `inprogress` runs the `start` checks. |
 | `takeover` | `reason` | In Progress | Owner becomes the actor. |
@@ -184,10 +184,10 @@ For `action: "subtask"`, `details` holds `op`, `ids` and the fields that operati
 
 | `op` | Fields | Effect |
 |---|---|---|
-| `add` | `texts` (one or more), `parent`?, `delegated`? (boolean) | Add subtasks; `delegated: true` makes them available delegated work. |
-| `done`, `undone`, `rm` | `ids` | Plain checklist subtasks: any number of ids, any actor; `result` is refused (422). `rm` removes nested subtasks too; removing a delegated subtask needs the card's owner (409 `owned`). |
+| `add` | `texts` (one or more), `delegated`? (boolean) | Add subtasks to the end of the checklist; `delegated: true` makes them available delegated work. |
+| `done`, `undone`, `rm` | `ids` | Plain checklist subtasks: any number of ids, any actor; `result` is refused (422). Removing a delegated subtask needs the card's owner (409 `owned`). |
 | `delegate` | one id | Make an open checklist subtask available. |
-| `configure` | one id, `scope`? (paths relative to the project root), `dependsOn`? (subtask ids), `reviewRequired`? (boolean) | Configure available work. Omitted fields keep their value; `[]` clears a list. `scope` alone also changes claimed or blocked work and keeps its claim, but there it can only grow: a scope that drops a saved path, or `[]`, is 409 `state`. `dependsOn` and `reviewRequired` need available work (409 `state`). |
+| `configure` | one id, `scope`? (paths relative to the project root), `dependsOn`? (subtask ids) | Configure available work. Omitted fields keep their value; `[]` clears a list. `scope` alone also changes claimed or blocked work and keeps its claim, but there it can only grow: a scope that drops a saved path, or `[]`, is 409 `state`. `dependsOn` needs available work (409 `state`). `reviewRequired` is 422: every result needs `accept`. |
 | `claim` | one id | Claim available work whose prerequisites are complete. |
 | `block` | one id, `reason`, `until` | The worker marks claimed work blocked. |
 | `resume` | one id | The worker continues blocked work. |
@@ -207,7 +207,7 @@ A delegated subtask's `delegation` is:
  "blocker": null}
 ```
 
-`state` is `available`, `claimed`, `blocked` or `completed`; `review.state` is `pending`, `accepted` or `changes_requested`; `blocker` is `{"reason", "until", "at", "by"}` while blocked. Plain checklist subtasks have no `delegation`. A card can't be completed while a delegated subtask is unfinished or a required review is not accepted.
+`state` is `available`, `claimed`, `blocked` or `completed`; `review.state` is `pending`, `accepted` or `changes_requested`, and `review.required` is always `true` (boards that stored `false` load as `true`); `blocker` is `{"reason", "until", "at", "by"}` while blocked. Plain checklist subtasks have no `delegation`. A card can't be completed while a delegated subtask is unfinished or its result is not accepted, and a subtask can't be claimed until its prerequisites are completed and accepted.
 
 Adding a note:
 
@@ -290,7 +290,7 @@ Card fields:
 | `column` | `backlog`, `task`, `inprogress`, `done` or `blocked` |
 | `priority` | `critical`, `mid`, `low` or `null` |
 | `tags`, `links` | String arrays |
-| `subtasks` | A tree of `{"id", "text", "done", "createdAt", "doneAt", "collapsed", "children", "by"?, "doneBy"?, "delegation"?}`. `delegation` is described [above](#patch-apicardreflifecycle). |
+| `subtasks` | A flat list of `{"id", "text", "done", "createdAt", "doneAt", "by"?, "doneBy"?, "delegation"?}`. Boards from WorkBoard 0.3.5 or earlier whose subtasks held their own subtasks load as one list, each just before the ones it held. `delegation` is described [above](#patch-apicardreflifecycle). |
 | `dependsOn` | Card ids, set through the `dependencies` action |
 | `activeOwner`, `claimedAt` | Set only while In Progress |
 | `outcome` | `completed` or `canceled` in Done, otherwise `null` |
