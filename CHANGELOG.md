@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-10
+
 ### Changed
 
 - The agent skill is rewritten for `call`: a table of request keys, a whole session and a worker's requests as JSON, and advice to batch related requests into one `call`. It now covers the refusals agents actually hit (`priority` is `critical|mid|low`, `add` only into Backlog or Task, `done` only from In Progress, subtask IDs go in `subtask` rather than `id`), read-only delegated work without `handoff`, and replacing a worker that is gone with `subtask takeover`. Every JSON example and command form in it runs against the CLI. It no longer has a 6 KB size limit.
@@ -137,7 +139,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/Paliverse/workboard/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Paliverse/workboard/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Paliverse/workboard/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Paliverse/workboard/compare/v0.2.1...v0.3.0
