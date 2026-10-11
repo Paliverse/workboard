@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The agent skill is rewritten for `call`: a table of request keys, a whole session and a worker's requests as JSON, and advice to batch related requests into one `call`. It now covers the refusals agents actually hit (`priority` is `critical|mid|low`, `add` only into Backlog or Task, `done` only from In Progress, subtask IDs go in `subtask` rather than `id`), read-only delegated work without `handoff`, and replacing a worker that is gone with `subtask takeover`. Every JSON example and command form in it runs against the CLI. It no longer has a 6 KB size limit.
+- The contributor guide, pull request template and issue forms are gone. Running from source and the tests are described in [docs/install.md](docs/install.md#from-source).
+
 ## [0.3.2] - 2026-10-10
 
 ### Fixed

@@ -64,7 +64,34 @@ Each archive has a top-level `workboard/` directory. Keep the whole directory to
 
 ### From source
 
-See [CONTRIBUTING.md](../.github/CONTRIBUTING.md#development-setup).
+You need Python 3.11 or newer and git. There are no runtime dependencies, so a checkout runs as is:
+
+```sh
+git clone https://github.com/Paliverse/workboard
+cd workboard
+PYTHONPATH=src python -m workboard --version   # PowerShell: $env:PYTHONPATH = "src"; python -m workboard --version
+```
+
+For `workboard`, `wb` and `workboardw` commands, install it editable in a virtual environment: `python -m venv .venv`, then `.venv/bin/python -m pip install -e .` (Windows: `.venv\Scripts\python.exe -m pip install -e .`).
+
+To try changes without touching your real boards, settings or service, point `WORKBOARD_HOME` at a scratch folder and use a port other than 7891:
+
+```sh
+export PYTHONPATH=src WORKBOARD_HOME="$PWD/build/dev-home" WORKBOARD_PORT=7990
+python -m workboard init demo   # a scratch board linked to this checkout
+python -m workboard serve       # http://127.0.0.1:7990/b/demo/
+```
+
+Don't run `setup`, `skills install` or `service install` from a checkout unless you mean to replace your installed skill and service.
+
+Run the tests from the repository root; they use only the standard library and always run in scratch homes on free ports:
+
+```sh
+python -m unittest discover -s tests -t .   # everything
+python -m unittest tests.test_cli -v        # one module
+```
+
+`WORKBOARD_TEST_COMMAND=path/to/workboard` runs the CLI suites against a built binary instead of `python -m workboard`. Building binaries is described in [releasing.md](releasing.md#building-locally).
 
 ## Setup
 
@@ -144,7 +171,7 @@ workboard upgrade
 
 The `script` channel is detected by the `install-receipt.json` next to the executable. The other channels exit 1 with instructions:
 
-- `source`, a git checkout: pull it (`git pull`) and reinstall the development environment (see [CONTRIBUTING.md](../.github/CONTRIBUTING.md#development-setup)).
+- `source`, a git checkout: pull it (`git pull`); an editable install picks the change up (see [From source](#from-source)).
 - `unknown`, anything else, such as a manually unpacked archive: reinstall with `npm install -g @paliverse/workboard` or the install script.
 
 After updating by hand, run `workboard skills install --refresh` and `workboard service restart`.
