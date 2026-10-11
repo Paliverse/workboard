@@ -185,7 +185,7 @@ class FocusedContext(unittest.TestCase):
         handoff = self.json(["handoff", "1", f"--subtask=  {sid}  ", f"--worker={worker}",
                              "--write-scope", "consumer space/δ & 'quoted'.py"])
         self.assertEqual(set(handoff["commands"]), {"read", "claim", "publish", "complete"})
-        self.assertEqual(set(handoff["placeholders"]), {"summary", "result"})
+        self.assertEqual(set(handoff["placeholders"]), {"summary", "body", "result"})
         values = {"summary": "Finding Δ; $(never) & quoted \"yes\"",
                   "result": "Verified Δ; $(never) & 'quoted' evidence"}
         body = "---\nFinding Δ with spaces; $(never) & {literal braces}"
@@ -209,6 +209,33 @@ class FocusedContext(unittest.TestCase):
         self.assertEqual((published["summary"], published["body"], published["by"], published["subtaskId"]),
                          (values["summary"], body, worker, sid))
         completed = execute("complete")["item"]
+        self.assertEqual((completed["delegation"]["result"], completed["doneBy"]), (values["result"], worker))
+
+    def test_handoff_requests_run_through_call_with_multiline_text(self):
+        sid, worker = "-odd Δ & {result} id", "--worker Δ & $(never) {summary}"
+        with core.board_transaction(self.path) as doc:
+            next(item for item, _ in core.iter_subtasks(core.resolve_ref(doc, "1")["subtasks"])
+                 if item["id"] == "available")["id"] = sid
+            core.save(self.path, doc, by="Main")
+        handoff = self.json(["handoff", "1", f"--subtask={sid}", f"--worker={worker}", "--write-scope", "src"])
+        self.assertEqual(set(handoff["requests"]), {"read", "claim", "publish", "complete"})
+        values = {"summary": "Finding Δ; $(never) & \"quoted\"", "body": "Evidence:\n- line 2 & ^%PATH%\n",
+                  "result": "Verified Δ.\nTests: 14/14 & 'quoted'"}
+
+        def send(name):
+            request = {key: values[key] if key in values and value == "{" + key + "}" else value
+                       for key, value in handoff["requests"][name].items()}
+            self.assertEqual(handoff["call"][0], "workboard")
+            result = run(handoff["call"][1:], cwd=self.project, env=self.env, input=json.dumps(request) + "\n")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return last_json(result)
+
+        self.assertEqual(send("read")["focus"]["subtaskId"], sid)
+        self.assertEqual(send("claim")["item"]["delegation"]["owner"], worker)
+        published = send("publish")["item"]
+        self.assertEqual((published["summary"], published["body"], published["by"], published["subtaskId"]),
+                         (values["summary"], values["body"].rstrip(), worker, sid))
+        completed = send("complete")["item"]
         self.assertEqual((completed["delegation"]["result"], completed["doneBy"]), (values["result"], worker))
 
 

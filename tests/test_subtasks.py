@@ -440,6 +440,9 @@ class DelegationWorkflow(unittest.TestCase):
         self.assertEqual(result["actor"], actor)
         return result["items"]
 
+    def attention(self):
+        return {row["id"]: row["attention"] for row in self.json(["digest"])["attention"]}.get(self.ref)
+
     def test_review_request_changes_recompletion_and_acceptance_keep_evidence(self):
         sid, = self.add("Reviewed contribution")
         configured = self.action("configure", sid, "--review-required")
@@ -448,6 +451,7 @@ class DelegationWorkflow(unittest.TestCase):
         first = self.action("done", sid, "--result", "First result with test evidence", actor="Ada")
         self.assertEqual(first["item"]["delegation"]["review"]["state"], "pending")
         self.reject(["done", self.ref, "--writeup", "Premature integration"], "state")
+        self.assertEqual(self.attention(), "REVIEW PENDING")  # Every subtask is ticked, but done would refuse.
         self.reject(["subtask", self.ref, "accept", sid], "owned", "Ada")
         changed = self.action("request-changes", sid, "--reason", "Cover empty input")
         item = changed["item"]
@@ -465,6 +469,7 @@ class DelegationWorkflow(unittest.TestCase):
                           accepted["item"]["delegation"]["review"]["by"]), ("accepted", "Main"))
         repeated = self.action("accept", sid)
         self.assertEqual(repeated["rev"], accepted["rev"])
+        self.assertEqual(self.attention(), "READY TO CLOSE")
         context = self.context()
         results = [entry["body"] for entry in context["card"]["log"]
                    if entry["summary"] == f"result {sid}"]

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `handoff --json` adds `requests`, the worker's four steps (read, claim, publish, complete) as `call` requests, and `call`, the argument array that runs them. Workers fill in `{summary}`, `{body}` and `{result}` and send the requests on stdin, so multi-line findings and results survive npm's Windows `workboard.cmd` shim; the argument-array `commands` stay unchanged. The handoff prompt now shows the `call` form.
+
+### Fixed
+
+- `digest` marked an In Progress card READY TO CLOSE once every subtask was ticked, even while a delegated subtask still awaited its required review, so `done` was then refused. It now says REVIEW PENDING until `done` would pass, and the browser's card badge does the same ("Review pending").
+- In `call`, a subtask action that names the subtask with `id` instead of `subtask` now fails with an error saying to use `subtask`. Before, it said "the following arguments are required: what".
+
+### Changed
+
+- The skill and docs explain that `query --mine` and `digest`'s MINE include Blocked cards you blocked, and that one open `call` can chain requests that need an earlier result's `rev`. They also say to write the remaining review, integration or release work as subtasks, and that Main may take over cards held by its own workers whose sessions ended.
+
 ## [0.3.3] - 2026-10-10
 
 ### Changed

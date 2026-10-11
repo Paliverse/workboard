@@ -1340,12 +1340,9 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
         writeup = _required_text(details.get("writeup"), "completion writeup", code="state")
         if frm != "inprogress":
             raise WorkflowError("completion requires In Progress; start the card first", 409, "state")
-        for st, _ in iter_subtasks(card.get("subtasks") or []):
-            delegation = st.get("delegation")
-            if delegation and (delegation["state"] != "completed" or delegation["review"]["required"]
-                               and delegation["review"]["state"] != "accepted"):
-                raise WorkflowError("finish and accept all delegated work before completing the card",
-                                    409, "state")
+        if unaccepted_delegations(card):
+            raise WorkflowError("finish and accept all delegated work before completing the card",
+                                409, "state")
         destination = "done"
     elif action == "block":
         reason = _required_text(details.get("reason"), "block reason")
@@ -2403,12 +2400,20 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
     return [selected]
 
 
+def unaccepted_delegations(card: dict) -> list[dict]:
+    """Delegated subtasks that keep the card from Done: unfinished, or awaiting a required review."""
+    return [st for st, _ in iter_subtasks(card.get("subtasks") or [])
+            if (delegation := st.get("delegation")) and (
+                delegation["state"] != "completed"
+                or delegation["review"]["required"] and delegation["review"]["state"] != "accepted")]
+
+
 def stage_attention(card: dict, stale_hours: int = 24) -> str | None:
     if card.get("column") != "inprogress":
         return None
     subtasks = [subtask for subtask, _ in iter_subtasks(card.get("subtasks") or [])]
     if subtasks and all(subtask.get("done") for subtask in subtasks):
-        return "READY TO CLOSE"
+        return "REVIEW PENDING" if unaccepted_delegations(card) else "READY TO CLOSE"
     try:
         changed = datetime.datetime.fromisoformat(
             str(card.get("updatedAt") or card.get("createdAt") or "").replace("Z", "+00:00")

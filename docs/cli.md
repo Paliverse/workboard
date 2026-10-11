@@ -124,6 +124,8 @@ Each request produces exactly one compact JSON line, flushed immediately, matchi
 
 One `call` process keeps the parsed board between requests and parses it again only after a commit, so batch related requests into one `call` rather than starting a process per command. On a 790-card board, a `context` request inside `call` took about 7 ms, against about 190 ms as a separate command.
 
+`call` reads and answers each request as soon as it arrives. A script whose next request needs an earlier result, such as the `rev` for `--expected-rev`, keeps one `call` open: it writes a request, reads that request's result line, then writes the next.
+
 `op` is a verb (`note`, `start`) or a dotted action (`subtask.claim`, `comment.edit`, `attachment.get`). `card` supplies the card reference for card verbs; it is optional for `inbox`. Special positional fields are:
 
 | Operation | Fields |
@@ -183,6 +185,8 @@ Print the board the current directory (or `--board`) resolves to: `<name> — <b
 | `list [--column C] [--tag X] [--priority P]` | A human listing of cards. |
 | `query [--column C] [--tag X] [--priority P] [--owner NAME \| --mine] [--since-days N] [--limit N] [--fields LIST]` | A JSON projection: `{"ok", "rev", "cards": [...]}`. `--mine` filters by the effective actor. A card's holder is its owner or, for Blocked cards, the actor who blocked it. `--fields` is a comma list of `num,id,title,column,priority,tags,outcome,owner,deps,changedRev,createdAt,updatedAt,doneAt,origin` (default `num,title,column`). Unknown names fail with `invalid`. One `query --fields num,title,owner,tags,changedRev` replaces a `context` per card when you only need those fields, and its `rev` guards each card it lists. |
 | `search TERMS...` | Cards matching every term (case-insensitive substring) in any text, including comments and every `log` entry's summary and body. Each search scans the whole board; to match many keywords against titles or tags, filter one `query --json` result locally instead. |
+
+Attention markers on In Progress cards: `READY TO CLOSE` when every subtask is done and `done` would pass the delegated-work check; `REVIEW PENDING` when every subtask is done but a delegated subtask still awaits a required review, so `done` would fail with `state`; `REVIEW STATE` when the card hasn't changed for 24 hours. `digest --json` lists them in `attention`.
 
 `P` is `critical`, `mid` or `low`.
 
@@ -303,7 +307,7 @@ The owner of an In Progress card (Main) can hand complementary pieces of it to o
 - The subtask must be delegated and available or already claimed by that worker (`state`; `owned` when another worker holds it), and its prerequisites must be complete (`deps`).
 - The write boundary is `--write-scope` (repeatable), else the subtask's saved scope; with neither, it fails with `invalid`. Paths are relative to the board's project root, and the prompt says so. `--peer` names other workers and how to reach them.
 
-Without `--json` it prints only the copy-ready prompt, which already contains the commands. `--json` returns `{"ok", "board", "rev", "cardId", "num", "title", "parentOwner", "worker", "assignment", "scopeWarnings", "ancestorIds", "writeScope", "peers", "origin", "notes", "boardName", "commands", "placeholders", "prompt"}`. `commands` holds four argument arrays, which name the card by its number (numbers are never reused):
+Without `--json` it prints only the copy-ready prompt, which shows the worker's steps as `call` requests. `--json` returns `{"ok", "board", "rev", "cardId", "num", "title", "parentOwner", "worker", "assignment", "scopeWarnings", "ancestorIds", "writeScope", "peers", "origin", "notes", "boardName", "commands", "call", "requests", "placeholders", "prompt"}`. `commands` holds four argument arrays, which name the card by its number (numbers are never reused):
 
 ```json
 {"read":     ["workboard", "--board=demo", "--actor=worker-a", "context", "12", "--subtask=s-4", "--json"],
@@ -313,6 +317,15 @@ Without `--json` it prints only the copy-ready prompt, which already contains th
 ```
 
 Replace only `{summary}` and `{result}` (described in `placeholders`) and keep every other element literal. Run each array with its elements as separate arguments; in a shell, quote every element. `publish` reads the note body from standard input.
+
+`requests` holds the same four steps as [`call`](#call) requests, and `call` is the argument array that runs them, for example `["workboard", "--board=demo", "--actor=worker-a", "call"]`. Send each request as a JSON line on its standard input after replacing the `{summary}`, `{body}` and `{result}` values. No text passes through a shell, so multi-line notes and results arrive intact through npm's Windows `workboard.cmd` shim too:
+
+```json
+{"read":     {"op": "context", "card": 12, "subtask": "s-4"},
+ "claim":    {"op": "subtask.claim", "card": 12, "subtask": "s-4"},
+ "publish":  {"op": "note", "card": 12, "subtask": "s-4", "summary": "{summary}", "body": "{body}"},
+ "complete": {"op": "subtask.done", "card": 12, "subtask": "s-4", "result": "{result}"}}
+```
 
 ### Inbox
 

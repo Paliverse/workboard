@@ -904,10 +904,17 @@ const WB = window.WB = {};
   const isReady = c => c.column === 'task' && !c.activeOwner && depsSatisfied(c);
   const inRework = c => !!c.reworkReason && c.column !== 'done';
   const subtaskStats = card => {
-    let done = 0, total = 0;
-    const walk = list => { for (const s of list || []) { total++; if (s.done) done++; walk(s.children); } };
+    let done = 0, total = 0, unaccepted = 0;  // unaccepted: delegated work that keeps the card from Done (core.unaccepted_delegations)
+    const walk = list => {
+      for (const s of list || []) {
+        total++; if (s.done) done++;
+        const d = s.delegation;
+        if (d && (d.state !== 'completed' || (d.review && d.review.required && d.review.state !== 'accepted'))) unaccepted++;
+        walk(s.children);
+      }
+    };
     walk(card.subtasks);
-    return { done, total };
+    return { done, total, unaccepted };
   };
   WB.facts = { depsSatisfied, isReady, inRework, subtaskStats };
 
@@ -1249,7 +1256,7 @@ const WB = window.WB = {};
     else if (inRework(card)) out.push(['Rework', 'var(--amber)']);
     if (card.column === 'inprogress') {
       const st = subtaskStats(card);
-      if (st.total && st.done === st.total) out.push(['Ready to close', 'var(--green)']);
+      if (st.total && st.done === st.total) out.push(st.unaccepted ? ['Review pending', 'var(--amber)'] : ['Ready to close', 'var(--green)']);
       else if (Date.now() - Date.parse(card.updatedAt) > 86400000) out.push(['Stale', 'var(--amber)']);
     }
     if ((card.column === 'task' || card.column === 'backlog') && (card.dependsOn || []).length && !depsSatisfied(card)) out.push(['Waiting', 'var(--violet)']);
