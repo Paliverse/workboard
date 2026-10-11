@@ -2,4 +2,4 @@
 # Copyright 2026 Paliverse
 """WorkBoard: a local kanban board shared by people and coding agents."""
 
-__version__ = "0.3.6"
+__version__ = "0.3.7"

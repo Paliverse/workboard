@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-10-11
+
 ### Fixed
 
 - Blocking a card hid its `review`, `blocker` and `claim` rows from `inbox`, because `block` clears the owner, so Main lost sight of finished and running work. The actor who blocked the card now still sees them, by the same holder rule as `digest`'s MINE and `query --mine`. `finding` rows wait until the card is In Progress again, since `ack` needs it. The browser shows a Blocked card's results without Accept and Request changes buttons until it is resumed, since review needs In Progress.
@@ -240,7 +242,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/Paliverse/workboard/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/Paliverse/workboard/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/Paliverse/workboard/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/Paliverse/workboard/compare/v0.3.3...v0.3.4
