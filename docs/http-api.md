@@ -121,8 +121,8 @@ Every JSON write response includes `ok`, `rev`, `savedAt`, `savedBy` and the sav
 | `GET api/git` | `{"state": "clean"\|"dirty"\|"not_repo"\|"error"\|"unavailable", "root", "branch", "head", "subject", "ahead", "behind", "staged", "unstaged", "untracked", "conflicted", "files": [{"path", "index", "worktree"}] (at most 200), "truncated", "error", "warning"}`. Never fetches or writes. Git runs with an 8 s budget, so call it on demand rather than on a timer. |
 | `GET api/cards` | `{"column", "cards", "total", "rev"}`. `limit` is clamped to 1–250 (default 50) and `offset` must be 0 or more. Invalid values are 400. |
 | `GET api/card/{ref}` | `{"card", "rev"}` |
-| `GET api/card/{ref}/context` | `{"ok", "board", "schemaVersion", "rev", "card", "dependencies": [{"id", "num", "title", "column", "outcome", "satisfied"}], "missingDependencies", "dependents": [{"num", "id", "title", "column", "outcome"}], "ready", "focus"?, "omitted"?}`. `?full=1` includes every subtask, history and log entry and every comment. By default the card keeps the 10 most recent done subtasks, 25 history entries, the newest 10 log entries and the newest 10 comments, and `omitted` counts the rest (`doneSubtasks`, `history`, plus `log` and `comments` when any were dropped). `?subtask=ID` focuses that subtask's subtree and its ancestors, and `?assignedTo=ACTOR` the subtrees that actor holds; the same comment window, attachments, notes and dependencies are kept, and focused done subtasks are never trimmed. Focus adds `focus: {"subtaskId" or "assignedTo", "matchedSubtaskIds", "ancestorIds", "scopeWarnings", "prerequisites"}` and `omitted.unrelatedSubtasks`. Both selectors together are 422, an unknown subtask 404, and a repeated parameter or a `full` other than `0`/`1` 422; other parameters are ignored. |
-| `GET api/card/{ref}/scopes?subtask=ID` | `{"rev", "conflicts": [{"cardId", "num", "subtaskId", "owner", "state", "overlaps": [{"scope", "otherScope"}]}]}`: claimed or blocked delegated subtasks on any card that isn't Done whose saved scopes overlap this subtask's. Advisory only. A plain checklist subtask is 409 `state`. |
+| `GET api/card/{ref}/context` | `{"ok", "board", "schemaVersion", "rev", "num", "card", "dependencies": [{"id", "num", "title", "column", "outcome", "satisfied"}], "missingDependencies", "dependents": [{"num", "id", "title", "column", "outcome"}], "ready", "focus"?, "omitted"?}`. `?full=1` includes every subtask, history and log entry and every comment. By default the card keeps the 10 most recent done subtasks, 25 history entries, the newest 10 log entries and the newest 10 comments, and `omitted` counts the rest (`doneSubtasks`, `history`, plus `log` and `comments` when any were dropped). `?subtask=ID` focuses that subtask's subtree and its ancestors, and `?assignedTo=ACTOR` the subtrees that actor holds; the same comment window, attachments, notes and dependencies are kept, and focused done subtasks are never trimmed. Focus adds `focus: {"subtaskId" or "assignedTo", "matchedSubtaskIds", "ancestorIds", "scopeWarnings", "prerequisites"}` and `omitted.unrelatedSubtasks`. Both selectors together are 422, an unknown subtask 404, and a repeated parameter or a `full` other than `0`/`1` 422; other parameters are ignored. |
+| `GET api/card/{ref}/scopes?subtask=ID` | `{"rev", "conflicts": [{"cardId", "num", "subtaskId", "owner", "state", "claimedAt", "lastActivityAt", "overlaps": [{"scope", "otherScope"}]}]}`: claimed or blocked delegated subtasks on any card that isn't Done whose saved scopes overlap this subtask's. `lastActivityAt` is the latest of the claim and that subtask's notes; an old one suggests a worker that is gone. Advisory only. A plain checklist subtask is 409 `state`. |
 | `GET api/inbox?actor=ACTOR` | `{"rev", "items"}` for `actor` (default `user`), the same rows as [`workboard inbox`](cli.md#inbox): `review`, `blocker`, `changes_requested` and `finding`. An unknown or repeated query parameter is 400. |
 
 ### `POST board.json`: snapshot save
@@ -172,7 +172,7 @@ Body: `{"baseRev", "actor"?, "action", "details": {}}`. If the card has another 
 | `reopen` | `reason`, `to`? (`task`\|`inprogress`), `as`? (`task`\|`bug`\|`improve`) | any | Like `rework`, moving to `to` (default `task`). |
 | `bug` | `reason` | any | In Progress with the `bug` tag and a `fix bug:` subtask. |
 | `improve` | `text` | any | In Progress with an improvement subtask. |
-| `move` | `to`, `writeup`?, `note`? | not Blocked, not Done | To Done runs `complete`, to In Progress runs `start`, and moving to Blocked is 422 (use `block`). |
+| `move` | `to`, `writeup`?, `note`? | not Blocked, not Done | To Done runs `complete`, to In Progress runs `start`, and moving to Blocked is 409 `state` (use `block`). |
 | `dependencies` | `ids` (the full list; `[]` clears) | any | Rejects self-dependencies, unknown ids and cycles. |
 | `workpad` | | any | Adds missing acceptance and verification sections to the pinned notes. |
 | `note` | `summary`, `body`? | any | Appends an entry to the card's `log` (see [Notes timeline](#notes-timeline)). `summary` is trimmed and must be one line of 1–160 characters; `body` is markdown of at most 32,000 characters (`null` or omitted means `""`). Otherwise 422. |
@@ -185,9 +185,9 @@ For `action: "subtask"`, `details` holds `op`, `ids` and the fields that operati
 | `op` | Fields | Effect |
 |---|---|---|
 | `add` | `texts` (one or more), `parent`?, `delegated`? (boolean) | Add subtasks; `delegated: true` makes them available delegated work. |
-| `done`, `undone`, `rm` | `ids` | Plain checklist subtasks: any number of ids, any actor. `rm` removes nested subtasks too. |
+| `done`, `undone`, `rm` | `ids` | Plain checklist subtasks: any number of ids, any actor; `result` is refused (422). `rm` removes nested subtasks too; removing a delegated subtask needs the card's owner (409 `owned`). |
 | `delegate` | one id | Make an open checklist subtask available. |
-| `configure` | one id, `scope`? (paths relative to the project root), `dependsOn`? (subtask ids), `reviewRequired`? (boolean) | Configure available work. Omitted fields keep their value; `[]` clears a list. `scope` alone also changes claimed or blocked work and keeps its claim; `dependsOn` and `reviewRequired` need available work (409 `state`). |
+| `configure` | one id, `scope`? (paths relative to the project root), `dependsOn`? (subtask ids), `reviewRequired`? (boolean) | Configure available work. Omitted fields keep their value; `[]` clears a list. `scope` alone also changes claimed or blocked work and keeps its claim, but there it can only grow: a scope that drops a saved path, or `[]`, is 409 `state`. `dependsOn` and `reviewRequired` need available work (409 `state`). |
 | `claim` | one id | Claim available work whose prerequisites are complete. |
 | `block` | one id, `reason`, `until` | The worker marks claimed work blocked. |
 | `resume` | one id | The worker continues blocked work. |
@@ -195,7 +195,7 @@ For `action: "subtask"`, `details` holds `op`, `ids` and the fields that operati
 | `undone` | one id | The worker reopens completed work that was not accepted. |
 | `release` | one id, `reason` | The worker gives the work back. |
 | `takeover` | one id, `reason` | Take claimed or blocked work from its worker. |
-| `accept` | one id | The card's owner accepts a completed result. |
+| `accept` | one or more ids | The card's owner accepts completed results, all or none. |
 | `request-changes` | one id, `reason` | The card's owner sends a completed result back to its worker. |
 
 A delegated subtask's `delegation` is:
@@ -230,7 +230,7 @@ A stale `baseRev` is 409 like any other write.
 
 ### `PATCH api/card/{ref}/inbox`
 
-Body: `{"baseRev", "actor"?, "noteIds": ["<note id>", …]}`. Acknowledges findings from the actor's inbox in one write, as [`workboard ack`](cli.md#inbox) does: only the owner of the In Progress card may (409 `owned`), every id must be a finding on that card (404), and repeating an id is harmless. Acknowledgements are stored in the card's `inboxAcknowledged` and add no history entry. The response adds `card`.
+Body: `{"baseRev", "actor"?, "noteIds": ["<note id>", …]}`. Acknowledges findings from the actor's inbox in one write, as [`workboard ack`](cli.md#inbox) does: the card must be In Progress (409 `state`) and only its owner may (409 `owned`), every id must be a finding on that card (404), and repeating an id is harmless. Acknowledgements are stored in the card's `inboxAcknowledged` and add no history entry. The response adds `card`.
 
 ### `GET api/export`
 

@@ -1187,9 +1187,9 @@ def unique_id(doc: dict, base: str) -> str:
     return validate_new_identity(doc, f"{slugify(base)}-{uuid.uuid4().hex}")
 
 
-def _required_text(value, label: str, limit: int | None = None, code: str | None = None) -> str:
+def _required_text(value, label: str, limit: int | None = None) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise WorkflowError(f"{label} must be nonempty text", code=code)
+        raise WorkflowError(f"{label} must be nonempty text")
     if limit is not None and len(value) > limit:
         raise WorkflowError(f"{label} must be at most {limit} characters")
     return value.strip()
@@ -1203,9 +1203,15 @@ def _dependencies_satisfied(card: dict, by_id: dict) -> bool:
 
 def _require_start(doc: dict, card: dict, ids: list | None = None) -> None:
     by_id = {c["id"]: c for c in doc["cards"]}
-    candidate = card if ids is None else {"dependsOn": ids}
-    if not _dependencies_satisfied(candidate, by_id):
-        raise WorkflowError("dependencies must exist and be completed, not canceled", 409, "deps")
+    unmet = [f"#{by_id[dep]['num']} ({'canceled' if by_id[dep]['column'] == 'done' else by_id[dep]['column']})"
+             if dep in by_id else f"{dep} (missing)"
+             for dep in ((card.get("dependsOn") or []) if ids is None else ids)
+             if not _dependencies_satisfied({"dependsOn": [dep]}, by_id)]
+    if unmet:
+        hint = ("finish them first; a canceled or missing one never completes, so change dependencies"
+                if ids is None else f"{fmt_ref(card)} is In Progress and can't take an unfinished "
+                "prerequisite; block it until they finish")
+        raise WorkflowError(f"unmet prerequisites: {', '.join(unmet)}; {hint}", 409, "deps")
     column = next((c for c in doc["columns"] if c["id"] == "inprogress"), {})
     limit = column.get("wipLimit")
     if card["column"] != "inprogress" and type(limit) is int and limit > 0:
@@ -1263,19 +1269,36 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
     if action == "note":   # timeline entries carry no ownership guard, like comments
         append_note(card, details.get("summary"), details.get("body"), by)
         return card
-    if action != "takeover" and owner and owner != by:
-        raise WorkflowError(f"owned by {owner}; use takeover with a reason", 409, "owned")
-    if action == "takeover":
-        reason = _required_text(details.get("reason"), "takeover reason")
-        if frm != "inprogress":
-            raise WorkflowError("takeover requires an In Progress card", 409, "state")
-        if owner == by:
-            return card
-        card["activeOwner"], card["claimedAt"] = by, now_iso()
-        hist(card, "takeover", by=by, note=f"{owner or 'unowned'} → {by}: {reason}")
-        touch(card)
-        return card
-    if action == "dependencies":
+    # Input first, so a malformed request is invalid for anyone; then authority (owned), then state.
+    destination, note, event, reason = frm, details.get("note"), action, None
+    if note is not None and not isinstance(note, str):
+        raise WorkflowError("note must be text")
+    if action in ("takeover", "block", "cancel", "rework", "reopen", "bug", "improve"):
+        reason = _required_text(details.get("text" if action == "improve" else "reason"), f"{action} reason")
+    if action == "block":
+        until = _required_text(details.get("until"), "unblock condition")
+    elif action == "complete":
+        writeup = _required_text(details.get("writeup"), "completion writeup")
+    elif action == "resume":
+        note = _required_text(note, "resolution note")
+        destination = details.get("to", "inprogress")
+        if destination not in ("task", "inprogress"):
+            raise WorkflowError("resume.to must be task or inprogress")
+    elif action == "reopen":
+        destination = details.get("to", "task")
+        if destination not in ("task", "inprogress"):
+            raise WorkflowError("reopen.to must be task or inprogress")
+        if details.get("as", "task") not in ("task", "bug", "improve"):
+            raise WorkflowError("reopen.as must be task, bug, or improve")
+    elif action == "move":
+        target = details.get("to")
+        if not isinstance(target, str):
+            raise WorkflowError("move.to must name a core column")
+        destination = slugify(target, 24)
+        destination = {"in-progress": "inprogress"}.get(destination, destination)
+        if destination not in CORE_COLUMN_ID_SET:
+            raise WorkflowError("unknown core column; use " + ", ".join(CORE_COLUMN_IDS))
+    elif action == "dependencies":
         ids = details.get("ids")
         if not isinstance(ids, list) or any(not isinstance(i, str) or not i for i in ids):
             raise WorkflowError("dependencies.ids must be a list of card IDs")
@@ -1294,6 +1317,18 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
                 continue
             seen.add(dependency)
             pending.extend(by_id.get(dependency, {}).get("dependsOn") or [])
+    if action != "takeover" and owner and owner != by:
+        raise WorkflowError(f"owned by {owner}; use takeover with a reason", 409, "owned")
+    if action == "takeover":
+        if frm != "inprogress":
+            raise WorkflowError("takeover requires an In Progress card", 409, "state")
+        if owner == by:
+            return card
+        card["activeOwner"], card["claimedAt"] = by, now_iso()
+        hist(card, "takeover", by=by, note=f"{owner or 'unowned'} → {by}: {reason}")
+        touch(card)
+        return card
+    if action == "dependencies":
         if frm == "inprogress":
             _require_start(doc, card, ids)
         if ids == (card.get("dependsOn") or []):
@@ -1302,24 +1337,13 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
         hist(card, "dependencies", by=by, note=", ".join(ids) or "cleared")
         touch(card)
         return card
-
-    destination, note, event = frm, details.get("note"), action
-    if note is not None and not isinstance(note, str):
-        raise WorkflowError("note must be text")
     if action == "move":
-        target = details.get("to")
-        if not isinstance(target, str):
-            raise WorkflowError("move.to must name a core column")
-        destination = slugify(target, 24)
-        destination = {"in-progress": "inprogress"}.get(destination, destination)
-        if destination not in CORE_COLUMN_ID_SET:
-            raise WorkflowError("unknown core column; use " + ", ".join(CORE_COLUMN_IDS))
         if destination == frm and frm != "inprogress":
             return card
         if destination == "blocked":
-            raise WorkflowError("use block with a reason and until condition", code="state")
+            raise WorkflowError("use block with a reason and until condition", 409, "state")
         if frm == "blocked":
-            raise WorkflowError("use resume with a resolution note", code="state")
+            raise WorkflowError("use resume with a resolution note", 409, "state")
         if frm == "done":
             raise WorkflowError("leaving Done requires reasoned reopen or rework", 409, "state")
         if destination == "done":
@@ -1329,7 +1353,7 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
             action = "start"
     if action == "start":
         if frm == "blocked":
-            raise WorkflowError("use resume with a resolution note", code="state")
+            raise WorkflowError("use resume with a resolution note", 409, "state")
         if frm == "done":
             raise WorkflowError("leaving Done requires reasoned reopen or rework", 409, "state")
         if frm == "inprogress" and owner == by:
@@ -1337,44 +1361,32 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
         _require_start(doc, card)
         destination = "inprogress"
     elif action == "complete":
-        writeup = _required_text(details.get("writeup"), "completion writeup", code="state")
         if frm != "inprogress":
             raise WorkflowError("completion requires In Progress; start the card first", 409, "state")
-        if unaccepted_delegations(card):
-            raise WorkflowError("finish and accept all delegated work before completing the card",
-                                409, "state")
+        if blocking := unaccepted_delegations(card):
+            raise WorkflowError(f"delegated work keeps {fmt_ref(card)} open: " + "; ".join(
+                f"{st['id']} awaits review (subtask.accept or subtask.request-changes)"
+                if st["delegation"]["state"] == "completed" else f"{st['id']} is {st['delegation']['state']}"
+                + (f" by {st['delegation']['owner']}" if st["delegation"]["owner"] else "")
+                for st in blocking), 409, "state")
         destination = "done"
     elif action == "block":
-        reason = _required_text(details.get("reason"), "block reason")
-        until = _required_text(details.get("until"), "unblock condition")
         if frm == "done":
             raise WorkflowError("reopen Done work before blocking it", 409, "state")
         destination, event, note = "blocked", "blocked", f"{reason}; unblocks when {until}"
     elif action == "resume":
-        note = _required_text(details.get("note"), "resolution note")
-        destination = details.get("to", "inprogress")
         if frm != "blocked":
             raise WorkflowError("resume requires a Blocked card", 409, "state")
-        if destination not in ("task", "inprogress"):
-            raise WorkflowError("resume.to must be task or inprogress")
         if destination == "inprogress":
             _require_start(doc, card)
         event = "unblocked"
     elif action == "cancel":
-        reason = _required_text(details.get("reason"), "cancel reason")
         if frm == "done":
             raise WorkflowError("only nonterminal work can be canceled; rework it first", 409, "state")
         destination, note = "done", reason
     elif action in ("rework", "reopen", "bug", "improve"):
-        reason = _required_text(details.get("text") if action == "improve"
-                                else details.get("reason"), f"{action} reason")
-        destination = "inprogress" if action in ("bug", "improve") else "task"
-        if action == "reopen":
-            destination = details.get("to", "task")
-            if destination not in ("task", "inprogress"):
-                raise WorkflowError("reopen.to must be task or inprogress")
-            if details.get("as", "task") not in ("task", "bug", "improve"):
-                raise WorkflowError("reopen.as must be task, bug, or improve")
+        if action != "reopen":
+            destination = "inprogress" if action in ("bug", "improve") else "task"
         if destination == "inprogress":
             _require_start(doc, card)
         note = reason
@@ -1654,7 +1666,7 @@ def _card_context_from_doc(doc: dict, board_path: Path, ref: str, full: bool = F
     dependents = [{key: item.get(key) for key in ("num", "id", "title", "column", "outcome")}
                   for item in doc["cards"] if card["id"] in item["dependsOn"]]
     context = {"ok": True, "board": str(Path(board_path).absolute()), "schemaVersion": doc["schemaVersion"],
-               "rev": doc["rev"], "card": card, "dependencies": dependencies,
+               "rev": doc["rev"], "num": card["num"], "card": card, "dependencies": dependencies,
                "missingDependencies": missing, "dependents": dependents,
                "ready": card["column"] == "task" and not card.get("activeOwner")
                         and _dependencies_satisfied(card, by_id)}
@@ -1723,26 +1735,24 @@ def subtask_handoff(board_path: Path, ref: str, subtask_id: str, by: str,
     doc = load(board_path)
     context = _card_context_from_doc(doc, board_path, ref, subtask_id=subtask_id)
     card, parent = context["card"], resolve_ref(doc, context["card"]["id"])
-    if card["column"] != "inprogress" or not card.get("activeOwner"):
-        raise WorkflowError("handoff requires an owned In Progress parent", 409, "state")
-    if card["activeOwner"] != by:
-        raise WorkflowError("only the parent owner can prepare a handoff", 409, "owned")
+    _require_parent_owner(card, by, "handoff")
     item = _subtask_index(card)[context["focus"]["subtaskId"]][0]
-    assignment = item.get("delegation") or {}
-    scopes = (_norm_scope(write_scope)
-              if write_scope is not None else list(assignment.get("scope") or []))
-    if not scopes:
-        raise WorkflowError("save an assignment scope with subtask configure or provide --write-scope")
-    if assignment.get("state") not in ("available", "claimed"):
-        raise WorkflowError("handoff requires available or claimed delegated work", 409, "state")
-    if assignment.get("owner") and assignment["owner"] != worker:
-        raise WorkflowError("subtask is claimed by a different worker", 409, "owned")
-    if not _subtask_ready(_subtask_index(parent), item["id"]):
-        raise WorkflowError("subtask prerequisites are not complete and accepted", 409, "deps")
+    sid, assignment = item["id"], item.get("delegation")
+    if assignment is None:
+        raise WorkflowError(f"{sid} is a plain checklist item; delegate it first", 409, "state")
+    # An empty scope means read-only work; claimed or blocked work held by another actor is a takeover.
+    scopes = _norm_scope(write_scope) if write_scope is not None else list(assignment["scope"])
+    state, holder = assignment["state"], assignment["owner"]
+    previous = holder if state in ("claimed", "blocked") and holder != worker else None
+    if state not in ("available", "claimed") and previous is None:
+        raise WorkflowError(f"{sid} is {state}" + (f" by {holder}" if holder else "") + "; hand off available "
+                            "work, or claimed or blocked work held by another worker", 409, "state")
+    if unmet := _unmet_prerequisites(_subtask_index(parent), sid):
+        raise WorkflowError(f"{sid} waits on prerequisites: {'; '.join(unmet)}", 409, "deps")
     return {"ok": True, "board": context["board"], "rev": context["rev"],
             "cardId": card["id"], "num": card["num"], "title": card["title"],
-            "parentOwner": by, "worker": worker, "assignment": item,
-            "scopeWarnings": scope_conflicts(doc, parent, item["id"], scope=scopes),
+            "parentOwner": by, "worker": worker, "previousOwner": previous, "assignment": item,
+            "scopeWarnings": scope_conflicts(doc, parent, sid, scope=scopes),
             "ancestorIds": context["focus"]["ancestorIds"], "writeScope": scopes,
             "peers": peer_rows, "origin": card.get("origin"), "notes": card["notes"]}
 
@@ -1830,7 +1840,7 @@ def attachment_read(board_path: Path, ref: str, attachment_id: str) -> tuple:
 def require_export_destination(destination, board_path: Path) -> Path:
     path = require_write_scope(destination)
     if path.exists() or path.is_symlink():
-        raise WorkflowError(f"export destination already exists: {path}", 409)
+        raise WorkflowError(f"export destination already exists: {path}; choose a new path")
     managed = [Path(board_path).absolute().parent, home(), Path(__file__).resolve().parent]
     if any(path.is_relative_to(root.resolve(strict=False)) for root in managed):
         raise WorkflowError("exports cannot target managed board, registry, or runtime storage", 403)
@@ -1971,7 +1981,18 @@ def guard_card_edit(card: dict, by: str) -> None:
     by = validate_actor(by)
     owner = card.get("activeOwner")
     if owner and owner != by:
-        raise WorkflowError(f"owned by {owner}; use takeover with a reason", 409, "owned")
+        raise WorkflowError(f"only {owner}, the card's owner, can add, delegate or remove assignments; "
+                            f"ask {owner}", 409, "owned")
+
+
+def _require_parent_owner(card: dict, by: str, action: str) -> None:
+    """Parent-owner verbs need an In Progress card (state) owned by the caller (owned)."""
+    owner = card.get("activeOwner")
+    if card.get("column") != "inprogress" or not owner:
+        raise WorkflowError(f"{action} needs {fmt_ref(card)} In Progress (it is {card.get('column')}); "
+                            "start or resume it first", 409, "state")
+    if owner != by:
+        raise WorkflowError(f"{action} is for {fmt_ref(card)}'s owner, {owner}; ask {owner}", 409, "owned")
 
 
 def guard_subtask_replacement(current, incoming, by: str) -> None:
@@ -2045,22 +2066,24 @@ def _validate_subtask_dependencies(index: dict) -> None:
             pending.extend((dependency, False) for dependency in edges[current])
 
 
-def _subtask_ready(index: dict, subtask_id: str) -> bool:
+def _unmet_prerequisites(index: dict, subtask_id: str) -> list[str]:
+    """Transitive prerequisites of one delegated subtask that are not done yet, each with its state."""
     pending = list((index[subtask_id][0].get("delegation") or {}).get("dependsOn") or [])
-    seen = set()
+    seen, unmet = set(), []
     while pending:
         dependency = pending.pop()
         if dependency in seen:
             continue
         seen.add(dependency)
         delegation = index[dependency][0].get("delegation") or {}
-        if delegation.get("state") != "completed":
-            return False
-        review = delegation.get("review") or {}
-        if review.get("required") and review.get("state") != "accepted":
-            return False
+        state, review = delegation.get("state"), delegation.get("review") or {}
+        if state != "completed":
+            needs = "completion and acceptance" if review.get("required") else "completion"
+            unmet.append(f"{dependency} is {state} (needs {needs})")
+        elif review.get("required") and review.get("state") != "accepted":
+            unmet.append(f"{dependency} is completed (needs acceptance)")
         pending.extend(delegation.get("dependsOn") or [])
-    return True
+    return unmet
 
 
 def _scope_overlaps(left: str, right: str) -> bool:
@@ -2092,8 +2115,12 @@ def scope_conflicts(doc: dict, card: dict, subtask_id: str, *, scope: list[str] 
             overlaps = [(left, right) for left in target_scope for right in delegation.get("scope") or []
                         if _scope_overlaps(left, right)]
             if overlaps:
+                claimed = delegation.get("claimedAt")
+                activity = [entry["at"] for entry in other_card.get("log") or [] if entry.get("subtaskId") == sid]
                 rows.append({"cardId": other_card["id"], "num": other_card["num"],
                              "subtaskId": sid, "owner": delegation.get("owner"), "state": delegation["state"],
+                             "claimedAt": claimed, "lastActivityAt": max(filter(None, [claimed, *activity]),
+                                                                         default=None),
                              "overlaps": [{"scope": left, "otherScope": right} for left, right in overlaps]})
     return rows
 
@@ -2110,8 +2137,8 @@ def inbox(doc: dict, by: str, ref=None) -> list[dict]:
             if not delegation:
                 continue
             sid, review, state, owner = item["id"], delegation["review"], delegation["state"], delegation["owner"]
-            if (main and state == "completed" and owner != by and review["required"]
-                    and review["state"] == "pending"):
+            # Every unaccepted result reaches the parent owner; review.required says whether Done waits on it.
+            if main and state == "completed" and owner != by and review["state"] != "accepted":
                 rows.append({"kind": "review", "num": card["num"], "cardId": card["id"],
                              "title": card["title"], "text": item["text"], "result": delegation["result"],
                              "subtaskId": sid, "owner": owner, "review": review})
@@ -2131,21 +2158,23 @@ def inbox(doc: dict, by: str, ref=None) -> list[dict]:
 
 
 def publish_subtask_note(doc: dict, card: dict, subtask_id: str, summary, body, by: str) -> dict:
-    """Append a note attributed to a delegated assignment by its current claimant or the parent owner."""
+    """Append a note about one subtask by the card's owner, or by the worker holding that delegated
+    subtask (claimed, blocked or completed, so rechecks after review need no reopen)."""
     by = validate_actor(by)
     subtask_id = _required_text(subtask_id, "subtask ID")
+    validate_note(summary, body)  # Input errors first, so one round trip reports them.
     if not any(candidate is card for candidate in doc.get("cards") or []):
         raise WorkflowError("subtask note must use the current board card", 409)
-    if card.get("column") != "inprogress" or not card.get("activeOwner"):
-        raise WorkflowError("subtask note requires an owned In Progress parent", 409, "state")
+    # No column gate: the card's owner may note any subtask, and a holder may recheck after Done or Blocked.
     item = _subtask_index(card).get(subtask_id)
     if item is None:
         raise WorkflowError(f"subtask '{subtask_id}' not found", 404)
     delegation = item[0].get("delegation")
-    claimant = delegation and delegation["state"] in ("claimed", "blocked") and delegation["owner"] == by
-    if not (claimant or (delegation and card["activeOwner"] == by)):
-        raise WorkflowError("only the current claimant or the parent owner can publish for this assignment",
-                            409, "owned")
+    holder = delegation and delegation["state"] in ("claimed", "blocked", "completed") and delegation["owner"] == by
+    if not (holder or card.get("activeOwner") == by):
+        held = f"{subtask_id} is held by {delegation['owner']}; " if delegation and delegation["owner"] else ""
+        raise WorkflowError(f"{held}only the card's owner, or the worker holding this delegated subtask, can "
+                            "post notes on it; post it without subtask as a card note", 409, "owned")
     entry = append_note(card, summary, body, by)
     entry["subtaskId"] = subtask_id
     return entry
@@ -2156,10 +2185,9 @@ def ack_inbox_notes(doc: dict, card: dict, note_ids: list[str], by: str) -> list
     by = validate_actor(by)
     if not any(candidate is card for candidate in doc.get("cards") or []):
         raise WorkflowError("inbox acknowledgement must use the current board card", 409)
-    if card.get("column") != "inprogress" or card.get("activeOwner") != by:
-        raise WorkflowError("only the active parent owner can acknowledge inbox notes", 409, "owned")
     if not isinstance(note_ids, list) or not note_ids or any(not isinstance(i, str) for i in note_ids):
         raise WorkflowError("inbox acknowledgement needs a list of note IDs")
+    _require_parent_owner(card, by, "ack")
     findings = {entry["id"]: entry for entry in card.get("log") or []
                 if entry.get("by") != by and entry.get("kind") != "generated"}
     note_ids = list(dict.fromkeys(note_ids))
@@ -2234,9 +2262,13 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
     selected_items = [existing[item] for item in ids]
     if action == "rm":
         removed = [st for root in selected_items for st, _ in iter_subtasks([root])]
-        if any((st.get("delegation") or {}).get("state") in ("claimed", "blocked", "completed")
-               and st["delegation"]["owner"] != by for st in removed):
-            raise WorkflowError("cannot remove another worker's delegated subtask", 409, "owned")
+        if any(st.get("delegation") for st in removed):
+            guard_card_edit(card, by)
+        held = next((st for st in removed if (st.get("delegation") or {}).get("state") in
+                     ("claimed", "blocked", "completed") and st["delegation"]["owner"] != by), None)
+        if held is not None:
+            raise WorkflowError(f"cannot remove {held['id']}: it is held by {held['delegation']['owner']}",
+                                409, "owned")
         remove_ids = {st["id"] for st in removed}
         dependents = [sid for sid, (st, _) in index.items() if sid not in remove_ids
                       and remove_ids.intersection((st.get("delegation") or {}).get("dependsOn") or [])]
@@ -2253,6 +2285,9 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
         touch(card)
         return selected_items
     if action in ("done", "undone") and not any(item.get("delegation") for item in selected_items):
+        if details.get("result") is not None:
+            raise WorkflowError(f"result applies only to delegated subtasks, not plain checklist steps "
+                                f"({', '.join(ids)}); tick without result and post evidence with note and subtask")
         # Legacy checklist ticks are plain field edits: any actor, atomic for a batch.
         done = action == "done"
         changed = [item for item in selected_items if item["done"] != done]
@@ -2266,11 +2301,19 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
             hist(card, f"subtask-{action}", by=by, note=", ".join(item["id"] for item in changed))
             touch(card)
         return selected_items
+    if action == "accept" and len(selected_items) > 1:  # One revision; any refusal saves nothing.
+        return [accepted for sid in ids
+                for accepted in subtask_action(doc, card, action, {**details, "ids": [sid]}, by)]
     if len(selected_items) != 1:
-        raise WorkflowError("delegated subtask actions require exactly one subtask ID")
+        delegated = [item["id"] for item in selected_items if item.get("delegation")]
+        raise WorkflowError(f"subtask {action} takes one ID per request"
+                            + (f" for delegated work ({', '.join(delegated)})" if delegated else "")
+                            + "; send one request per subtask")
     selected = selected_items[0]
     reason = (_required_text(details.get("reason"), f"subtask {action} reason")
               if action in ("release", "takeover", "block", "request-changes") else None)
+    until = _required_text(details.get("until"), "subtask unblock condition") if action == "block" else None
+    result = _required_text(details.get("result"), "subtask result") if action == "done" else None
     delegation = selected.get("delegation")
     if action == "delegate":
         guard_card_edit(card, by)
@@ -2284,13 +2327,16 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
                                              "at": None, "reason": ""}, "blocker": None}
     else:
         if delegation is None:
-            raise WorkflowError("subtask is a legacy checklist item; delegate it first", 409, "state")
-        if action in ("configure", "accept", "request-changes") and (
-                card.get("column") != "inprogress" or card.get("activeOwner") != by):
-            raise WorkflowError(f"{action} requires the active parent owner", 409, "owned")
+            raise WorkflowError(f"{selected['id']} is a plain checklist item; delegate it first", 409, "state")
+        if action in ("configure", "accept", "request-changes"):
+            _require_parent_owner(card, by, action)
         if action in ("claim", "done", "undone", "block", "resume") and (
                 card.get("column") != "inprogress" or not card.get("activeOwner")):
-            raise WorkflowError("delegated work requires an owned In Progress parent card", 409, "state")
+            later = ("wait for the card's owner to start or resume it, then claim" if action == "claim" else
+                     f"post the result with note and subtask {selected['id']}, then wait for the card's owner "
+                     "to start or resume it")
+            raise WorkflowError(f"{action} needs {fmt_ref(card)} In Progress (it is {card.get('column')}); {later}",
+                                409, "state")
         state, owner = delegation["state"], delegation["owner"]
         if action == "configure":
             # The parent owner may re-scope running work; claim, owner, result and review stay untouched.
@@ -2300,6 +2346,13 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
                 raise WorkflowError("configure requires available delegated work; claimed or blocked work "
                                     "accepts only a scope change", 409, "state")
             scope = _norm_scope(details.get("scope", delegation["scope"]))
+            if scope_only:  # Held work keeps every saved path its worker may be editing.
+                folded = [path.casefold() for path in scope]
+                dropped = [path for path in delegation["scope"] if not any(
+                    new in (".", path.casefold()) or path.casefold().startswith(new + "/") for new in folded)]
+                if dropped:
+                    raise WorkflowError(f"{selected['id']} is {state} by {owner}, who may be editing "
+                                        f"{', '.join(dropped)}; send the saved paths plus the new ones", 409, "state")
             required = details.get("reviewRequired", delegation["review"]["required"])
             depends_on = details.get("dependsOn", delegation["dependsOn"])
             if type(required) is not bool:
@@ -2314,7 +2367,8 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
             _validate_subtask_dependencies(index)
         elif action == "accept":
             if state != "completed":
-                raise WorkflowError("accept requires completed delegated work", 409, "state")
+                raise WorkflowError(f"{selected['id']}: accept requires completed delegated work (it is {state})",
+                                    409, "state")
             review = delegation["review"]
             if review["state"] == "accepted":
                 return [selected]
@@ -2323,7 +2377,8 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
             entry.update(kind="generated", subtaskId=selected["id"])
         elif action == "request-changes":
             if state != "completed":
-                raise WorkflowError("request-changes requires completed delegated work", 409, "state")
+                raise WorkflowError(f"{selected['id']}: request-changes requires completed delegated work "
+                                    f"(it is {state})", 409, "state")
             selected["done"], selected["doneAt"] = False, None
             selected.pop("doneBy", None)
             delegation.update(state="claimed", result="", blocker=None)
@@ -2337,8 +2392,8 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
                 raise WorkflowError(f"{selected['id']} is held by {owner}", 409, "owned")
             if state != "available":
                 raise WorkflowError(f"{selected['id']} is {state}, not available", 409, "state")
-            if not _subtask_ready(index, selected["id"]):
-                raise WorkflowError("subtask prerequisites are not complete and accepted", 409, "deps")
+            if unmet := _unmet_prerequisites(index, selected["id"]):
+                raise WorkflowError(f"{selected['id']} waits on prerequisites: {'; '.join(unmet)}", 409, "deps")
             delegation.update(state="claimed", owner=by, claimedAt=now_iso(), result="")
         elif action == "takeover":
             if state not in ("claimed", "blocked"):
@@ -2349,10 +2404,13 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
             entry = append_note(card, f"takeover {selected['id']}", reason, by)
             entry.update(kind="generated", subtaskId=selected["id"])
             delegation.update(owner=by, claimedAt=now_iso())
-        else:  # Claimant verbs: ownership first (owned), then the item's state (state).
+        else:  # Claimant verbs: unclaimed (state), someone else's (owned), then the item's state (state).
+            if owner is None:
+                raise WorkflowError(f"{selected['id']} is not claimed; subtask.claim it first", 409, "state")
             if owner != by:
-                raise WorkflowError(f"{selected['id']} is held by {owner or 'nobody'}; only its claimant can "
-                                    f"run '{action}'", 409, "owned")
+                raise WorkflowError(f"{selected['id']} is held by {owner}; only its claimant can run '{action}'; "
+                                    "to replace a worker that is gone, use subtask.takeover with a reason",
+                                    409, "owned")
             expected = {"release": ("claimed", "blocked"), "block": ("claimed",), "resume": ("blocked",),
                         "done": ("claimed", "completed"), "undone": ("completed",)}[action]
             if state not in expected:
@@ -2363,20 +2421,21 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
                 entry.update(kind="generated", subtaskId=selected["id"])
                 delegation.update(state="available", owner=None, claimedAt=None, result="", blocker=None)
             elif action == "block":
-                until = _required_text(details.get("until"), "subtask unblock condition")
                 delegation.update(state="blocked", blocker={"reason": reason, "until": until,
                                                               "at": now_iso(), "by": by})
             elif action == "resume":
                 delegation.update(state="claimed", blocker=None)
             elif action == "done":
-                result = _required_text(details.get("result"), "subtask result")
                 if state == "completed":
                     if result == delegation["result"]:
                         return [selected]
+                    if delegation["review"]["state"] == "accepted":
+                        raise WorkflowError(f"{selected['id']} was accepted by {delegation['review']['by']}; post "
+                                            f"later evidence with note and subtask {selected['id']}", 409, "state")
                     raise WorkflowError(f"{selected['id']} is already completed with a different result; "
                                         "reopen it with undone first", 409, "state")
-                if not _subtask_ready(index, selected["id"]):
-                    raise WorkflowError("subtask prerequisites are not complete and accepted", 409, "deps")
+                if unmet := _unmet_prerequisites(index, selected["id"]):
+                    raise WorkflowError(f"{selected['id']} waits on prerequisites: {'; '.join(unmet)}", 409, "deps")
                 selected["done"], selected["doneAt"], selected["doneBy"] = True, now_iso(), by
                 delegation.update(state="completed", result=result)
                 delegation["review"].update(state="pending", by=None, at=None, reason="")
@@ -2384,8 +2443,9 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
                 entry.update(kind="generated", subtaskId=selected["id"])
             else:  # undone
                 if delegation["review"]["state"] == "accepted":
-                    raise WorkflowError("Main accepted this contribution; Main must explicitly request changes",
-                                        409, "state")
+                    raise WorkflowError(f"{selected['id']} was accepted by {delegation['review']['by']}; the card's "
+                                        "owner reopens it with subtask.request-changes, or post later evidence "
+                                        f"with note and subtask {selected['id']}", 409, "state")
                 previous = delegation["result"]
                 selected["done"], selected["doneAt"] = False, None
                 selected.pop("doneBy", None)

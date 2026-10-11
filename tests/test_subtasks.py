@@ -71,6 +71,7 @@ class DelegatedSubtasks(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertEqual(last_json(result)["code"], code, result.stdout)
         self.assertEqual(path.read_bytes(), before)
+        return last_json(result)
 
     def test_claim_race_release_takeover_and_evidence(self):
         added = self.json(["subtask", "1", "add", "Investigate", "--delegated"])
@@ -297,7 +298,8 @@ class DelegatedSubtasks(unittest.TestCase):
     def test_wrong_actor_is_owned_before_wrong_state(self):
         sid = self.json(["subtask", "1", "add", "Work", "--delegated"])["item"]["id"]
         self.json(["start", "1"])
-        self.rejected(["subtask", "1", "release", sid, "--reason", "nothing held"], "Ada", "owned")
+        for args in (["release", sid, "--reason", "nothing held"], ["done", sid, "--result", "unclaimed"]):
+            self.assertIn(sid, self.rejected(["subtask", "1", *args], "Ada", "state")["error"])  # Claim it first.
         self.json(["subtask", "1", "claim", sid], "Ada")
         self.rejected(["subtask", "1", "claim", sid], "Grace", "owned")
         for args in (["resume", sid], ["undone", sid]):
@@ -313,6 +315,9 @@ class DelegatedSubtasks(unittest.TestCase):
         self.rejected(["subtask", "1", "release", sid, "--reason", "after done"], "Ada", "state")
         self.rejected(["subtask", "1", "claim", sid], "Ada", "state")
         self.rejected(["subtask", "1", "undone", sid], "Grace", "owned")
+        self.json(["subtask", "1", "accept", sid])
+        for args in (["done", sid, "--result", "later evidence"], ["undone", sid]):  # Evidence goes in a note.
+            self.assertIn(sid, self.rejected(["subtask", "1", *args], "Ada", "state")["error"])
 
     def test_generic_replacement_edits_checklists_but_not_delegated_state(self):
         root = self.json(["subtask", "1", "add", "Delegated tree", "--delegated"])["item"]["id"]
@@ -450,7 +455,7 @@ class DelegationWorkflow(unittest.TestCase):
         self.action("claim", sid, actor="Ada")
         first = self.action("done", sid, "--result", "First result with test evidence", actor="Ada")
         self.assertEqual(first["item"]["delegation"]["review"]["state"], "pending")
-        self.reject(["done", self.ref, "--writeup", "Premature integration"], "state")
+        self.assertIn(sid, self.reject(["done", self.ref, "--writeup", "Premature integration"], "state")["error"])
         self.assertEqual(self.attention(), "REVIEW PENDING")  # Every subtask is ticked, but done would refuse.
         self.reject(["subtask", self.ref, "accept", sid], "owned", "Ada")
         changed = self.action("request-changes", sid, "--reason", "Cover empty input")
@@ -504,13 +509,16 @@ class DelegationWorkflow(unittest.TestCase):
         focused = self.json(["context", self.ref, "--subtask", sid], "Ada")
         item = next(st for st, _ in core.iter_subtasks(focused["card"]["subtasks"]) if st["id"] == sid)
         self.assertEqual(item["delegation"]["scope"], ["src/a.py", "src/b.py"])
+        narrowed = self.reject(["subtask", self.ref, "configure", sid, "--scope", "src/b.py"], "state")
+        self.assertIn("src/a.py", narrowed["error"])  # Held work keeps the paths its worker may be editing.
         for extra in (["--on", other], ["--clear-deps"], ["--review-required"], ["--no-review-required"]):
             self.reject(["subtask", self.ref, "configure", sid, "--scope", "src/c.py", *extra], "state")
         self.reject(["subtask", self.ref, "configure", sid, "--scope", "src/c.py"], "owned", "Ada")
         self.action("block", sid, "--reason", "Needs a schema", "--until", "Schema lands", actor="Ada")
-        cleared = self.action("configure", sid, "--clear-scope")["item"]["delegation"]
-        self.assertEqual((cleared["scope"], cleared["state"], cleared["owner"], cleared["blocker"]["reason"]),
-                         ([], "blocked", "Ada", "Needs a schema"))
+        self.reject(["subtask", self.ref, "configure", sid, "--clear-scope"], "state")
+        moved = self.action("configure", sid, "--scope", "src")["item"]["delegation"]  # The directory keeps both.
+        self.assertEqual((moved["scope"], moved["state"], moved["owner"], moved["blocker"]["reason"]),
+                         (["src"], "blocked", "Ada", "Needs a schema"))
         note = ["note", self.ref, "--subtask", sid, "--summary", "Approved src/b.py"]
         self.reject(note, "owned", "Grace")
         entry = self.json(note)["item"]
@@ -522,6 +530,23 @@ class DelegationWorkflow(unittest.TestCase):
         self.assertEqual(self.json([*note[:-1], "Reviewing the result"])["item"]["subtaskId"], sid)
         self.json(["note", self.ref, "--subtask", other, "--summary", "Unclaimed slice note"])
         self.assertEqual([row["kind"] for row in self.inbox()], ["review"])
+        recheck = ["note", self.ref, "--subtask", sid, "--summary", "Recheck: both files still pass"]
+        self.assertEqual(self.json(recheck, "Ada")["item"]["by"], "Ada")  # Completed work: no reopen needed.
+        self.reject(["note", self.ref, "--subtask", sid, "--summary", "x" * 170], "invalid", "Grace")
+        plain = self.json(["subtask", self.ref, "add", "Plain integration step"])["item"]["id"]
+        step = self.json(["note", self.ref, "--subtask", plain, "--summary", "Step evidence"])["item"]
+        self.assertEqual(step["subtaskId"], plain)
+        self.reject(["note", self.ref, "--subtask", plain, "--summary", "Not my card"], "owned", "Grace")
+        self.action("claim", other, actor="Grace")
+        self.assertIn(other, self.reject(["subtask", self.ref, "accept", sid, other], "state")["error"])  # Nothing saved.
+        self.assertIn(plain, self.reject(["subtask", self.ref, "accept", sid, plain], "state")["error"])
+        self.assertIn(other, self.reject(["subtask", self.ref, "done", plain, other, "--result", "Batch"],
+                                         "invalid", "Grace")["error"])
+        self.action("done", other, "--result", "Prerequisite verified", actor="Grace")
+        accepted = self.json(["subtask", self.ref, "accept", sid, other])["items"]
+        self.assertEqual([(item["id"], item["delegation"]["review"]["state"]) for item in accepted],
+                         [(sid, "accepted"), (other, "accepted")])
+        self.json([*recheck[:-1], "Recheck after acceptance"], "Ada")
 
     def test_block_resume_and_release_preserve_ownership_and_observable_exit(self):
         sid, = self.add("Waiting for producer")
@@ -539,7 +564,7 @@ class DelegationWorkflow(unittest.TestCase):
             self.reject(["subtask", self.ref, "release", sid, "--reason", "Hand off"], "owned", actor)
         self.assertEqual([row["kind"] for row in self.inbox()], ["blocker"])
         self.assertEqual([row["kind"] for row in self.inbox("Ada")], ["blocker"])
-        self.reject(["done", self.ref, "--writeup", "Still blocked"], "state")
+        self.assertIn(sid, self.reject(["done", self.ref, "--writeup", "Still blocked"], "state")["error"])
         resumed = self.action("resume", sid, actor="Ada")
         self.assertEqual(resumed["item"]["delegation"]["state"], "claimed")
         self.assertIsNone(resumed["item"]["delegation"]["blocker"])
@@ -576,7 +601,7 @@ class DelegationWorkflow(unittest.TestCase):
         self.action("configure", producer, "--review-required")
         self.action("configure", middle, "--on", producer)
         self.action("configure", consumer, "--on", middle)
-        self.reject(["subtask", self.ref, "claim", middle], "deps", "Bert")
+        self.assertIn(producer, self.reject(["subtask", self.ref, "claim", middle], "deps", "Bert")["error"])
         self.action("claim", producer, actor="Ada")
         self.action("done", producer, "--result", "Producer verified", actor="Ada")
         self.reject(["subtask", self.ref, "claim", middle], "deps", "Bert")
@@ -618,6 +643,10 @@ class DelegationWorkflow(unittest.TestCase):
                          (self.ref, parent_scope, "Ada"))
         handoff = self.json(["handoff", other_ref, "--subtask", other_sid, "--worker", "Grace"])
         self.assertEqual(handoff["scopeWarnings"], conflicts)
+        self.assertTrue(conflicts[0]["claimedAt"])
+        latest = self.json(["note", self.ref, "--subtask", parent_scope, "--summary", "Still editing"], "Ada")["item"]
+        warning, = self.json(["context", other_ref, "--subtask", other_sid])["focus"]["scopeWarnings"][other_sid]
+        self.assertEqual((warning["claimedAt"], warning["lastActivityAt"]), (conflicts[0]["claimedAt"], latest["at"]))
         self.action("block", parent_scope, "--reason", "Waiting", "--until", "Input arrives", actor="Ada")
         doc = core.load(self.path)
         self.assertEqual(core.scope_conflicts(doc, core.resolve_ref(doc, other_ref), other_sid)[0]["state"], "blocked")
@@ -647,9 +676,12 @@ class DelegationWorkflow(unittest.TestCase):
         self.action("done", worker, "--result", "Worker result verified", actor="Ada")
         self.action("done", own, "--result", "Main's own part verified")
         self.action("done", unreviewed, "--result", "Unreviewed part verified", actor="Bert")
-        # Reviews list only opted-in work completed by someone other than the parent owner.
-        self.assertEqual([(row["kind"], row["subtaskId"]) for row in self.inbox()],
-                         [("review", worker), ("finding", worker), ("finding", None)])
+        # Every result someone else completed waits for the parent owner; review.required says if Done waits too.
+        rows = self.inbox()
+        self.assertEqual([(row["kind"], row["subtaskId"]) for row in rows],
+                         [("review", worker), ("review", unreviewed), ("finding", worker), ("finding", None)])
+        self.assertEqual([row["review"]["required"] for row in rows[:2]], [True, False])
+        self.action("accept", unreviewed)  # Accepting clears it, as for required reviews.
         self.reject(["ack", self.ref, finding["id"]], "owned", "Ada")
         self.reject(["ack", self.ref, finding["id"], own_note["id"]], "not_found")
         history = len(core.resolve_ref(core.load(self.path), self.ref)["history"])
@@ -697,3 +729,26 @@ class DelegationWorkflow(unittest.TestCase):
         self.assertEqual(item["vendorSubtask"], {"kind": "custom"})
         self.assertEqual(item["delegation"]["vendorAssignment"], 17)
         self.assertEqual(item["delegation"]["review"]["vendorReview"], "stable")
+
+    def test_plain_results_assignment_removal_and_done_card_rechecks(self):
+        plain = self.json(["subtask", self.ref, "add", "Plain step"])["item"]["id"]
+        self.assertIn(plain, self.reject(["subtask", self.ref, "done", plain, "--result", "Evidence"], "invalid")["error"])
+        sid, = self.add("Main's assignment")
+        self.reject(["subtask", self.ref, "rm", sid], "owned", "Grace")
+        self.action("claim", sid, actor="Ada")
+        self.action("done", sid, "--result", "Verified", actor="Ada")
+        self.action("accept", sid)
+        self.reject(["subtask", self.ref, "rm", sid], "owned", "Ada")
+        self.reject(["done", self.ref, "--writeup", " "], "invalid", "Grace")  # Input before ownership.
+        self.json(["done", self.ref, "--writeup", "Integrated"])
+        recheck = ["note", self.ref, "--subtask", sid, "--summary", "Recheck after Done"]
+        self.assertEqual(self.json(recheck, "Ada")["item"]["subtaskId"], sid)
+        self.assertIn("Ada", self.reject(recheck, "owned", "Grace")["error"])
+        self.reject(recheck, "owned")  # The Done card has no owner; only the holder notes its subtask.
+
+    def test_card_prerequisite_refusals_name_the_cards(self):
+        prerequisite = self.json(["add", "--title", "Prerequisite"])
+        dependent = self.json(["add", "--title", "Dependent", "--on", prerequisite["id"]])["id"]
+        ref = f"#{prerequisite['num']}"
+        self.assertIn(ref, self.reject(["start", dependent], "deps")["error"])
+        self.assertIn(ref, self.reject(["depends", self.ref, "--on", prerequisite["id"]], "deps")["error"])

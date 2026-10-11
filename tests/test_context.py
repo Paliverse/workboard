@@ -76,6 +76,7 @@ class FocusedContext(unittest.TestCase):
         self.path.with_name(core.LOCK_NAME).unlink(missing_ok=True)
         focused = self.json(["context", "1", "--subtask", "mine"], "Ada")
         self.assertEqual(self.ids(focused), ["ancestor", "mine", "foreign-child"])
+        self.assertEqual(focused["num"], 1)
         self.assertEqual(focused["focus"]["ancestorIds"], ["ancestor"])
         self.assertEqual(focused["omitted"]["unrelatedSubtasks"], 3)
         self.assertEqual(focused["card"]["activeOwner"], "Main")
@@ -138,6 +139,7 @@ class FocusedContext(unittest.TestCase):
         self.assertEqual(payload["worker"], "Worker B")
         self.assertEqual(payload["parentOwner"], "Main")
         self.assertEqual(payload["assignment"]["delegation"]["state"], "available")
+        self.assertIsNone(payload["previousOwner"])
         self.assertEqual(payload["writeScope"], ["consumer.py only", "tests/test_consumer.py"])
         self.assertEqual(payload["peers"], [{"actor": "Ada", "reference": "agent://producer"}])
         fresh = self.call(payload["commands"]["read"][1:], actor="Worker B")
@@ -153,7 +155,9 @@ class FocusedContext(unittest.TestCase):
 
     def test_handoff_rejects_ambiguous_or_unavailable_work(self):
         base = ["handoff", "1", "--worker", "Ada", "--write-scope", "a.py"]
-        self.rejected([*base, "--subtask", "ancestor"], "owned")
+        takeover = self.json([*base, "--subtask", "ancestor"])  # Claimed by Grace: Ada takes it over.
+        self.assertEqual(takeover["previousOwner"], "Grace")
+        self.assertEqual(takeover["requests"]["claim"]["op"], "subtask.takeover")
         self.rejected([*base, "--subtask", "legacy"], "state")
         self.rejected([*base, "--subtask", "mine"], "owned", actor="Chen")
         for extra in (["--write-scope", " "], ["--peer", "Ada=agent://self"],
@@ -176,6 +180,12 @@ class FocusedContext(unittest.TestCase):
         self.assertEqual(handoff["assignment"]["delegation"]["owner"], None)
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_handoff_without_a_scope_is_read_only(self):
+        before = self.path.read_bytes()
+        handoff = self.json(["handoff", "1", "--subtask", "available", "--worker", "Ada"])
+        self.assertEqual((handoff["writeScope"], handoff["previousOwner"]), ([], None))
+        self.assertEqual(self.path.read_bytes(), before)
+
     def test_handoff_argv_runs_literally_with_body_on_stdin(self):
         sid, worker = "-odd Δ & {result} id", "--worker Δ & $(never) {summary}"
         with core.board_transaction(self.path) as doc:
@@ -194,9 +204,9 @@ class FocusedContext(unittest.TestCase):
             argv = []
             for argument in handoff["commands"][name]:
                 option, _, value = argument.partition("=")
-                if option in ("--summary", "--result"):
-                    self.assertEqual(value, "{" + option[2:] + "}")
-                    argument = f"{option}={values[option[2:]]}"
+                if option == "--summary":
+                    self.assertEqual(value, "{summary}")
+                    argument = f"{option}={values['summary']}"
                 argv.append(argument)
             self.assertEqual(argv[0], "workboard")
             result = run(argv[1:], cwd=self.project, env=self.env, input=stdin)
@@ -208,7 +218,7 @@ class FocusedContext(unittest.TestCase):
         published = execute("publish", stdin=body)["item"]
         self.assertEqual((published["summary"], published["body"], published["by"], published["subtaskId"]),
                          (values["summary"], body, worker, sid))
-        completed = execute("complete")["item"]
+        completed = execute("complete", stdin=values["result"])["item"]
         self.assertEqual((completed["delegation"]["result"], completed["doneBy"]), (values["result"], worker))
 
     def test_handoff_requests_run_through_call_with_multiline_text(self):

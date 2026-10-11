@@ -191,6 +191,19 @@ class TimelineEntries(unittest.TestCase):
         self.assertEqual((card["log"][-1]["by"], card["log"][-1]["body"], card["activeOwner"]),
                          ("Grace", "- looks good", "Ada"))
 
+    def test_subtask_notes_follow_the_holder_not_the_column(self):
+        held = {"id": "s-1", "text": "Recheck", "done": True, "children": [], "delegation": {
+            "state": "completed", "owner": "Ada", "claimedAt": "2026-10-10T00:00:00Z", "result": "Verified"}}
+        doc = core.normalize_doc({"cards": [{"id": "c", "num": 1, "column": "done", "subtasks": [held]}]})
+        card = doc["cards"][0]
+        self.assertEqual(core.publish_subtask_note(doc, card, "s-1", "Recheck passes", "", "Ada")["subtaskId"], "s-1")
+        for actor in ("Main", "Grace"):  # A Done card has no owner, so only the holder notes its subtask.
+            with self.assertRaises(core.WorkflowError) as caught:
+                core.publish_subtask_note(doc, card, "s-1", "Not mine", "", actor)
+            self.assertEqual((caught.exception.status, caught.exception.code), (409, "owned"))
+            self.assertIn("Ada", str(caught.exception))
+        self.assertEqual([entry["by"] for entry in card["log"]], ["Ada"])
+
     def test_normalize_card_refuses_malformed_log(self):
         valid = {"id": "a" * 32, "at": "2026-09-01", "by": None, "summary": "ok", "body": ""}
         for log in ({}, ["entry"], [{**valid, "id": "A" * 32}], [valid, valid],

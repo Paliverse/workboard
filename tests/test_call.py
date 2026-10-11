@@ -150,7 +150,136 @@ class CallAndWait(unittest.TestCase):
         for request, result in zip(requests[:18], results[:18]):
             self.assertEqual(result["error"], f"op {request['op']} is not available in call")
         self.assertIn("text goes in the request", results[18]["error"])
-        self.assertIn("--summary", results[21]["error"])
+        self.assertIn('"summary"', results[21]["error"])
+
+    def test_single_value_lists_empty_lists_and_missing_keys_name_request_keys(self):
+        self.calls({"op": "start", "card": 1})
+        added = self.calls({"op": "subtask.add", "card": 1, "texts": ["One", "Two"]})[0]
+        one, two = [item["id"] for item in added["items"]]
+        before = Path(self.board).read_bytes()
+        cases = [
+            ({"op": "update", "card": 1, "notes": ["a", "b"]}, "notes"),
+            ({"op": "note", "card": 1, "summary": "s", "subtask": [one, two]}, "subtask"),
+            ({"op": "subtask.done", "card": 1, "subtask": [one, two]}, "subtasks"),
+            ({"op": "show", "card": [1, 2]}, "card"),
+            ({"op": "query", "fields": ["num", "title"]}, "fields"),
+            ({"op": "subtask.configure", "card": 1, "subtask": one, "scope": []}, "clearScope"),
+            ({"op": "subtask.configure", "card": 1, "subtask": one, "on": []}, "clearDeps"),
+            ({"op": "update", "card": 1, "addTag": []}, "addTag"),
+            ({"op": "subtask.claim", "card": 1}, "subtask"),
+            ({"op": "subtask.add", "card": 1}, "text"),
+            ({"op": "start"}, "card"),
+            ({"op": "ack", "card": 1}, "notes"),
+            ({"op": "ack", "card": 1, "notes": []}, "notes"),
+            ({"op": "comment.add", "card": 1}, "text"),
+            ({"op": "block", "card": 1, "until": "later"}, "reason"),
+            ({"op": "note", "card": 1}, "summary"),
+            ({"op": "context", "card": 1, "id": one}, "subtask"),
+            ({"op": "wait", "card": 1, "subtasks": [one]}, "subtask"),
+            ({"op": "context", "card": "-h"}, "card"),
+            ({"op": "attachment.get", "card": 1, "id": "-h", "out": "copy.txt"}, "id"),
+        ]
+        *results, shown = self.calls(*[request for request, _ in cases], {"op": "show", "card": 1}, ok=False)
+        for (request, key), result in zip(cases, results):
+            self.assertEqual((result["ok"], result["status"], result["code"], result["rev"]),
+                             (False, 422, "invalid", None), (request, result))
+            self.assertIn(key, result["error"], request)
+            self.assertNotIn("--", result["error"], request)
+        self.assertTrue(shown["ok"], "a value starting with '-' must not end the stream")
+        done = self.calls({"op": "done", "card": 1}, ok=False)[0]
+        self.assertEqual((done["status"], done["code"]), (422, "invalid"))
+        self.assertIn('"writeup"', done["error"])
+        self.assertEqual(Path(self.board).read_bytes(), before)
+
+    def test_query_and_list_columns_take_aliases_and_refuse_unknown_names(self):
+        self.calls({"op": "start", "card": 1}, {"op": "add", "title": "Still waiting"})
+        for column in ("in-progress", "In Progress", "#inprogress"):
+            queried = self.calls({"op": "query", "column": column})[0]
+            self.assertEqual([card["num"] for card in queried["cards"]], [1], column)
+            listed = self.json(["list", "--column", column])
+            self.assertEqual([card["num"] for card in listed["cards"]], [1], column)
+        for command in ("query", "list"):
+            proc = self.cli([command, "--column", "doing", "--json"])
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertEqual((last_json(proc)["status"], last_json(proc)["code"]), (422, "invalid"))
+
+    def test_query_and_list_match_a_boards_own_legacy_column(self):
+        path = Path(self.board)
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["columns"].append({"id": "review", "name": "Review"})
+        doc["cards"][0]["column"] = "review"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        self.assertEqual([card["num"] for card in self.calls({"op": "query", "column": "review"})[0]["cards"]], [1])
+        self.assertEqual([card["num"] for card in self.json(["list", "--column", "review"])["cards"]], [1])
+
+    def test_add_pins_notes_from_the_request_or_stdin(self):
+        added = self.calls({"op": "add", "title": "Pinned", "notes": "Acceptance: one\nAcceptance: two"})[0]
+        piped = self.cli(["add", "--title", "Piped", "--notes-stdin", "--json"], input="Acceptance: piped\n")
+        self.assertEqual(piped.returncode, 0, piped.stdout + piped.stderr)
+        request, stdin = self.calls({"op": "show", "card": added["num"], "full": True},
+                                    {"op": "show", "card": last_json(piped)["num"], "full": True})
+        self.assertEqual(request["card"]["notes"], "Acceptance: one\nAcceptance: two")
+        self.assertEqual(stdin["card"]["notes"], "Acceptance: piped")
+        both = self.cli(["add", "--title", "Both", "--origin-stdin", "--notes-stdin"], input="text")
+        self.assertEqual(both.returncode, 2, both.stdout + both.stderr)
+
+    def test_search_projects_fields_and_keeps_the_newest_hits(self):
+        self.calls(*[{"op": "add", "title": f"Needle {n}"} for n in range(3)])
+        default, limited, unknown, zero = self.calls(
+            {"op": "search", "terms": ["needle"]},
+            {"op": "search", "terms": ["needle"], "limit": 2, "fields": "num,id,owner"},
+            {"op": "search", "terms": ["needle"], "fields": "num,nope"},
+            {"op": "search", "terms": ["needle"], "limit": 0}, ok=False)
+        self.assertEqual(default["cards"], [{"num": n + 2, "title": f"Needle {n}", "column": "task"}
+                                            for n in range(3)])
+        self.assertEqual([card["num"] for card in limited["cards"]], [3, 4])
+        self.assertEqual(set(limited["cards"][0]), {"num", "id", "owner"})
+        for result in (unknown, zero):
+            self.assertEqual((result["status"], result["code"]), (422, "invalid"))
+
+    def test_handoff_fields_takeover_read_only_scope_and_result_on_stdin(self):
+        added = self.calls({"op": "start", "card": 1},
+                           {"op": "subtask.add", "card": 1, "text": "Review", "delegated": True})[1]
+        sid = added["item"]["id"]
+        self.calls({"op": "subtask.claim", "card": 1, "subtask": sid, "actor": "Ada"})
+        request = {"op": "handoff", "card": 1, "subtask": sid, "worker": "Grace"}
+        handoff, short, unknown = self.calls(request, {**request, "fields": "prompt"},
+                                             {**request, "fields": "prompt,nope"}, ok=False)
+        self.assertEqual((handoff["previousOwner"], handoff["writeScope"]), ("Ada", []))
+        self.assertEqual(handoff["requests"]["claim"],
+                         {"op": "subtask.takeover", "card": 1, "subtask": sid, "reason": "{reason}"})
+        self.assertEqual(handoff["commands"]["claim"][3:6], ["subtask", "1", "takeover"])
+        self.assertIn("--reason={reason}", handoff["commands"]["claim"])
+        self.assertIn("reason", handoff["placeholders"])
+        self.assertIn("read-only", handoff["prompt"])
+        self.assertEqual(short, {key: handoff[key] for key in ("ok", "rev", "num", "prompt")})
+        self.assertEqual((unknown["status"], unknown["code"]), (422, "invalid"))
+        claim = {**handoff["requests"]["claim"], "reason": "Main reassigned the review"}
+        taken = self.cli(handoff["call"][1:], input=json.dumps(claim) + "\n")
+        self.assertEqual(taken.returncode, 0, taken.stdout + taken.stderr)
+        self.assertEqual(last_json(taken)["item"]["delegation"]["owner"], "Grace")
+        again = self.calls(request)[0]
+        self.assertIsNone(again["previousOwner"])
+        self.assertEqual(again["requests"]["claim"], {"op": "subtask.claim", "card": 1, "subtask": sid})
+        self.assertNotIn("reason", again["placeholders"])
+        completed = self.cli(again["commands"]["complete"][1:], input="Verified\nby the review")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(last_json(completed)["item"]["delegation"]["result"], "Verified\nby the review")
+
+    def test_handoff_of_blocked_work_adds_resume_after_the_takeover(self):
+        sid = self.calls({"op": "start", "card": 1},
+                         {"op": "subtask.add", "card": 1, "text": "Fix", "delegated": True})[1]["item"]["id"]
+        self.calls({"op": "subtask.claim", "card": 1, "subtask": sid, "actor": "Ada"},
+                   {"op": "subtask.block", "card": 1, "subtask": sid, "reason": "waiting", "until": "CI is green",
+                    "actor": "Ada"})
+        handoff = self.calls({"op": "handoff", "card": 1, "subtask": sid, "worker": "Grace"})[0]
+        steps = handoff["requests"]
+        self.assertEqual(list(steps), ["read", "claim", "resume", "publish", "complete"])
+        self.assertEqual(list(handoff["commands"]), list(steps))
+        flow = [{**steps["claim"], "reason": "Ada is gone"}, steps["resume"], {**steps["complete"], "result": "Fixed"}]
+        done = self.cli(handoff["call"][1:], input="\n".join(map(json.dumps, flow)) + "\n")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(json.loads(done.stdout.splitlines()[-1])["item"]["delegation"]["state"], "completed")
 
     def test_empty_and_malformed_input(self):
         for text in ("", " \n\t", '{"op":', '{"op":"show"}\nnot JSON'):
@@ -310,6 +439,15 @@ class CallAndWait(unittest.TestCase):
             ["--subtask", watched, "--after", own["rev"], "--timeout", 3],
             lambda: self.calls({"op": "subtask.add", "card": 1, "parent": watched, "text": "Child"}))
         self.assertTrue(descendant["changed"])
+
+    def test_wait_subtask_observes_a_note_on_that_subtask(self):
+        added = self.calls({"op": "start", "card": 1}, {"op": "subtask.add", "card": 1, "text": "Asked"})[1]
+        sid = added["item"]["id"]
+        answered = self.wait_with_writer(
+            ["--subtask", sid, "--timeout", 3],
+            lambda: self.calls({"op": "note", "card": 1, "subtask": sid, "summary": "Main's answer"}))
+        self.assertTrue(answered["changed"])
+        self.assertEqual(answered["subtask"]["id"], sid)
 
     def test_wait_immediate_after_bounds_and_missing_subtask(self):
         note, added = self.calls({"op": "note", "card": 1, "summary": "already changed"},

@@ -58,14 +58,16 @@ Defaults come from environment variables and the optional `~/.workboard/config.j
 |---|---|
 | `stale` | The reviewed state changed (see [Revision guards](#revision-guards)). |
 | `owned` | Another actor owns the card, holds the delegated subtask, or wrote the comment or attachment; take it over explicitly or leave it. |
-| `deps` | Dependencies are missing, unfinished or canceled, or a delegated subtask's prerequisites are not completed and accepted. |
+| `deps` | Dependencies are missing, unfinished or canceled, or a delegated subtask's prerequisites are not completed and accepted. The error names each unmet one. |
 | `wip` | The In Progress WIP limit is reached. |
-| `state` | The lifecycle transition is not allowed, for example `fly REF done`, or a board name or project is already taken. |
-| `invalid` | Invalid input (field names, text, revision or blank stdin), or an invalid `config.json` or `boards.json`. |
-| `not_found` | Unknown card, subtask, comment, attachment or board (status 404). |
+| `state` | The lifecycle transition is not allowed, for example `fly REF done` or a worker command on a subtask nobody has claimed, or a board name or project is already taken. |
+| `invalid` | Invalid input (field or column names, text such as a missing `done` write-up, revision or blank stdin), an existing export destination, or an invalid `config.json` or `boards.json`. |
+| `not_found` | Unknown card, subtask, comment, attachment or board, or a missing `attachment add --file` source (status 404). |
 | `lock` | The board lock could not be acquired in time. |
 | `scope` | A write path crosses a symbolic link, junction or other reparse point, or an export targets WorkBoard's own storage. |
 | `io` | An operating-system or network failure. |
+
+Board commands answer `stale`, `owned`, `deps`, `wip` and `state` with status 409; `invalid` is 422 unless noted.
 
 ### Side effects
 
@@ -131,7 +133,7 @@ One `call` process keeps the parsed board between requests and parses it again o
 | Operation | Fields |
 |---|---|
 | `subtask.add` | `text` (one string) or `texts` (a list) |
-| Other `subtask.*` | `subtask` (one ID) or `subtasks` (a list); delegated actions require exactly one |
+| Other `subtask.*` | `subtask` (one ID) or `subtasks` (a list); delegated actions take one, except `accept` |
 | `comment.add` | `text` |
 | `comment.edit` | `id`, `text` |
 | `comment.delete`, `attachment.get`, `attachment.remove` | `id` |
@@ -139,19 +141,19 @@ One `call` process keeps the parsed board between requests and parses it again o
 | `improve` | `text` |
 | `search` | `terms` (a list) |
 | `ack` | `notes` (a list of note IDs) |
-| `wait` | `card`; `subtask` is its optional focus |
+| `context`, `note`, `handoff`, `wait` | One focus `subtask`; `subtasks` is for `subtask.*` only, and `id` is refused |
 
 Other keys are the command's full long option names, in camelCase or kebab-case: `expectedRev` and `expected-rev` both mean `--expected-rev`; `assignedTo` means `--assigned-to`. Per-request `actor` and `board` override the defaults on `call`.
 
 - Strings and numbers become one option value each; values starting with `-` are safe.
 - `true` enables a flag; `false` omits it, except `reviewRequired: false` means `--no-review-required`.
-- Lists repeat the option (for example, `scope` or `tag`); `null` omits it. Objects are invalid values.
-- Free-text positionals, including leading `-`, are safe too. Command limits still apply, including a note's single-line summary and body length.
+- Only repeatable options take a list, which repeats the option (for example `scope`, `tag` or `on`), besides the list fields above. A list for any other key fails with `invalid` (`notes takes one value, not a list`). An empty list fails too: omit the key, or clear with `clearScope` or `clearDeps`. `null` omits a key. Objects are invalid values.
+- Free-text positionals, including leading `-`, are safe too. `card`, `column`, an attachment `id` and `ack`'s `notes` can't start with `-` (`invalid`). Command limits still apply, including a note's single-line summary and body length.
 - Do not use `stdin` or keys ending in `-stdin` or `Stdin`: stdin is the request stream, so text goes in the request.
 
 Available operations are `digest next context show query search inbox handoff wait boards which add start done fly block resume update note subtask.* bug improve reopen workpad takeover cancel rework depends comment.* ack attachment.list attachment.add attachment.get attachment.remove`. The subtask and comment actions are the ones documented below. Operator commands (`init link serve open setup skills service upgrade version doctor recover sweep columns-core wip export import`), `list` and `call` itself are unavailable.
 
-Unavailable operations return `{"ok":false,"status":422,"code":"invalid","error":"op X is not available in call"}`. Parser usage errors become `invalid` (422), with the parser message in `error`, no usage text and `rev: null`. Other errors retain the ordinary command's envelope, including its current `rev`.
+Unavailable operations return `{"ok":false,"status":422,"code":"invalid","error":"op X is not available in call"}`. A missing field and a parser usage error become `invalid` (422) with no usage text and `rev: null`, and the message names request keys, never options: `note needs "summary"`, `subtask.claim needs "subtask" or "subtasks"`, `unrecognized arguments: "notAnOption"`. A request that ends without a JSON result is `invalid` too (`OP ended without a JSON result (exit code N)`), and later requests still run. Other errors retain the ordinary command's envelope, including its current `rev`.
 
 ## Board setup
 
@@ -177,14 +179,16 @@ Print the board the current directory (or `--board`) resolves to: `<name> — <b
 
 | Command | Output |
 |---|---|
-| `digest` | A short board summary. It shows `MINE @actor` (cards you own, plus Blocked cards you blocked), `CONTRIBUTIONS @actor` for subtasks you own under another holder's card, column counts, In Progress cards with `@owner`, subtask progress and attention markers, recent shipped, Blocked and canceled cards, `READY: N — #a #b …` (up to five refs), the rework count and the number of old Done cards eligible for `sweep`. On a busy board, `MINE`, `CONTRIBUTIONS`, In Progress and Blocked each list their first 8 rows, then one line that counts the rest and names the read that lists them, such as `… +15 more (query --column blocked)` (`query --mine`, `context REF --mine`, `query --column inprogress`). Blocked reasons, exit conditions and cancel reasons are cut to 80 characters with `…`; `context` has the full text. JSON adds `stats`, `columns`, `attention` (with `owner`), `contributions`, `ready` (up to five card numbers) and `sweepCandidates`, and is never shortened. `query --mine` still means parent-card holder only. |
+| `digest` | A short board summary. It shows `MINE @actor` (cards you own, plus Blocked cards you blocked), `CONTRIBUTIONS @actor` for subtasks you own under another holder's card, column counts, In Progress cards with `@owner`, subtask progress and attention markers, recent shipped, Blocked and canceled cards, `READY: N — #a #b …` (up to five refs), the rework count and the number of old Done cards eligible for `sweep`. On a busy board, `MINE`, `CONTRIBUTIONS`, In Progress and Blocked each list their first 8 rows, then one line that counts the rest and names the read that lists them, such as `… +15 more (query --column blocked)` (`query --mine`, `context REF --mine`, `query --column inprogress`). Blocked reasons, exit conditions and cancel reasons are cut to 80 characters with `…`; `context` has the full text. JSON adds `stats`, `columns`, `mine` (`num`, `id`, `title` and `column` of each card listed under `MINE`), `attention` (with `owner`), `contributions`, `ready` (up to five card numbers) and `sweepCandidates`, and is never shortened. `query --mine` still means parent-card holder only. |
 | `next [--limit N]` | Ready cards (unowned Task cards whose dependencies are all completed), ranked by priority (critical, mid, low, unset), then age. Default limit 5. JSON: `{"ok", "rev", "cards": [{"num", "id", "title", "priority", "tags", "createdAt", "dependsOn"}]}`. Read-only; it does not claim anything. |
-| `context REF [--full] [--subtask ID\|--mine\|--assigned-to ACTOR]` | A consistent snapshot of one card for agents: the card with its comments, attachment manifest and notes, its `dependencies` (each with `satisfied`), `missingDependencies`, `dependents` and `ready`. The default keeps 10 done subtasks, 25 history entries, the newest 10 log entries and the newest 10 comments (oldest first, IDs unchanged) and counts the rest in `omitted` (`doneSubtasks`, `history`, plus `log` and `comments` when any were dropped); `--full` keeps everything. `--subtask`, `--mine` and `--assigned-to` focus the subtasks (see [Focused context](#focused-context)). Read-only; the output is JSON even without `--json`. |
+| `context REF [--full] [--subtask ID\|--mine\|--assigned-to ACTOR]` | A consistent snapshot of one card for agents: the card with its comments, attachment manifest and notes, its `dependencies` (each with `satisfied`), `missingDependencies`, `dependents` and `ready`, with the board `rev` and the card's `num` at the top. The default keeps 10 done subtasks, 25 history entries, the newest 10 log entries and the newest 10 comments (oldest first, IDs unchanged) and counts the rest in `omitted` (`doneSubtasks`, `history`, plus `log` and `comments` when any were dropped); `--full` keeps everything. `--subtask`, `--mine` and `--assigned-to` focus the subtasks (see [Focused context](#focused-context)). Read-only; the output is JSON even without `--json`. |
 | `inbox [REF]` | What needs your attention on delegated work; see [Inbox](#inbox). Read-only. |
 | `show REF [--full]` | One card. JSON: `{"ok", "rev", "card"}`. Without `--full`, `notes` longer than 300 characters and `writeup` longer than 400 are cut with a `… (+N ch, --full)` marker, `history` keeps the last 10 entries, `comments` keeps the newest 5, and `log` keeps the newest 5 entries with each body cut to 300 characters with the same marker. `--full` shows everything in full. |
 | `list [--column C] [--tag X] [--priority P]` | A human listing of cards. |
 | `query [--column C] [--tag X] [--priority P] [--owner NAME \| --mine] [--since-days N] [--limit N] [--fields LIST]` | A JSON projection: `{"ok", "rev", "cards": [...]}`. `--mine` filters by the effective actor. A card's holder is its owner or, for Blocked cards, the actor who blocked it. `--fields` is a comma list of `num,id,title,column,priority,tags,outcome,owner,deps,changedRev,createdAt,updatedAt,doneAt,origin` (default `num,title,column`). Unknown names fail with `invalid`. One `query --fields num,title,owner,tags,changedRev` replaces a `context` per card when you only need those fields, and its `rev` guards each card it lists. |
-| `search TERMS...` | Cards matching every term (case-insensitive substring) in any text, including comments and every `log` entry's summary and body. Each search scans the whole board; to match many keywords against titles or tags, filter one `query --json` result locally instead. |
+| `search TERMS... [--limit N] [--fields LIST]` | Cards matching every term (case-insensitive substring) in any text, including comments and every `log` entry's summary and body. JSON: `{"ok", "board", "rev", "cards": [...]}`, each hit projected as in `query` (`--fields`, default `num,title,column`). `--limit N` keeps the N newest hits. Each search scans the whole board; to match many keywords against titles or tags, filter one `query --json` result locally instead. |
+
+`--column C` in `list` and `query` takes a column ID or name, such as `inprogress`, `in-progress` or `In Progress`; an unknown column fails with `invalid`.
 
 Attention markers on In Progress cards: `READY TO CLOSE` when every subtask is done and `done` would pass the delegated-work check; `REVIEW PENDING` when every subtask is done but a delegated subtask still awaits a required review, so `done` would fail with `state`; `REVIEW STATE` when the card hasn't changed for 24 hours. `digest --json` lists them in `attention`.
 
@@ -201,7 +205,7 @@ workboard --actor worker-a wait 12 --subtask s-1 --after 40 --timeout 30 --json
 
 Use the `rev` from your last read or mutation as `--after`; the default is the board revision when `wait` starts. Without `--subtask`, it returns as soon as the card's `changedRev` is greater than that baseline, including immediately if the card has already changed.
 
-With `--subtask`, it watches that subtask's entire subtree, including delegation, result and review state, and ignores unrelated card changes while waiting. If the card already changed after `--after` when the wait starts, it returns immediately and conservatively: the old subtree cannot be reconstructed. Missing subtasks fail with `not_found`. Notes and comments are card changes, not subtree changes; omit `--subtask` to watch them.
+With `--subtask`, it watches that subtask's entire subtree, including delegation, result and review state, plus notes posted on that subtask (`note --subtask`, by its worker or the card's owner), and ignores unrelated card changes while waiting. If the card already changed after `--after` when the wait starts, it returns immediately and conservatively: the old subtree cannot be reconstructed. Missing subtasks fail with `not_found`. Other notes and comments are card changes, not subtree changes; omit `--subtask` to watch them.
 
 `--timeout` defaults to 300 seconds and accepts 1–3600. Both a change and a timeout exit 0. JSON is `{"ok":true,"changed":BOOL,"num":N,"id":ID,"rev":BOARD_REV,"changedRev":CARD_REV,"last":LAST_HISTORY_ROW_OR_NULL,"waited":SECONDS}`; `waited` is rounded to one decimal. With `--subtask`, it adds `subtask: {"id","done","delegation"}`. Human output is `#N changed at rev X (last: EV by ACTOR)` or `#N unchanged after Ns`. A board that disappears returns the normal error envelope.
 
@@ -220,10 +224,10 @@ The five columns are `backlog`, `task`, `inprogress`, `done` and `blocked`.
 
 | Command | Effect |
 |---|---|
-| `add --title T [--column backlog\|task] [--priority P] [--tag X]... [--on REF]... [--origin TEXT \| --origin-stdin]` | Create a card, in Task by default. `--on` (repeatable) sets dependencies in the same transaction. |
-| `add --from REF [--title T]` | Create a card from another card: its title (unless `--title`), pinned notes, tags (plus any `--tag`), priority (unless `--priority`) and subtask tree. Subtasks get fresh IDs `s-1`…`s-N` in tree order and start open; delegated ones become available again, keeping their scope, required review and prerequisites (renumbered). Origin, comments, notes timeline, attachments, history, owner, outcome and card dependencies are not copied. The other `add` options work as usual. Keep reusable card shapes in Backlog and copy them. A missing source is `not_found`; without `--title` or `--from`, `add` is a usage error. |
+| `add --title T [--column backlog\|task] [--priority P] [--tag X]... [--on REF]... [--origin TEXT \| --origin-stdin] [--notes TEXT \| --notes-stdin]` | Create a card, in Task by default. `--on` (repeatable) sets dependencies in the same transaction. `--notes` sets the pinned notes, such as acceptance criteria. Only one of `--origin-stdin` and `--notes-stdin` can read stdin (usage error otherwise). |
+| `add --from REF [--title T]` | Create a card from another card: its title (unless `--title`), pinned notes (unless `--notes`), tags (plus any `--tag`), priority (unless `--priority`) and subtask tree. Subtasks get fresh IDs `s-1`…`s-N` in tree order and start open; delegated ones become available again, keeping their scope, required review and prerequisites (renumbered). Origin, comments, notes timeline, attachments, history, owner, outcome and card dependencies are not copied. The other `add` options work as usual. Keep reusable card shapes in Backlog and copy them. A missing source is `not_found`; without `--title` or `--from`, `add` is a usage error. |
 | `start REF` | Claim the card and move it to In Progress. Dependencies must be completed and the WIP limit respected. Starting a card you already own does nothing. |
-| `done REF (--writeup TEXT \| --writeup-stdin)` | Complete an In Progress card with a write-up of the delivered work and the checks you ran. It fails with `state` while a delegated subtask is unfinished or a required review is not accepted. |
+| `done REF (--writeup TEXT \| --writeup-stdin)` | Complete an In Progress card with a write-up of the delivered work and the checks you ran. A missing or blank write-up is `invalid`. It fails with `state` while a delegated subtask is unfinished or a required review is not accepted; the error names each such subtask and what it waits for. |
 | `fly REF backlog\|task\|inprogress [--note TEXT]` | Move between Backlog, Task and In Progress. Use `done` to reach Done and `block`/`resume` for Blocked. |
 | `block REF (--reason TEXT \| --reason-stdin) --until CONDITION` | Move to Blocked with a reason and an observable exit condition. Releases ownership. |
 | `resume REF --note TEXT [--to task\|inprogress]` | Leave Blocked with a resolution note (default target `inprogress`, which claims the card). |
@@ -239,24 +243,24 @@ The five columns are `backlog`, `task`, `inprogress`, `done` and `blocked`.
 | Command | Effect |
 |---|---|
 | `update REF [--title T] [--priority P] [--add-tag X]... [--rm-tag X]... [--notes TEXT \| --notes-stdin]` | Edit fields. `--notes` replaces the pinned notes. |
-| `note REF [--subtask ID] --summary TEXT [--body MARKDOWN \| --stdin]` | Append an entry to the card's notes timeline (`log`). See [Notes timeline](#notes-timeline). With `--subtask`, the entry is about one delegated subtask; its worker or the card's owner may post it (see [Delegated subtasks](#delegated-subtasks)). |
+| `note REF [--subtask ID] --summary TEXT [--body MARKDOWN \| --stdin]` | Append an entry to the card's notes timeline (`log`). See [Notes timeline](#notes-timeline). With `--subtask`, the entry is about one subtask; the worker holding it or the card's owner may post it (see [Delegated subtasks](#delegated-subtasks)). |
 | `workpad REF` | Add missing `## Acceptance criteria` and `## Verification` sections to the pinned notes. |
 | `subtask REF add TEXT [TEXT ...] [--parent ID] [--delegated]` | Add one or more subtasks in one revision. `--parent` nests them. `--delegated` makes them claimable (see [Delegated subtasks](#delegated-subtasks)). |
-| `subtask REF done\|undone\|rm ID [ID ...]` | Tick, untick or remove checklist subtasks in one revision. If every requested change is already in place, nothing is saved and `rev` stays the same. `rm` also removes nested subtasks. |
+| `subtask REF done\|undone\|rm ID [ID ...]` | Tick, untick or remove checklist subtasks in one revision. If every requested change is already in place, nothing is saved and `rev` stays the same. `rm` also removes nested subtasks. Plain checklist steps take no `--result` (`invalid`); post their evidence with `note --subtask`. |
 | `depends REF [--on REF]... [--remove REF]... [--clear]` | Add, remove or clear dependencies. Self-dependencies, unknown cards and cycles are rejected. |
 | `comment REF add (TEXT \| --stdin)` | Add a comment. |
 | `comment REF edit ID (TEXT \| --stdin)` | Edit a comment (records `updatedBy`). |
 | `comment REF delete ID` | Delete a comment. |
 | `attachment REF list` | List the attachment manifest (also included in `context`). |
-| `attachment REF add --file SOURCE [--name NAME] [--mime MIME]` | Attach a file of up to 10 MiB. |
+| `attachment REF add --file SOURCE [--name NAME] [--mime MIME]` | Attach a file of up to 10 MiB. A missing file is `not_found`. |
 | `attachment REF get ID --out DEST` | Export an attachment to a new path. The size and SHA-256 are verified and existing files are never overwritten. JSON includes `out`, `sha256`, `rev`, the metadata and the card's `num`/`id`. |
 | `attachment REF remove ID` | Detach an attachment. The bytes are kept on disk for backups and recovery. |
 
-`update`, `workpad`, `note`, `comment add`, `attachment add` and checklist `subtask` operations work on any card, whoever owns it. Lifecycle commands and `depends` need you to own the card, or the card to have no owner. Editing or deleting a comment and detaching an attachment are limited to its author, the card's owner, or anyone when the entry records no author; anyone else gets `owned`.
+`update`, `workpad`, `note`, `comment add`, `attachment add` and checklist `subtask` operations work on any card, whoever owns it. Lifecycle commands and `depends` need you to own the card, or the card to have no owner; their input is checked first, so bad input is `invalid` whoever sends it. Editing or deleting a comment and detaching an attachment are limited to its author, the card's owner, or anyone when the entry records no author; anyone else gets `owned`.
 
 ### Notes timeline
 
-A card has two kinds of notes. The pinned `notes` string holds durable free-form context, such as acceptance criteria; `update --notes` replaces it and `workpad` seeds it. The `log` timeline holds one entry per step, appended with `note` and never edited.
+A card has two kinds of notes. The pinned `notes` string holds durable free-form context, such as acceptance criteria; `add --notes` sets it, `update --notes` replaces it and `workpad` seeds it. The `log` timeline holds one entry per step, appended with `note` and never edited.
 
 ```sh
 workboard --actor codex-auth note 12 --summary "Chose SQLite over JSON files" --body "Concurrent writers need row-level locks." --expected-rev 41 --json
@@ -267,58 +271,62 @@ git log -1 --format=%B | workboard --actor codex-auth note 12 --summary "Merged 
 - The body is optional markdown: `--body MARKDOWN`, or `--stdin` to read it from standard input (blank input fails with `invalid`). At most 32,000 characters; trailing whitespace is stripped.
 - An entry is `{"id", "at", "by", "summary", "body"}`: `id` is 32 lowercase hex characters, `at` is a `YYYY-MM-DDTHH:MM:SSZ` timestamp (`YYYY-MM-DD` for entries migrated from legacy notes), and `by` is the actor (`null` for migrated entries that had none). A `note --subtask` entry adds `subtaskId`; entries the subtask lifecycle writes add `"kind": "generated"` too.
 - Human output: `#N <title> note added: <summary>`, with the title and summary cut to 60 characters. With `--json`, `item` is the new entry.
-- `note` is a card command, so `--expected-rev` works as for the other card commands. Adding a note does not require owning the card; `note --subtask` requires holding that subtask or owning the In Progress card (`owned` otherwise).
+- `note` is a card command, so `--expected-rev` works as for the other card commands. Adding a note does not require owning the card; `note --subtask` requires holding that delegated subtask, on any column, or owning the In Progress card (`owned` otherwise).
 
 ## Delegated subtasks
 
-The owner of an In Progress card (Main) can hand complementary pieces of it to other agents and keep the card. A delegated subtask carries a `delegation` object (see [Architecture](architecture.md#delegated-subtasks)); plain checklist subtasks have none. Every delegated operation takes exactly one subtask ID.
+The owner of an In Progress card (Main) can hand complementary pieces of it to other agents and keep the card. A delegated subtask carries a `delegation` object (see [Architecture](architecture.md#delegated-subtasks)); plain checklist subtasks have none. Every delegated operation takes exactly one subtask ID (several are `invalid`, naming the delegated ones), except `accept`, which takes several and accepts all of them or none; its refusal names the subtask.
 
 | Command | Who | Effect |
 |---|---|---|
 | `subtask REF add TEXT... --delegated` | the card's owner, or anyone while it has none | Add available delegated subtasks. |
 | `subtask REF delegate ID` | as above | Make one open checklist subtask available. |
-| `subtask REF configure ID [--scope PATH]... [--clear-scope] [--on ID]... [--clear-deps] [--review-required\|--no-review-required]` | owner of the In Progress card | Configure available work: its saved write scope, its prerequisites among the card's delegated subtasks (no cycles) and whether its result needs review. Options you omit keep their value. Scope paths are relative to the board's project root, for example `packages/web/src/app/App.tsx` (`.` for the whole project); absolute paths, `..` segments and wildcards fail with `invalid`. `--scope` and `--clear-scope` also work on claimed or blocked work, keeping its claim, worker and result; prerequisites and review need available work (`state`). Scopes are advisory: `handoff` and focused context warn when one overlaps claimed or blocked work on any card that isn't Done. |
+| `subtask REF configure ID [--scope PATH]... [--clear-scope] [--on ID]... [--clear-deps] [--review-required\|--no-review-required]` | owner of the In Progress card | Configure available work: its saved write scope, its prerequisites among the card's delegated subtasks (no cycles) and whether its result needs review. Options you omit keep their value. Scope paths are relative to the board's project root, for example `packages/web/src/app/App.tsx` (`.` for the whole project); absolute paths, `..` segments and wildcards fail with `invalid`. On claimed or blocked work, `--scope` can only grow the saved scope: send the saved paths plus the new ones (a parent folder or `.` covers a saved path). Dropping a saved path, or `--clear-scope` on a saved scope, fails with `state`. The claim, worker and result stay; prerequisites and review need available work (`state`). Scopes are advisory: `handoff` and focused context warn when one overlaps claimed or blocked work on any card that isn't Done. |
 | `subtask REF claim ID` | a worker | Take available work. Its prerequisites, followed through their own prerequisites, must be completed and, where review is required, accepted (`deps`). Claiming your own claim again changes nothing. |
-| `note REF --subtask ID --summary TEXT [--body MARKDOWN \| --stdin]` | the worker, or owner of the In Progress card | Publish a finding on your claimed or blocked subtask. The card's owner may post on any delegated subtask of the card, in any state, for example to approve a wider scope; its own notes never become inbox findings. |
+| `note REF --subtask ID --summary TEXT [--body MARKDOWN \| --stdin]` | the worker holding it, or owner of the In Progress card | Post a note about one subtask. The worker may post while its delegated subtask is claimed, blocked or completed (also after acceptance, for example a recheck verdict), whatever the card's column, so reporting never needs `undone`. The card's owner may post on any subtask of the card, delegated or a plain checklist step, for example to approve a wider scope or attach a step's evidence; its own notes never become inbox findings. The summary and body are checked before permission, so bad input is `invalid` even when you may not post. |
 | `subtask REF block ID --reason TEXT --until CONDITION` | the worker | Mark claimed work blocked; you keep it. |
 | `subtask REF resume ID` | the worker | Continue blocked work. |
-| `subtask REF done ID --result TEXT` | the worker | Complete claimed work with its evidence, which is also appended as a timeline note. Repeating it with the same result changes nothing; a different result needs `undone` first. |
-| `subtask REF undone ID` | the worker | Reopen completed work, unless Main accepted it. |
+| `subtask REF done ID (--result TEXT \| --result-stdin)` | the worker | Complete claimed work with its evidence, which is also appended as a timeline note. Repeating it with the same result changes nothing; a different result needs `undone` first, or after acceptance a `note --subtask` instead (`state`). |
+| `subtask REF undone ID` | the worker | Reopen completed work. After acceptance it fails with `state`: post later evidence with `note --subtask`, or Main uses `request-changes`. |
 | `subtask REF release ID --reason TEXT` | the worker | Give claimed or blocked work back; it becomes available. |
 | `subtask REF takeover ID --reason TEXT` | anyone | Take over claimed or blocked work from its worker. |
-| `subtask REF accept ID` | owner of the In Progress card | Accept a completed result: the worker delivered what was asked, even when that is a verification that found a defect. Use `request-changes` when the result itself falls short. |
+| `subtask REF accept ID [ID ...]` | owner of the In Progress card | Accept completed results: the worker delivered what was asked, even when that is a verification that found a defect. Several IDs are accepted in one revision, and any refusal accepts none. Results that need no review can be accepted too, which clears them from `inbox`. Use `request-changes` when the result itself falls short. |
 | `subtask REF request-changes ID --reason TEXT` | owner of the In Progress card | Send a completed result back to its worker as claimed work. |
 
-- `claim`, `done`, `undone`, `block` and `resume` need the card In Progress with an owner (`state` otherwise). Configuring, accepting and requesting changes by anyone but that owner, and `add --delegated` or `delegate` on a card someone else owns, are `owned`.
-- A worker command on a subtask someone else holds is `owned`, and so is `release` of available work. The wrong state for your own subtask is `state`.
-- `subtask rm` refuses a subtree with another worker's claimed, blocked or completed subtask (`owned`) and a prerequisite that remaining subtasks still list (`state`).
-- `done REF` on the card fails with `state` until every delegated subtask is completed and every required review accepted. Nothing expires: blocking, canceling or pausing the card keeps every claim.
+- `claim`, `done`, `undone`, `block` and `resume` need the card In Progress with an owner (`state` otherwise; a worker posts its result with `note --subtask` and waits for the card to be started or resumed).
+- Configuring, accepting, requesting changes, `handoff` and `ack` need the card In Progress (`state`: start or resume it first) and are `owned` for anyone but its owner. `add --delegated`, `delegate` and removing delegated work on a card someone else owns are `owned`.
+- A worker command on a subtask nobody has claimed is `state` (claim it first). On a subtask someone else holds it is `owned`; to replace a worker that is gone, use `takeover`. The wrong state for your own subtask is `state`.
+- `subtask rm` refuses a subtree with another worker's claimed, blocked or completed subtask (`owned`, naming it) and a prerequisite that remaining subtasks still list (`state`).
+- `done REF` on the card fails with `state` until every delegated subtask is completed and every required review accepted; the error names each subtask that keeps the card open. Nothing expires: blocking, canceling or pausing the card keeps every claim.
+- `--result` belongs to delegated work: `done` or `undone` on plain checklist steps with a result is `invalid`. Tick them without one and post the evidence with `note --subtask`.
 - Worker commands don't need `--expected-rev`; see [Revision guards](#revision-guards).
 
 ### Focused context
 
-`context REF --subtask ID` keeps only that subtask's subtree and its ancestors; `--mine` keeps the subtasks you hold and `--assigned-to ACTOR` the ones another actor holds. Attachments, notes, dependencies and the newest 10 comments are kept, as in an unfocused read. The response adds `focus` with `subtaskId` or `assignedTo`, `matchedSubtaskIds`, `ancestorIds`, `scopeWarnings` (overlapping saved scopes) and `prerequisites` (each selected subtask's prerequisite subtasks), and `omitted.unrelatedSubtasks`. Focus grants no extra permission.
+`context REF --subtask ID` keeps only that subtask's subtree and its ancestors; `--mine` keeps the subtasks you hold and `--assigned-to ACTOR` the ones another actor holds. Attachments, notes, dependencies and the newest 10 comments are kept, as in an unfocused read. The response adds `focus` with `subtaskId` or `assignedTo`, `matchedSubtaskIds`, `ancestorIds`, `scopeWarnings` (overlapping saved scopes) and `prerequisites` (each selected subtask's prerequisite subtasks), and `omitted.unrelatedSubtasks`. Focus grants no extra permission. Each `scopeWarnings` row names the other subtask's `owner` and `state`, plus `claimedAt` and `lastActivityAt` (its latest note or claim), so a claim with no recent activity stands out.
 
 ### Handoff
 
-`handoff REF --subtask ID --worker ACTOR [--write-scope PATH]... [--peer ACTOR=ADDRESS]...` prepares a worker's brief and changes nothing. It never claims the subtask, starts a worker or sends a message.
+`handoff REF --subtask ID --worker ACTOR [--write-scope PATH]... [--peer ACTOR=ADDRESS]... [--fields LIST]` prepares a worker's brief and changes nothing. It never claims the subtask, starts a worker or sends a message.
 
 - Only the owner of the In Progress card may run it (`owned`, or `state` when the card isn't In Progress with an owner). The worker must be another actor.
-- The subtask must be delegated and available or already claimed by that worker (`state`; `owned` when another worker holds it), and its prerequisites must be complete (`deps`).
-- The write boundary is `--write-scope` (repeatable), else the subtask's saved scope; with neither, it fails with `invalid`. Paths are relative to the board's project root, and the prompt says so. `--peer` names other workers and how to reach them.
+- The subtask must be delegated (`state` for a plain checklist step) and its prerequisites complete (`deps`, naming each one), so a subtask with `--on` can be handed off only once they are. Available work, and work the worker already claimed, gives the normal brief.
+- Work claimed or blocked by another actor gives a takeover brief: `previousOwner` names the holder, the claim step is `subtask takeover` with a `{reason}` placeholder, and the prompt tells the worker to take over before starting. Blocked work also gets a `resume` step after the takeover, which the worker sends once the blocker's condition holds. Completed work, and work the worker itself blocked, is `state`.
+- The write boundary is `--write-scope` (repeatable), else the subtask's saved scope. Paths are relative to the board's project root, and the prompt says so. With neither, `writeScope` is `[]` and the prompt says the work is read-only: edit no files. `--peer` names other workers and how to reach them.
+- `--fields LIST` keeps only the listed result keys in `--json`, plus `ok`, `rev` and `num`: `--fields prompt` (`"fields":"prompt"` in `call`) returns just the brief. An unknown key fails with `invalid`.
 
-Without `--json` it prints only the copy-ready prompt, which shows the worker's steps as `call` requests. `--json` returns `{"ok", "board", "rev", "cardId", "num", "title", "parentOwner", "worker", "assignment", "scopeWarnings", "ancestorIds", "writeScope", "peers", "origin", "notes", "boardName", "commands", "call", "requests", "placeholders", "prompt"}`. `commands` holds four argument arrays, which name the card by its number (numbers are never reused):
+Without `--json` it prints only the copy-ready prompt, which shows the worker's steps as `call` requests. `--json` returns `{"ok", "board", "rev", "cardId", "num", "title", "parentOwner", "worker", "previousOwner", "assignment", "scopeWarnings", "ancestorIds", "writeScope", "peers", "origin", "notes", "boardName", "commands", "call", "requests", "placeholders", "prompt"}`. `commands` holds four argument arrays, which name the card by its number (numbers are never reused):
 
 ```json
 {"read":     ["workboard", "--board=demo", "--actor=worker-a", "context", "12", "--subtask=s-4", "--json"],
  "claim":    ["workboard", "--board=demo", "--actor=worker-a", "subtask", "12", "claim", "--json", "--", "s-4"],
  "publish":  ["workboard", "--board=demo", "--actor=worker-a", "note", "12", "--subtask=s-4", "--summary={summary}", "--stdin", "--json"],
- "complete": ["workboard", "--board=demo", "--actor=worker-a", "subtask", "12", "done", "--result={result}", "--json", "--", "s-4"]}
+ "complete": ["workboard", "--board=demo", "--actor=worker-a", "subtask", "12", "done", "--result-stdin", "--json", "--", "s-4"]}
 ```
 
-Replace only `{summary}` and `{result}` (described in `placeholders`) and keep every other element literal. Run each array with its elements as separate arguments; in a shell, quote every element. `publish` reads the note body from standard input.
+Replace only the placeholders described in `placeholders` (`{summary}`, and `{reason}` in a takeover brief, whose claim is `[..., "subtask", "12", "takeover", "--reason={reason}", "--json", "--", "s-4"]`) and keep every other element literal. Run each array with its elements as separate arguments; in a shell, quote every element. `publish` reads the note body and `complete` the result from standard input.
 
-`requests` holds the same four steps as [`call`](#call) requests, and `call` is the argument array that runs them, for example `["workboard", "--board=demo", "--actor=worker-a", "call"]`. Send each request as a JSON line on its standard input after replacing the `{summary}`, `{body}` and `{result}` values. No text passes through a shell, so multi-line notes and results arrive intact through npm's Windows `workboard.cmd` shim too:
+`requests` holds the same four steps as [`call`](#call) requests, and `call` is the argument array that runs them, for example `["workboard", "--board=demo", "--actor=worker-a", "call"]`. Send each request as a JSON line on its standard input after replacing the `{summary}`, `{body}` and `{result}` values (in a takeover brief, `claim` is `{"op": "subtask.takeover", "card": 12, "subtask": "s-4", "reason": "{reason}"}`). No text passes through a shell, so multi-line notes and results arrive intact through npm's Windows `workboard.cmd` shim too:
 
 ```json
 {"read":     {"op": "context", "card": 12, "subtask": "s-4"},
@@ -333,14 +341,14 @@ Replace only `{summary}` and `{result}` (described in `placeholders`) and keep e
 
 | `kind` | Shown to | Extra fields | When |
 |---|---|---|---|
-| `review` | the card's owner | `title`, `text`, `result`, `owner`, `review` | Someone else completed a subtask that requires review, and it is still pending. |
+| `review` | the card's owner | `title`, `text`, `result`, `owner`, `review` | Someone else completed a delegated subtask, and it isn't accepted yet. `review.required` says whether the card's `done` waits on it; results that need no review are listed too. |
 | `blocker` | the card's owner and the worker | `owner`, `blocker` | A delegated subtask is blocked. |
 | `changes_requested` | the worker | `review` | Main requested changes on your subtask. |
 | `finding` | the card's owner | `title`, `note` | Someone else added a note (not a generated one) that you haven't acknowledged. `note.id` is the ID `ack` takes. |
 
 Rows for a card's owner appear only while the card is In Progress. `accept` and `request-changes` clear a review; `resume` or `release` clears a blocker.
 
-`ack REF NOTE_ID [NOTE_ID ...]` acknowledges findings in one write. Only the owner of the In Progress card may run it (`owned`). Every ID must be a finding on that card (`not_found`); one unknown ID refuses the whole call. IDs you already acknowledged cause no write and keep `rev`. Acknowledgements are stored per actor in the card's `inboxAcknowledged` and add no history entry. `--json` `items` holds the acknowledged entries in request order. `ack` takes no `--expected-rev`.
+`ack REF NOTE_ID [NOTE_ID ...]` acknowledges findings in one write. Only the owner of the In Progress card may run it (`state` when the card isn't In Progress, `owned` for anyone else). Every ID must be a finding on that card (`not_found`); one unknown ID refuses the whole call. IDs you already acknowledged cause no write and keep `rev`. Acknowledgements are stored per actor in the card's `inboxAcknowledged` and add no history entry. `--json` `items` holds the acknowledged entries in request order. `ack` takes no `--expected-rev`.
 
 ## Portable boards
 
@@ -349,7 +357,7 @@ Rows for a card's owner appear only while the card is In Progress. `accept` and 
 Write the board to a new ZIP: `workboard-bundle.json` (`{"format": "workboard-bundle", "version": 1}`), the byte-exact `board.json`, every attachment the included documents reference (`attachments/<id>`), the archived cards (`archive/*.json`; `--no-archives` leaves them and the files only they use out) and, with `--include-backups`, the rolling snapshots (`.backups/board-<rev>.json`).
 
 - The snapshot is taken under the board lock. `--expected-rev` is the exact board revision (`stale` otherwise).
-- `PATH` is never replaced: an existing file fails with `invalid`, and one that appears during the export with `io`. A path inside the WorkBoard home, the board's folder or WorkBoard's own package, under a `.workboard` or `.git` folder, or below a folder that holds a `board.json` fails with `scope`.
+- `PATH` is never replaced: an existing file fails with `invalid` (422), and one that appears during the export with `io`. A path inside the WorkBoard home, the board's folder or WorkBoard's own package, under a `.workboard` or `.git` folder, or below a folder that holds a `board.json` fails with `scope`.
 - Prints `exported <name> rev <rev> → <out> (<n> cards, <n> attachments, <n> archives, <n> backups)`. JSON: `{"ok", "board", "name", "rev", "out", "bytes", "cards", "attachments", "archives", "backups"}`.
 
 ### `import FILE --name NAME --dir PROJECT [--apply]`

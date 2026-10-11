@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The card's owner was refused (`owned`, "only the current claimant or the parent owner can publish") when posting `note --subtask` on a plain checklist step of its own card. The owner may now note any subtask of its card, so a step's evidence stays with that step.
+- A worker can post `note --subtask` on its delegated subtask after `subtask done`, including after Main accepted it, for example a recheck verdict. Before, the worker had to `undone`, note and `done` again, which rewrote the subtask's history and briefly showed approved work as open.
+- `note --subtask` checks the summary and body before permission, so a too-long summary is `invalid` in the first reply instead of after an `owned` refusal and a retry.
+- The `call` hint for `id` on a subtask action no longer suggests a `subtasks` list that delegated actions refuse.
+- In `call`, a list for an option that takes one value kept only its last item, and an empty list sent nothing. Both are now `invalid`: `notes takes one value, not a list`, `scope is an empty list; omit it or use clearScope to clear`.
+- `call` errors name request keys instead of the parser's names: a missing field is `note needs "summary"` or `subtask.claim needs "subtask" or "subtasks"` instead of "the following arguments are required: what", an unknown key is `context doesn't take "fields"`, and usage errors show `"camelKey"` without the `--*-stdin` alternatives that `call` refuses.
+- In `call`, a `card`, `column`, attachment `id` or `ack` note ID starting with `-` (such as `-h`) reached the parser, and a request that printed help ended the whole stream. Both are now `invalid`, and later requests still run.
+- `context`, `note`, `handoff` and `wait` in `call` say they take one subtask ID in `subtask` when given `id` or `subtasks`.
+- `wait --subtask` missed notes posted on that subtask, so a worker waiting for Main's answer timed out. A note on the watched subtask now wakes it.
+- `query --column` and `list --column` compared the raw text, so `in-progress` or `In Progress` matched nothing and a misspelled column returned an empty list. They now take the same column names as `fly`, plus any column the board itself has, and an unknown column is `invalid`.
+- A worker holding a delegated subtask couldn't post `note --subtask` once the card left In Progress (`state`). It can now post on any column, for example after the card is Done. A refusal names the subtask's holder and suggests a card note instead.
+- A `result` on plain checklist steps (`subtask done`) was silently dropped. It is now `invalid`, and the error says to post the evidence with `note --subtask`.
+- Lifecycle and subtask commands check their input (reasons, `until`, write-ups, results, target columns, dependency IDs) before ownership, so bad input from someone who may not act is `invalid` in the first reply instead of `owned`.
+- Refusals name what blocks you: the card's `done` lists each subtask that keeps it open and what it waits for; `start`, `depends`, `subtask claim`, `subtask done` and `handoff` name each unmet prerequisite; a refused ID in a multi-ID `accept` and the delegated IDs in another multi-ID action are named.
+- `subtask done` with a new result on accepted work said to reopen it with `undone`, which was refused, and `undone` named "Main" as the acceptor. Both now name who accepted it and say to post later evidence with `note --subtask`.
+- A worker command on a card that isn't In Progress now says to post the result with `note --subtask` and wait for the owner to start or resume the card. `add --delegated`, `delegate` and `rm` on another owner's card say to ask that owner instead of suggesting `takeover`, and a claimant refusal points to `subtask takeover` for a worker that is gone.
+
+### Added
+
+- `subtask accept` takes several subtask IDs (`"subtasks":[...]` in `call`) and accepts them in one revision; if any can't be accepted, none are.
+- `digest --json` adds `mine`: the cards you hold, as listed under MINE in the text output.
+- `add --notes TEXT` or `--notes-stdin` (`notes` in `call`) sets the pinned notes when the card is created; with `--from` it replaces the copied notes.
+- `subtask REF done ID --result-stdin` reads the result from stdin.
+- `search --limit N` keeps the N newest hits, and `search --fields LIST` picks the hit fields, as in `query`.
+- `handoff --fields LIST` keeps only the listed keys in `--json`, plus `ok`, `rev` and `num`; `"fields":"prompt"` returns just the brief.
+- `handoff` on a subtask another worker holds (claimed or blocked) returns a takeover brief for the replacement worker: `previousOwner` names the holder, and the claim step is `subtask takeover` with a `{reason}` placeholder. Blocked work also gets a `resume` step. Before, it was refused.
+- `handoff` without a write scope returns a read-only brief that tells the worker to edit no files. Before, it was refused, and Main had to brief read-only workers by hand.
+- `context` has the card's `num` at the top, next to `rev`.
+- `scopeWarnings` rows add `claimedAt` and `lastActivityAt` (the latest note on that subtask, or its claim), so Main can tell a stale claim from active work.
+- `inbox` also lists completed results that need no review, with `review.required` false; `subtask accept` clears them. They still don't hold up `done`.
+
+### Changed
+
+- `search --json` hits are `{num, title, column}` instead of full cards; ask for more with `--fields`.
+- `done` without a write-up, or with a blank one, is `invalid` (was `state`).
+- `state` is always status 409. `add` into a later column, `fly REF done`, and moving a card into or out of Blocked with `fly` or `start` returned 422.
+- `attachment add` with a missing `--file` is `not_found` (was `io`).
+- An existing `export --out` destination is status 422, like other `invalid` errors (was 409).
+- On claimed or blocked work, `subtask configure --scope` can only grow the saved scope: send the saved paths plus the new ones. Dropping a path, or `--clear-scope`, is refused with `state`, since the worker may be editing it.
+- A worker command (`done`, `undone`, `block`, `resume`, `release`) on a subtask nobody has claimed is `state`, saying to claim it first (was `owned`, "held by nobody").
+- `subtask configure`, `accept`, `request-changes` and `ack` on a card that isn't In Progress are `state`, saying to start or resume it first (was `owned`).
+- Removing delegated subtasks (`subtask rm`) needs the card's owner, or a card without one (`owned`).
+- `handoff`'s `commands.complete` reads the result from stdin (`--result-stdin`) instead of a `--result={result}` argument, so multi-line results survive npm's Windows shim.
+
 ## [0.3.4] - 2026-10-10
 
 ### Added

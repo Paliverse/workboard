@@ -183,6 +183,7 @@ class BoardLifecycle(unittest.TestCase):
         self.assertIn("READY TO CLOSE", attention.stdout)
         pulse = last_json(wb(["digest", "--json"], self.proj))
         self.assertEqual(next(c for c in pulse["attention"] if c["num"] == 1)["owner"], "tester")
+        self.assertIn(1, [c["num"] for c in pulse["mine"]])
 
     def test_c05_update_fields(self):
         u = wb(["update", "2", "--title", "Renamed Card", "--priority", "low",
@@ -801,7 +802,7 @@ class Contracts(unittest.TestCase):
         for command in (["list"], ["search", "Inspect"], ["search", "User", "context"]):
             result = last_json(wb([*command, "--json", "--board", root], BASE))
             self.assertEqual(result["rev"], rev)
-            self.assertEqual([card["id"] for card in result["cards"]], [identity["id"]])
+            self.assertEqual([card["num"] for card in result["cards"]], [identity["num"]])
 
         lock = path.parent / ".board.lock"
         lock.unlink()
@@ -828,7 +829,7 @@ class Contracts(unittest.TestCase):
         refused = wb(["attachment", reference, "get", metadata["id"], "--out", destination,
                       "--board", root, "--json"], BASE)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertEqual(last_json(refused)["status"], 409)
+        self.assertEqual((last_json(refused)["status"], last_json(refused)["code"]), (422, "invalid"))
         self.assertEqual(destination.read_bytes(), content)
 
         before = path.read_bytes()
@@ -1198,10 +1199,10 @@ class Contracts(unittest.TestCase):
         before = path.read_bytes()
         cases = [
             (["subtask", "1", "done", "absent"], 404, "not_found"),
-            (["fly", "1", "done"], 422, "state"),
+            (["fly", "1", "done"], 409, "state"),
             (["query", "--fields", "num,title,column,n"], 422, "invalid"),
             (["note", "1", "--summary", "future", "--expected-rev", card["rev"] + 1], 422, "invalid"),
-            (["attachment", "1", "add", "--file", root / "absent.txt"], 404, "io"),
+            (["attachment", "1", "add", "--file", root / "absent.txt"], 404, "not_found"),
         ]
         for command, status, code in cases:
             proc = wb([*command, "--json"], root)
@@ -1250,7 +1251,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(last_json(other)["item"]["by"], "Ada")
 
         found = last_json(wb(["search", "only-in-body-xyzzy", "--json"], root))
-        self.assertEqual([hit["id"] for hit in found["cards"]], [card["id"]])
+        self.assertEqual([hit["num"] for hit in found["cards"]], [card["num"]])
 
         with core.board_transaction(path) as doc:
             for n in range(9):

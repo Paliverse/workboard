@@ -52,6 +52,7 @@ class DelegationHTTP(unittest.TestCase):
         status, conflicts, _ = http_req(ctx["url"] + f"/api/card/{card_id}/scopes?subtask={ids[1]}")
         self.assertEqual(status, 200, conflicts)
         self.assertEqual(conflicts["conflicts"][0]["subtaskId"], ids[0])
+        self.assertTrue(conflicts["conflicts"][0]["claimedAt"])
         status, denied, _ = life(ctx, card_id, "subtask", {"op": "claim", "ids": [ids[1]]}, actor="Verifier")
         self.assertEqual((status, denied["code"]), (409, "deps"))
         self.assignment(ctx, card_id, "block", ids=[ids[0]], actor="Worker", reason="Waiting on spec", until="Spec approved")
@@ -66,6 +67,11 @@ class DelegationHTTP(unittest.TestCase):
         self.assignment(ctx, card_id, "accept", ids=[ids[0]])
         self.assertEqual(self.inbox(ctx), [])
         self.assignment(ctx, card_id, "claim", ids=[ids[1]], actor="Verifier")
+        self.assignment(ctx, card_id, "done", ids=[ids[1]], actor="Verifier", result="Verification passed")
+        row, = self.inbox(ctx)  # Results without required review still reach the parent owner.
+        self.assertEqual((row["kind"], row["subtaskId"], row["review"]["required"]), ("review", ids[1], False))
+        self.assignment(ctx, card_id, "accept", ids=[ids[1]])
+        self.assertEqual(self.inbox(ctx), [])
 
     def test_findings_acknowledge_many_in_one_write(self):
         ctx = self.new_board()
