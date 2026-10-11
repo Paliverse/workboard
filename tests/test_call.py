@@ -179,6 +179,8 @@ class CallAndWait(unittest.TestCase):
             ({"op": "attachment.get", "card": 1, "id": "-h", "out": "copy.txt"}, "id"),
             ({"op": "subtask.configure", "card": 1, "subtask": one, "reviewRequired": True}, "reviewRequired"),
             ({"op": "subtask.add", "card": 1, "text": "Child", "parent": one}, "parent"),
+            ({"op": "subtask.edit", "card": 1, "subtask": "s-1", "text": "x"}, "subtask.edit"),
+            ({"op": "comment.5", "card": 1, "text": "x"}, "comment.5"),
         ]
         *results, shown = self.calls(*[request for request, _ in cases], {"op": "show", "card": 1}, ok=False)
         for (request, key), result in zip(cases, results):
@@ -260,27 +262,34 @@ class CallAndWait(unittest.TestCase):
         self.assertEqual((handoff["previousOwner"], handoff["writeScope"]), ("Ada", []))
         self.assertEqual(handoff["requests"]["claim"], {"op": "subtask.takeover", "card": 1, "subtask": sid,
                                                         "reason": "{reason}", "board": "calls", "actor": "Grace"})
-        for text in ("read-only: edit no files", "{reason}", "`workboard call`",
-                     json.dumps(handoff["requests"], ensure_ascii=False)):
+        for text in ("read-only: edit no files", "{reason}", "`workboard call`"):
             self.assertIn(text, handoff["prompt"])
+
+        def printed(handoff):  # Each request is its own prompt line, in order, as call takes it.
+            lines = [line for line in handoff["prompt"].splitlines() if line.startswith("{")]
+            self.assertEqual(lines, [json.dumps(r, ensure_ascii=False) for r in handoff["requests"].values()])
+            return dict(zip(handoff["requests"], lines))
+
+        steps = printed(handoff)
         text = self.cli(["handoff", "1", "--subtask", sid, "--worker", "Grace"])
         self.assertEqual(text.stdout, handoff["prompt"])
         for option, value in (("--write-scope", "src"), ("--fields", "prompt"), ("--peer", "Ada=agent://x")):
             removed = self.cli(["handoff", "1", "--subtask", sid, "--worker", "Grace", option, value])
             self.assertEqual(removed.returncode, 2, option)
         worker = ["call"]  # The requests name their board and actor; no shell-quoted names on the command line.
-        claim = {**handoff["requests"]["claim"], "reason": "Main reassigned the review"}
-        taken = self.cli(worker, input=json.dumps(claim) + "\n")
+        pasted = (steps["read"], steps["claim"].replace("{reason}", "Main reassigned the review"),
+                  steps["publish"].replace("{summary}", "Checked").replace("{body}", "Evidence"))
+        taken = self.cli(worker, input="\n".join(pasted) + "\n")
         self.assertEqual(taken.returncode, 0, taken.stdout + taken.stderr)
-        self.assertEqual(last_json(taken)["item"]["delegation"]["owner"], "Grace")
+        self.assertEqual(json.loads(taken.stdout.splitlines()[1])["item"]["delegation"]["owner"], "Grace")
         again = self.calls(request)[0]
         self.assertIsNone(again["previousOwner"])
         self.assertEqual(again["requests"]["claim"],
                          {"op": "subtask.claim", "card": 1, "subtask": sid, "board": "calls", "actor": "Grace"})
         self.assertNotIn("{reason}", again["prompt"])
         self.assertLess(len(again["prompt"]), 1500)
-        complete = {**again["requests"]["complete"], "result": "Verified\nby the review"}
-        completed = self.cli(worker, input=json.dumps(complete) + "\n")
+        complete = printed(again)["complete"].replace("{result}", "Verified\\nby the review")
+        completed = self.cli(worker, input=complete + "\n")
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertEqual(last_json(completed)["item"]["delegation"]["result"], "Verified\nby the review")
 

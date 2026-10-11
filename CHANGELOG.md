@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Blocking a card hid its `review`, `blocker` and `claim` rows from `inbox`, because `block` clears the owner, so Main lost sight of finished and running work. The actor who blocked the card now still sees them, by the same holder rule as `digest`'s MINE and `query --mine`. `finding` rows wait until the card is In Progress again, since `ack` needs it. The browser shows a Blocked card's results without Accept and Request changes buttons until it is resumed, since review needs In Progress.
+- The `handoff` prompt printed the worker's requests as one JSON object on one line, so pasting it into `workboard call` was `invalid` ("each call request needs a string op"). It now prints each request on its own line: read, claim, resume (blocked work only), publish, complete. `--json` `requests` is unchanged.
+- Refusals name the op that clears them. The card's `done` refusal follows each subtask that keeps the card open with its next step: `subtask.takeover` with a reason if the actor holding it is gone, or for available work, claim and finish it or `subtask.rm` it. `subtask accept` on work that isn't completed gives the same hint. In `call`, an unknown `subtask.*` or `comment.*` action said "argument op: invalid choice"; it now names the op and lists the real ones: `unknown op "subtask.edit"; subtask ops: add, done, …`.
+- An HTTP card edit (`PATCH api/card/{ref}`) could blank the write-up of a Done card, which `done` refuses. Changing a Done card's `writeup` to blank or whitespace-only text is now `invalid` (422); other columns are unchanged.
+- The skill lists `note` as `resume`'s reason and `subtask.rm` among the ops, and tells Main to drop a superseded step with `subtask.rm` (after `subtask.takeover` if another worker still claims it). It tells a worker whose `wait` returned `changed` with nothing new on its subtask to wait again with the returned `rev`, and says a Blocked card you blocked keeps its inbox rows. Its card `takeover` line could be read as allowing a takeover only when the user asks; it now says "only if the user asks or the holder is your own gone worker".
+
 ## [0.3.6] - 2026-10-11
 
 ### Added

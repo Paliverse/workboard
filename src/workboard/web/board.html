@@ -3477,7 +3477,7 @@ const WB = window.WB = {};
         const label = { review: 'Result awaiting review', blocker: 'Assignment blocked', finding: 'Shared finding', changes_requested: 'Changes requested',
           claim: 'Assignment in progress' }[row.kind] || row.kind;
         const tools = h('div', { class: 'tools' });
-        if (row.kind === 'review') tools.append(
+        if (row.kind === 'review' && card.column === 'inprogress') tools.append(  // Review needs In Progress; a Blocked card shows the row only.
           h('button', { class: 'btn sm primary', type: 'button', on: { click: () => review(row, 'accept') } }, 'Accept result'),
           h('button', { class: 'btn sm outline', type: 'button', on: { click: () => review(row, 'request-changes') } }, 'Request changes…'));
         if (row.kind === 'finding') tools.append(h('button', { class: 'btn sm outline', type: 'button', on: { click: () => acknowledge([row]) } }, 'Acknowledge'));

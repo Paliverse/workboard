@@ -590,6 +590,23 @@ class MultiBoardApiTest(unittest.TestCase):
         assert mutate(ctx, "/api/structure", {"operation": {
             "type": "create-card", "card": {"id": tid, "title": "Recycled identity"}}})[0] == 409
 
+    def test_done_writeup_cannot_be_blanked_by_an_edit(self):
+        ctx = self.new_board()
+        cid, canceled, open_id = (create(ctx, title)["id"] for title in ("Shipped", "Dropped", "Open"))
+        assert life(ctx, cid, "start")[0] == 200
+        assert life(ctx, cid, "complete", {"writeup": "Shipped"})[0] == 200
+        assert life(ctx, canceled, "cancel", {"reason": "Not needed"})[0] == 200
+        for blank in ("", " \n"):
+            status, data, _ = mutate(ctx, f"/api/card/{cid}", {"card": {"writeup": blank}})
+            self.assertEqual((status, data["code"]), (422, "invalid"), data)
+        self.assertEqual(current(ctx, cid)["writeup"], "Shipped")
+        status, data, _ = mutate(ctx, f"/api/card/{cid}", {"card": {"writeup": "Shipped and verified"}})
+        self.assertEqual((status, data["card"]["writeup"]), (200, "Shipped and verified"), data)
+        # An unchanged blank write-up (canceled work) and non-Done cards edit as before.
+        for edited in (canceled, open_id):
+            status, data, _ = mutate(ctx, f"/api/card/{edited}", {"card": {"title": "Renamed", "writeup": ""}})
+            self.assertEqual(status, 200, data)
+
     def test_browser_note_adds_a_timeline_entry(self):
         ctx = self.new_board()
         cid = create(ctx, "Timeline")["id"]

@@ -152,6 +152,7 @@ Every JSON write response includes `ok`, `rev`, `savedAt`, `savedBy` and the sav
 - `card` is required. Other keys in it are dropped, and server-owned fields must be unchanged. For example, a changed `log` is 422 `'log' is server-owned; use its dedicated action`; add timeline entries with the `note` lifecycle action.
 - `subtasks` replaces the whole checklist, a flat list. Every item needs a string `id`, and `done` must be a boolean (422). Items that a client from WorkBoard 0.3.5 or earlier sends with their own subtasks inside are flattened, each just before the ones it held, and their fold state is dropped. An item that omits `delegation` keeps its stored value. Delegated state changes only through the `subtask` lifecycle action: supplying a `delegation` that differs from the stored one, adding one to a new or plain item, or changing `done`/`doneAt` of a delegated item is refused (409 `state`), and so is dropping or retexting another worker's claimed, blocked or completed subtask (409 `owned`). The same rules apply to snapshots and `create-card`.
 - Field edits never check who owns the card. Changing `column` runs the lifecycle `move` action, including its owner, WIP, dependency and state checks.
+- On a Done card, changing `writeup` to blank or whitespace-only text is 422 `invalid`, as `complete` refuses it.
 - `position` reorders cards within the display order: `before` wins over `after`. It never changes the column.
 - Response adds `card`, `positioned` and `"event": "card-updated"`.
 

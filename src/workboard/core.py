@@ -1368,11 +1368,8 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
         if frm == "blocked":
             raise WorkflowError("use resume with a resolution note", 409, "state")
         if blocking := unaccepted_delegations(card):
-            raise WorkflowError(f"delegated work keeps {fmt_ref(card)} open: " + "; ".join(
-                f"{st['id']} awaits review (subtask.accept or subtask.request-changes)"
-                if st["delegation"]["state"] == "completed" else f"{st['id']} is {st['delegation']['state']}"
-                + (f" by {st['delegation']['owner']}" if st["delegation"]["owner"] else "")
-                for st in blocking), 409, "state")
+            raise WorkflowError(f"delegated work keeps {fmt_ref(card)} open: "
+                                + "; ".join(_unfinished_delegation(st, by) for st in blocking), 409, "state")
         if frm != "inprogress":  # Started work keeps its claim even if a prerequisite was reworked since.
             _require_start(doc, card, wip=False)
         destination = "done"
@@ -2021,6 +2018,12 @@ def guard_subtask_replacement(current, incoming, by: str) -> None:
             raise WorkflowError("cannot replace another worker's delegated subtask", 409, "owned")
 
 
+def guard_done_writeup(card: dict, writeup) -> None:
+    """Done work keeps its write-up: a generic edit may change it but not blank it (as done refuses)."""
+    if card.get("column") == "done" and writeup != card.get("writeup"):
+        _required_text(writeup, "completion writeup")
+
+
 def _subtask_index(card: dict) -> dict:
     rows = list(iter_subtasks(card.get("subtasks") or []))
     index = {st["id"]: (st, parent) for st, parent in rows}
@@ -2119,12 +2122,22 @@ def scope_conflicts(doc: dict, card: dict, subtask_id: str) -> list[dict]:
     return rows
 
 
+def card_holder(card: dict) -> str | None:
+    """Active owner, or for Blocked work (blocking releases ownership) the actor who blocked it."""
+    if card.get("activeOwner"):
+        return card["activeOwner"]
+    if card.get("column") == "blocked":
+        blocked = [entry for entry in card.get("history") or [] if entry.get("ev") == "blocked"]
+        return blocked[-1].get("by") if blocked else None
+    return None
+
+
 def inbox(doc: dict, by: str, ref=None) -> list[dict]:
     by = validate_actor(by)
     cards = [resolve_ref(doc, ref)] if ref is not None else doc.get("cards") or []
     rows = []
     for card in cards:
-        main = card.get("column") == "inprogress" and card.get("activeOwner") == by
+        main = card.get("column") in ("inprogress", "blocked") and card_holder(card) == by
         accepted = set()
         # A tolerant walk: legacy checklists with duplicate IDs must not break the inbox.
         for item, _ in iter_subtasks(card.get("subtasks") or []):
@@ -2147,7 +2160,7 @@ def inbox(doc: dict, by: str, ref=None) -> list[dict]:
                              "subtaskId": sid, "review": review})
             if review["state"] == "accepted":
                 accepted.add(sid)
-        if main:
+        if main and card.get("column") == "inprogress":  # Findings wait for resume: ack needs In Progress.
             acknowledged = set((card.get("inboxAcknowledged") or {}).get(by) or [])
             log = card.get("log") or []
             # Notes on an accepted subtask posted before its (latest) acceptance were part of that review.
@@ -2360,8 +2373,8 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
             _validate_subtask_dependencies(index)
         elif action == "accept":
             if state != "completed":
-                raise WorkflowError(f"{selected['id']}: accept requires completed delegated work (it is {state})",
-                                    409, "state")
+                raise WorkflowError("accept requires completed delegated work: "
+                                    + _unfinished_delegation(selected, by), 409, "state")
             review = delegation["review"]
             if review["state"] == "accepted":
                 return [selected]
@@ -2451,6 +2464,18 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
     hist(card, f"subtask-{action}", by=by, note=note)
     touch(card)
     return [selected]
+
+
+def _unfinished_delegation(item: dict, by: str) -> str:
+    """One delegated subtask that keeps work open, and the op that clears it."""
+    delegation = item["delegation"]
+    state, owner = delegation["state"], delegation["owner"]
+    if state == "completed":
+        return f"{item['id']} awaits review (subtask.accept or subtask.request-changes)"
+    if state == "available":
+        return f"{item['id']} is available (claim and finish it, or subtask.rm it)"
+    return (f"{item['id']} is {state}" + (f" by {owner}" if owner else "")
+            + (f" (subtask.takeover with a reason if {owner} is gone)" if owner and owner != by else ""))
 
 
 def unaccepted_delegations(card: dict) -> list[dict]:

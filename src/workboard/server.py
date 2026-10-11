@@ -416,6 +416,7 @@ def _update_card(doc: dict, current: dict, raw: dict, by: str) -> dict:
     merged.pop("lifecycleCycles", None)
     updated = wb.normalize_card(merged)
     wb.guard_subtask_replacement(current.get("subtasks", []), updated["subtasks"], by)
+    wb.guard_done_writeup(current, updated["writeup"])
     current.clear()
     current.update(updated)
     if destination != current["column"]:

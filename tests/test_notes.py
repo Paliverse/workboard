@@ -222,6 +222,23 @@ class TimelineEntries(unittest.TestCase):
         findings = [row["note"]["summary"] for row in core.inbox(doc, "Main") if row["kind"] == "finding"]
         self.assertEqual(findings, ["Note 1", "Note 2", "Note 5"])  # Note 5 is a recheck after acceptance.
 
+    def test_inbox_keeps_claims_on_a_blocked_card_and_findings_wait_for_resume(self):
+        doc = core.normalize_doc({"cards": [{"id": "c", "num": 1, "title": "T", "column": "task"}]})
+        card = doc["cards"][0]
+        core.workflow_action(doc, card, "start", {}, "Main")
+        core.subtask_action(doc, card, "add", {"texts": ["Worker step"], "delegated": True}, "Main")
+        core.subtask_action(doc, card, "claim", {"ids": ["s-1"]}, "W")
+        core.workflow_action(doc, card, "block", {"reason": "Waiting on W", "until": "W reports"}, "Main")
+
+        def rows(kind):
+            return [row for row in core.inbox(doc, "Main") if row["kind"] == kind]
+
+        self.assertEqual([(row["subtaskId"], row["owner"]) for row in rows("claim")], [("s-1", "W")])
+        core.workflow_action(doc, card, "note", {"summary": "W's finding", "body": ""}, "W")
+        self.assertEqual(rows("finding"), [])
+        core.workflow_action(doc, card, "resume", {"note": "W reported"}, "Main")
+        self.assertEqual([row["note"]["by"] for row in rows("finding")], ["W"])
+
     def test_normalize_card_refuses_malformed_log(self):
         valid = {"id": "a" * 32, "at": "2026-09-01", "by": None, "summary": "ok", "body": ""}
         for log in ({}, ["entry"], [{**valid, "id": "A" * 32}], [valid, valid],

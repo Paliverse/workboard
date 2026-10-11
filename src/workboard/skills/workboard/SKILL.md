@@ -30,7 +30,7 @@ A card left In Progress after its work merged misleads everyone. Close cards whe
 | `id` | Attachment ID for `attachment.get` |
 | `column` | Target column of `fly`, or the column for `add` (`backlog`, `task`, `inprogress`) |
 | `notes` | For `add` and `update`, the pinned notes as one string; for `ack`, a list of note IDs |
-| Other keys | The command's long option in camelCase: `expectedRev`, `title`, `origin` (a new card's description: the user's words, a repro), `summary`, `body`, `writeup`, `reason`, `until`, `result`, `priority`, `tag`, `on`, `scope`, `worker`, `fields`, `mine`, `full`, `after`, `timeout` |
+| Other keys | The command's long option in camelCase: `expectedRev`, `title`, `origin` (a new card's description: the user's words, a repro), `summary`, `body`, `writeup`, `reason`, `note` (the reason for `resume`), `until`, `result`, `priority`, `tag`, `on`, `scope`, `worker`, `fields`, `mine`, `full`, `after`, `timeout` |
 
 `true` sets a flag; `null` and `false` leave it out. A list repeats an option that repeats (`"tag":["ui","bug"]`, `"scope":[...]`); a list for a single-value key, or an empty list, is refused. `actor` and `board` in a request override the ones given to `call`.
 
@@ -38,7 +38,7 @@ A card left In Progress after its work merged misleads everyone. Close cards whe
 1. **Orient.** Handed a delegated subtask? Follow Worker below. Otherwise run `digest`: `MINE` lists the cards you hold (plus Blocked cards you blocked), `READY` the cards you could start. Pick one, use `next`, or `add` a card.
 2. **Read.** `context` gives pinned notes (acceptance criteria), the notes timeline, comments, subtasks, dependencies, owner and attachments. Add `"full":true` for omitted comments, the audit history or old subtasks.
 3. **Files.** An attachment list is not an inspection: `attachment.get` with `id` and `out` (a new path), then read the file.
-4. **Claim.** `start` with `expectedRev` from your read, or `add` with `"column":"inprogress"` to create and start in one request. For a Blocked card, `resume` with `note`. `takeover` with `reason` only when the user asks, or when the owner is your own worker whose session ended.
+4. **Claim.** `start` with `expectedRev` from your read, or `add` with `"column":"inprogress"` to create and start in one request. For a Blocked card, `resume` with `note`. `takeover` with `reason` only if the user asks or the holder is your own gone worker.
 5. **Work in the open.**
    - Steps are subtasks: `subtask.add`, then `subtask.done`. Write down every remaining step, including review, integration and release: once every subtask is done, `digest` marks the card READY TO CLOSE.
    - Post a `note` for each meaningful step: a decision, a finding, a commit or a test run. Add `subtask` to attach it to a step.
@@ -73,12 +73,13 @@ Main owns the card, integrates the work and verifies it. Workers get subtasks, n
    - widen a claimed scope with `subtask.configure`, sending the saved paths plus the new ones (narrowing held work is refused);
    - answer with `note` plus `subtask`; it wakes the worker's `wait`;
    - await changes with `wait` (`card`, optional `subtask`, `after` = your latest `rev`). Never poll in a loop.
-5. Review with `inbox`: results to accept, findings, and running assignments with `lastActivityAt` (an old one means the worker is probably gone).
+5. Review with `inbox`: results to accept, findings, and running assignments with `lastActivityAt` (an old one means the worker is probably gone); a Blocked card you blocked still shows its claims, results and blockers.
    - Every delegated result needs `subtask.accept` before the card's `done`. Accept the deliverable, not the code: a verification that found a bug is accepted, and the fix becomes new work. Several at once with `subtasks`.
    - If a result falls short, `subtask.request-changes` with `reason`.
    - Accept and add the next step (recheck, integration, ship) in the same `call`, so the card never reads READY TO CLOSE in between.
 6. `done` names any subtask still holding the card open.
 7. Claims never expire. To replace a gone worker, hand its subtask to a new worker (the brief starts with `subtask.takeover`), or take it over yourself.
+8. Drop a superseded step with `subtask.rm`; if another worker still claims it, `subtask.takeover` with `reason` first.
 
 **Worker** (skip `digest`):
 ```json
@@ -92,6 +93,7 @@ Main owns the card, integrates the work and verifies it. Workers get subtasks, n
 - Publish findings as soon as they could help a peer. Stuck? Post the blocker as a `note` on your subtask and `wait`; if you can't finish, `subtask.release` with `reason`.
 - Worker commands need no revision guard.
 - After `subtask.done`, `wait` for the review; its result includes new notes on your subtask. If Main requests changes, the subtask is yours again: fix it and send `subtask.done` with the new result. A timeout means unchanged, not accepted.
+- If `wait` says `changed` but your subtask's `delegation` and `notes` show nothing new, `wait` again with `after` = the returned `rev`.
 - You can keep posting `note` with `subtask` after `subtask.done`, even after acceptance or the card is Done (a recheck verdict). Don't reopen it to report.
 
 ## Errors and refusals
@@ -113,7 +115,7 @@ Common refusals: `priority` is `critical`, `mid` or `low` (`high` is refused); `
 - After a restart, `digest` (MINE, and REVIEW STATE for In Progress cards unchanged for 24 hours) and `inbox` (running assignments) show what was left open; close what shipped and `block` or `fly` the rest.
 
 ## Ops
-`digest`, `next`, `query`, `search`, `context`, `inbox`, `add`, `update`, `start`, `done`, `fly`, `block`, `resume`, `takeover`, `cancel`, `bug`, `improve`, `reopen`, `depends`, `note`, `ack`, `comment.add`, `attachment.list|add|get`, `subtask.add|done|undone|delegate|configure|claim|release|takeover|accept|request-changes`, `handoff`, `wait`. Each is also a command (`workboard --actor LABEL context 12 --json`) for short one-line values; `workboard COMMAND --help` lists its options.
+`digest`, `next`, `query`, `search`, `context`, `inbox`, `add`, `update`, `start`, `done`, `fly`, `block`, `resume`, `takeover`, `cancel`, `bug`, `improve`, `reopen`, `depends`, `note`, `ack`, `comment.add`, `attachment.list|add|get`, `subtask.add|done|undone|rm|delegate|configure|claim|release|takeover|accept|request-changes`, `handoff`, `wait`. Each is also a command (`workboard --actor LABEL context 12 --json`) for short one-line values; `workboard COMMAND --help` lists its options.
 
 ## Operator
 Only when the user asks: `open|serve|setup|link|skills|service|upgrade|doctor|recover|sweep|columns-core|wip|export|import`.

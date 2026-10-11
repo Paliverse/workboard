@@ -101,7 +101,7 @@ Codex's default sandbox only lets commands write inside the project, and boards 
 - **One store for every board.** Each board is a folder `~/.workboard/boards/<dir>/` holding `board.json` (the source of truth), `.backups/` (the 10 newest snapshots), `archive/` (swept Done cards) and `attachments/` (uploaded files). Nothing is written into your projects, and backing up `~/.workboard` backs up every board. A board deleted from the browser moves to `~/.workboard/deleted/`.
 - **Found from the project.** Board commands use the board linked to the current folder or its nearest linked parent. In a git worktree they use the board of the main checkout, wherever the worktree is. `--board NAME` picks any other board.
 - **The CLI doesn't need the server.** Board commands lock and write the file directly. They never start a server or open a browser.
-- **Revision guards.** CLI card mutations pass `--expected-rev` and conflict only when *that card* changed. The browser conflicts when the board changed. Either way you get a 409 and nothing is overwritten.
+- **Revision guards.** CLI mutations on a card you don't hold pass `--expected-rev`, which conflicts only when *that card* changed. The browser conflicts when the board changed. Either way you get a 409 and nothing is overwritten.
 
 Details: [docs/architecture.md](docs/architecture.md).
 
