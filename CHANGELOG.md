@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-10
+
 ### Fixed
 
 - 0.3.1 made a one-shot command's board read slower: the first read in each process also stored a parsed copy for reuse, which only `call` and the server ever reuse. The first read now keeps only the text it read, and the second read of an unchanged board makes the copy. On a 3.7 MB board, the first `context` in a process took 107 ms instead of 133 ms (0.3.0: 116 ms).
@@ -130,7 +132,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/Paliverse/workboard/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Paliverse/workboard/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Paliverse/workboard/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Paliverse/workboard/compare/v0.2.0...v0.2.1
