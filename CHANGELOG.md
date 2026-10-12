@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-10-11
+
 ### Changed
 
 - The card's owner finishes a delegated step in one request: `subtask.done` with a `result` on available work, or on work it holds after `subtask.claim` or `subtask.takeover`, completes the step and accepts it at once, and the timeline records both. Before, available work was refused until claimed, and the owner then had to `subtask.accept` its own result. Work another worker holds still needs `subtask.takeover` with a reason first, and other workers' results still need `subtask.accept`. In the browser, the card owner's checkbox on an available delegated step is enabled and finishes it the same way. The card's `done` refusal points to this, and the skill tells Main to close a step it did, a superseded step or a gone worker's step this way.
@@ -248,7 +250,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/Paliverse/workboard/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/Paliverse/workboard/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/Paliverse/workboard/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/Paliverse/workboard/compare/v0.3.4...v0.3.5
