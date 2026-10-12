@@ -39,7 +39,6 @@ CAPABILITIES = ("context", "attachment-cli", "shared-attachments", "expected-rev
                 "write-scopes", "subtask-dependencies", "subtask-blockers", "review-inbox",
                 "subtask-notes", "board-bundles")
 BACKUP_KEEP = 10
-HISTORY_CAP = 40
 LOCK_NAME = ".board.lock"
 BACKUP_DIR = ".backups"
 ARCHIVE_DIR = "archive"
@@ -660,6 +659,8 @@ def _norm_subtask(st: dict) -> dict:
         "createdAt": st.get("createdAt"),
         "doneAt": st.get("doneAt"),
     }
+    if "changedRev" in st and not (type(st["changedRev"]) is int and st["changedRev"] >= 0):
+        del normalized["changedRev"]  # save() owns the stamp: drop an invalid one rather than refuse the board.
     if "delegation" in st:
         delegation = st["delegation"]
         if not isinstance(delegation, dict):
@@ -1021,12 +1022,31 @@ def _uses_schema_4(doc: dict) -> bool:
 
 
 def _card_content(card: dict) -> str:
-    return json.dumps({key: value for key, value in card.items() if key != "changedRev"}, sort_keys=True)
+    """A card without the stamps save() owns: its changedRev and its subtasks'."""
+    content = {key: value for key, value in card.items() if key != "changedRev"}
+    content["subtasks"] = [{key: value for key, value in st.items() if key != "changedRev"}
+                           if "changedRev" in st else st for st in card["subtasks"]]
+    return json.dumps(content, sort_keys=True)
+
+
+def _subtask_contents(card: dict) -> dict:
+    """Each delegated subtask's content as `wait --subtask` compares it: the item and its notes."""
+    delegated = [st for st in card["subtasks"] if "delegation" in st]
+    if not delegated:
+        return {}
+    notes = {}
+    for entry in card["log"]:
+        notes.setdefault(entry.get("subtaskId"), []).append(entry)
+    return {st["id"]: json.dumps([{key: value for key, value in st.items() if key != "changedRev"},
+                                  notes.get(st["id"], [])], sort_keys=True) for st in delegated}
 
 
 def _baseline(doc: dict) -> tuple[int, dict]:
-    """The on-disk schema and each card's content and changedRev, as save() compares them."""
-    return doc["schemaVersion"], {card["id"]: (_card_content(card), card["changedRev"]) for card in doc["cards"]}
+    """The on-disk schema and each card's content, changedRev and subtask stamps, as save() compares them."""
+    return doc["schemaVersion"], {
+        card["id"]: (_card_content(card), card["changedRev"],
+                     {st["id"]: st["changedRev"] for st in card["subtasks"] if "changedRev" in st})
+        for card in doc["cards"]}
 
 
 def save(board_path: Path, doc: dict, by: str | None = None) -> int:
@@ -1050,8 +1070,19 @@ def save(board_path: Path, doc: dict, by: str | None = None) -> int:
             old = previous.get(canonical["id"])
             if old is None or old[0] != _card_content(canonical):
                 card["changedRev"] = doc["rev"]
+                # Restamp the delegated subtasks that changed; an unchanged one without a stamp (legacy) gets
+                # the card's old changedRev, an upper bound.
+                now = _subtask_contents(canonical)
+                before = _subtask_contents(json.loads(old[0])) if now and old else {}
+                stamps = {sid: old[2].get(sid, old[1]) if before.get(sid) == content else doc["rev"]
+                          for sid, content in now.items()}
             else:
-                card["changedRev"] = old[1]  # Never accept a supplied or restored stamp.
+                card["changedRev"], stamps = old[1], old[2]  # Never accept a supplied or restored stamp.
+            for st, _ in iter_subtasks(card.get("subtasks") or []):
+                if "delegation" in st and st.get("id") in stamps:
+                    st["changedRev"] = stamps[st["id"]]
+                else:
+                    st.pop("changedRev", None)
         doc["savedAt"] = now_iso()
         doc["savedBy"] = actor() if by is None else validate_actor(by)
         for key in ("changeEpoch", "changeJournal"):  # Dropped incremental-context journal (dev builds).
@@ -1879,8 +1910,6 @@ def hist(card: dict, ev: str, by: str | None = None, note: str | None = None,
     if note:
         entry["note"] = note
     card.setdefault("history", []).append(entry)
-    if len(card["history"]) > HISTORY_CAP:
-        del card["history"][:-HISTORY_CAP]
 
 
 def _legacy_core_destination(column: dict | None) -> str | None:
@@ -2375,12 +2404,9 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
             if state != "completed":
                 raise WorkflowError("accept requires completed delegated work: "
                                     + _unfinished_delegation(selected, by), 409, "state")
-            review = delegation["review"]
-            if review["state"] == "accepted":
+            if delegation["review"]["state"] == "accepted":
                 return [selected]
-            review.update(state="accepted", by=by, at=now_iso(), reason="")
-            entry = append_note(card, f"accepted {selected['id']}", "", by)
-            entry.update(kind="generated", subtaskId=selected["id"])
+            _accept_result(card, selected, by)
         elif action == "request-changes":
             if state != "completed":
                 raise WorkflowError(f"{selected['id']}: request-changes requires completed delegated work "
@@ -2411,6 +2437,8 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
             entry.update(kind="generated", subtaskId=selected["id"])
             delegation.update(owner=by, claimedAt=now_iso())
         else:  # Claimant verbs: unclaimed (state), someone else's (owned), then the item's state (state).
+            if owner is None and action == "done" and state == "available" and by == card.get("activeOwner"):
+                owner, state = by, "claimed"  # The card's owner finishes an available step itself.
             if owner is None:
                 raise WorkflowError(f"{selected['id']} is not claimed; subtask.claim it first", 409, "state")
             if owner != by:
@@ -2442,11 +2470,15 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
                                         "reopen it with undone first", 409, "state")
                 if unmet := _unmet_prerequisites(index, selected["id"]):
                     raise WorkflowError(f"{selected['id']} waits on prerequisites: {'; '.join(unmet)}", 409, "deps")
+                if delegation["owner"] is None:
+                    delegation.update(owner=by, claimedAt=now_iso())
                 selected["done"], selected["doneAt"], selected["doneBy"] = True, now_iso(), by
                 delegation.update(state="completed", result=result)
                 delegation["review"].update(state="pending", by=None, at=None, reason="")
                 entry = append_note(card, f"result {selected['id']}", result, by)
                 entry.update(kind="generated", subtaskId=selected["id"])
+                if by == card.get("activeOwner"):  # Nobody else reviews the card owner's own result.
+                    _accept_result(card, selected, by)
             else:  # undone
                 if delegation["review"]["state"] == "accepted":
                     raise WorkflowError(f"{selected['id']} was accepted by {delegation['review']['by']}; the card's "
@@ -2466,6 +2498,13 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
     return [selected]
 
 
+def _accept_result(card: dict, item: dict, by: str) -> None:
+    """Accept one completed delegated result: its review and the generated `accepted` note."""
+    item["delegation"]["review"].update(state="accepted", by=by, at=now_iso(), reason="")
+    entry = append_note(card, f"accepted {item['id']}", "", by)
+    entry.update(kind="generated", subtaskId=item["id"])
+
+
 def _unfinished_delegation(item: dict, by: str) -> str:
     """One delegated subtask that keeps work open, and the op that clears it."""
     delegation = item["delegation"]
@@ -2473,9 +2512,10 @@ def _unfinished_delegation(item: dict, by: str) -> str:
     if state == "completed":
         return f"{item['id']} awaits review (subtask.accept or subtask.request-changes)"
     if state == "available":
-        return f"{item['id']} is available (claim and finish it, or subtask.rm it)"
+        return f"{item['id']} is available (finish it yourself with subtask.done and a result, or subtask.rm it)"
     return (f"{item['id']} is {state}" + (f" by {owner}" if owner else "")
-            + (f" (subtask.takeover with a reason if {owner} is gone)" if owner and owner != by else ""))
+            + (f" (subtask.takeover with a reason if {owner} is gone, then subtask.done)"
+               if owner and owner != by else ""))
 
 
 def unaccepted_delegations(card: dict) -> list[dict]:

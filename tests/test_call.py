@@ -485,6 +485,24 @@ class CallAndWait(unittest.TestCase):
         self.assertTrue(caught["changed"])
         self.assertEqual([note["summary"] for note in caught["notes"]], ["Main's answer"])
 
+    def test_wait_subtask_ignores_notes_on_other_subtasks(self):
+        added = self.calls({"op": "start", "card": 1},
+                           {"op": "subtask.add", "card": 1, "texts": ["Watched", "Other"], "delegated": True})[1]
+        watched, other = [item["id"] for item in added["items"]]
+        self.calls({"op": "subtask.claim", "card": 1, "subtask": watched, "actor": "Ada"})
+        done = self.calls({"op": "subtask.done", "card": 1, "subtask": watched, "result": "Verified",
+                           "actor": "Ada"})[0]
+        self.calls({"op": "note", "card": 1, "subtask": other, "summary": "About the other step"})
+        wait = {"op": "wait", "card": 1, "subtask": watched, "after": done["rev"], "timeout": 1, "actor": "Ada"}
+        quiet = self.calls(wait)[0]
+        self.assertFalse(quiet["changed"])
+        self.assertGreaterEqual(quiet["waited"], 1)
+        self.calls({"op": "note", "card": 1, "subtask": watched, "summary": "Main's review"})
+        answered = self.calls(wait)[0]
+        self.assertTrue(answered["changed"])
+        self.assertLess(answered["waited"], 0.5)
+        self.assertEqual([note["summary"] for note in answered["notes"]], ["Main's review"])
+
     def test_wait_immediate_after_bounds_and_missing_subtask(self):
         note, added = self.calls({"op": "note", "card": 1, "summary": "already changed"},
                                 {"op": "subtask.add", "card": 1, "text": "Watch"})

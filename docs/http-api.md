@@ -188,11 +188,11 @@ For `action: "subtask"`, `details` holds `op`, `ids` and the fields that operati
 | `add` | `texts` (one or more), `delegated`? (boolean) | Add subtasks to the end of the checklist; `delegated: true` makes them available delegated work. |
 | `done`, `undone`, `rm` | `ids` | Plain checklist subtasks: any number of ids, any actor; `result` is refused (422). Removing a delegated subtask needs the card's owner (409 `owned`). |
 | `delegate` | one id | Make an open checklist subtask available. |
-| `configure` | one id, `scope`? (paths relative to the project root), `dependsOn`? (subtask ids) | Configure available work. Omitted fields keep their value; `[]` clears a list. `scope` alone also changes claimed or blocked work and keeps its claim, but there it can only grow: a scope that drops a saved path, or `[]`, is 409 `state`. `dependsOn` needs available work (409 `state`). `reviewRequired` is 422: every result needs `accept`. |
+| `configure` | one id, `scope`? (paths relative to the project root), `dependsOn`? (subtask ids) | Configure available work. Omitted fields keep their value; `[]` clears a list. `scope` alone also changes claimed or blocked work and keeps its claim, but there it can only grow: a scope that drops a saved path, or `[]`, is 409 `state`. `dependsOn` needs available work (409 `state`). `reviewRequired` is 422: every worker's result needs `accept`. |
 | `claim` | one id | Claim available work whose prerequisites are complete. |
 | `block` | one id, `reason`, `until` | The worker marks claimed work blocked. |
 | `resume` | one id | The worker continues blocked work. |
-| `done` | one id, `result` | The worker completes claimed work. |
+| `done` | one id, `result` | The worker completes claimed work. The card's owner can also complete available work or work it holds; that result is accepted at once. |
 | `undone` | one id | The worker reopens completed work that was not accepted. |
 | `release` | one id, `reason` | The worker gives the work back. |
 | `takeover` | one id, `reason` | Take claimed or blocked work from its worker. |
@@ -291,7 +291,7 @@ Card fields:
 | `column` | `backlog`, `task`, `inprogress`, `done` or `blocked` |
 | `priority` | `critical`, `mid`, `low` or `null` |
 | `tags`, `links` | String arrays |
-| `subtasks` | A flat list of `{"id", "text", "done", "createdAt", "doneAt", "by"?, "doneBy"?, "delegation"?}`. Boards from WorkBoard 0.3.5 or earlier whose subtasks held their own subtasks load as one list, each just before the ones it held. `delegation` is described [above](#patch-apicardreflifecycle). |
+| `subtasks` | A flat list of `{"id", "text", "done", "createdAt", "doneAt", "by"?, "doneBy"?, "delegation"?, "changedRev"?}`. Boards from WorkBoard 0.3.5 or earlier whose subtasks held their own subtasks load as one list, each just before the ones it held. `delegation` is described [above](#patch-apicardreflifecycle). `changedRev`, on delegated subtasks only, is the board revision that last changed the subtask or a note on it; the server sets it on save and ignores a value a client sends |
 | `dependsOn` | Card ids, set through the `dependencies` action |
 | `activeOwner`, `claimedAt` | Set only while In Progress |
 | `outcome` | `completed` or `canceled` in Done, otherwise `null` |
@@ -299,7 +299,7 @@ Card fields:
 | `comments` | `[{"id", "at", "by", "text", "updatedAt"?, "updatedBy"?}]` |
 | `attachments` | `[{"id", "name", "size", "mime", "sha256", "createdAt", "by"}]` |
 | `inboxAcknowledged` | `{"<actor>": ["<note id>", …]}`: the findings each actor acknowledged. Set only through `PATCH api/card/{ref}/inbox`; card edits ignore it |
-| `history` | The last 40 `{"at", "ev", "from"?, "to"?, "by"?, "note"?}` entries |
+| `history` | Every `{"at", "ev", "from"?, "to"?, "by"?, "note"?}` entry, oldest first |
 | `cycles` | Archived completions from rework and reopen |
 | `changedRev` | The board revision that last changed this card |
 | `createdAt`, `updatedAt` | Server timestamps |

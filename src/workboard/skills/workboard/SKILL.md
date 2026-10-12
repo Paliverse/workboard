@@ -74,12 +74,12 @@ Main owns the card, integrates the work and verifies it. Workers get subtasks, n
    - answer with `note` plus `subtask`; it wakes the worker's `wait`;
    - await changes with `wait` (`card`, optional `subtask`, `after` = your latest `rev`). Never poll in a loop.
 5. Review with `inbox`: results to accept, findings, and running assignments with `lastActivityAt` (an old one means the worker is probably gone); a Blocked card you blocked still shows its claims, results and blockers.
-   - Every delegated result needs `subtask.accept` before the card's `done`. Accept the deliverable, not the code: a verification that found a bug is accepted, and the fix becomes new work. Several at once with `subtasks`.
+   - Every worker's result needs `subtask.accept` before the card's `done`; your own `subtask.done` on a delegated step is accepted at once. Accept the deliverable, not the code: a verification that found a bug is accepted, and the fix becomes new work. Several at once with `subtasks`.
    - If a result falls short, `subtask.request-changes` with `reason`.
    - Accept and add the next step (recheck, integration, ship) in the same `call`, so the card never reads READY TO CLOSE in between.
 6. `done` names any subtask still holding the card open.
 7. Claims never expire. To replace a gone worker, hand its subtask to a new worker (the brief starts with `subtask.takeover`), or take it over yourself.
-8. Drop a superseded step with `subtask.rm`; if another worker still claims it, `subtask.takeover` with `reason` first.
+8. To finish or close a delegated step yourself (you did it, it was superseded, or its worker is gone), use `subtask.done` with a `result` saying what happened; it counts as accepted. If another worker still claims it, `subtask.takeover` with `reason` first. `subtask.rm` deletes a step with no record.
 
 **Worker** (skip `digest`):
 ```json
@@ -93,7 +93,6 @@ Main owns the card, integrates the work and verifies it. Workers get subtasks, n
 - Publish findings as soon as they could help a peer. Stuck? Post the blocker as a `note` on your subtask and `wait`; if you can't finish, `subtask.release` with `reason`.
 - Worker commands need no revision guard.
 - After `subtask.done`, `wait` for the review; its result includes new notes on your subtask. If Main requests changes, the subtask is yours again: fix it and send `subtask.done` with the new result. A timeout means unchanged, not accepted.
-- If `wait` says `changed` but your subtask's `delegation` and `notes` show nothing new, `wait` again with `after` = the returned `rev`.
 - You can keep posting `note` with `subtask` after `subtask.done`, even after acceptance or the card is Done (a recheck verdict). Don't reopen it to report.
 
 ## Errors and refusals

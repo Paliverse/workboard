@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The card's owner finishes a delegated step in one request: `subtask.done` with a `result` on available work, or on work it holds after `subtask.claim` or `subtask.takeover`, completes the step and accepts it at once, and the timeline records both. Before, available work was refused until claimed, and the owner then had to `subtask.accept` its own result. Work another worker holds still needs `subtask.takeover` with a reason first, and other workers' results still need `subtask.accept`. In the browser, the card owner's checkbox on an available delegated step is enabled and finishes it the same way. The card's `done` refusal points to this, and the skill tells Main to close a step it did, a superseded step or a gone worker's step this way.
+- `wait --subtask` returns at once only when that subtask changed after `--after`, not whenever anything on its card did. Each delegated subtask now has `changedRev`, the board revision that last changed it or a note on it, set by the server like the card's. Subtasks already on disk get a stamp the next time their card is saved with a change; until then, and for plain checklist subtasks, `wait` falls back to the card's `changedRev`. The skill drops its line about waiting again after a `changed` with nothing new.
+- A card keeps its whole `history`. Before, only the last 40 entries were kept, so a long-running card lost its oldest events; rows already dropped are not restored. `show` without `--full` still prints the last 10, and `context` still leaves history out unless `--full`.
+
 ## [0.3.7] - 2026-10-11
 
 ### Fixed

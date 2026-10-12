@@ -3078,7 +3078,8 @@ const WB = window.WB = {};
       setBase(text, s.text);
       text.readOnly = locked;
       bindText(text, v => editTree(id, tree => { const node = tree.find(x => x.id === s.id); if (!node) return false; node.text = v; }), { enter: true, required: true });
-      const box = h('button', { class: 'box', type: 'button', disabled: assignment ? !mine || c.column !== 'inprogress' || assignment.state === 'blocked' : locked,
+      const ownerFinishes = assignment && !assignment.owner && c.activeOwner === WB.state.actor;  // Core accepts the card owner's own done at once.
+      const box = h('button', { class: 'box', type: 'button', disabled: assignment ? !(mine || ownerFinishes) || c.column !== 'inprogress' || assignment.state === 'blocked' : locked,
         attrs: { role: 'checkbox', 'aria-checked': String(!!s.done), 'aria-label': s.text || 'Subtask' },
         on: { click: () => toggle(s, el, box) } }, icon('check'));
       const status = h('div', { class: 'subtask-assignment' });

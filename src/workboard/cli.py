@@ -330,7 +330,7 @@ def cmd_wait(args):
 
     item, start, snapshot = subtask()
     notes = start
-    changed = card["changedRev"] > after
+    changed = (card["changedRev"] if item is None else item.get("changedRev", card["changedRev"])) > after
     if changed and start:  # Catching up: the log only appends, so report what others posted after your last entry.
         mine = max((i for i, entry in enumerate(start) if entry.get("by") == wb.actor()), default=-1)
         start = start[:mine + 1]

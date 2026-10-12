@@ -190,15 +190,48 @@ class DelegatedSubtasks(unittest.TestCase):
         self.rejected(["subtask", "1", "done", sid, "--result", "out of scope"], "Grace", "state")
         self.json(["subtask", "1", "takeover", sid, "--reason", "recover interrupted worker"], "Main")
         self.json(["subtask", "1", "release", sid, "--reason", "request canceled; partial state documented"])
-        # Handoffs remain understandable after capped activity has rolled over.
+        # Card history keeps every row, and handoffs stay understandable after long activity.
         path = core.board_file("delegated")
+        first = core.load(path)["cards"][0]["history"][0]
         with core.board_transaction(path) as doc:
-            for i in range(core.HISTORY_CAP + 1):
+            for i in range(50):
                 core.hist(doc["cards"][0], "test-event", note=str(i))
             core.save(path, doc)
+        history = core.load(path)["cards"][0]["history"]
+        self.assertEqual(history[0], first)
+        self.assertGreater(len(history), 50)
         log = self.json(["context", "1", "--full"])["card"]["log"]
         self.assertTrue(any("Grace → Main" in note["body"] for note in log))
         self.assertTrue(any("partial findings in note" in note["body"] for note in log))
+
+    def test_save_owns_delegated_subtask_stamps(self):
+        path = core.board_file("delegated")
+        added = self.json(["subtask", "1", "add", "Work", "--delegated"])
+        sid = added["item"]["id"]
+        plain = self.json(["subtask", "1", "add", "Plain step"])["item"]["id"]
+
+        def stored():
+            card = core.load(path)["cards"][0]
+            return card["changedRev"], {st["id"]: st.get("changedRev") for st in card["subtasks"]}
+
+        card_rev, stamps = stored()
+        self.assertEqual(stamps, {sid: added["rev"], plain: None})  # A sibling's add leaves the stamp alone.
+        for change in ({}, {"title": "Retitled"}):  # Forged stamps, with and without a real card change.
+            with core.board_transaction(path) as doc:
+                doc["cards"][0].update(change)
+                for item in doc["cards"][0]["subtasks"]:
+                    item["changedRev"] = 999
+                rev = core.save(path, doc)
+            self.assertEqual(stored(), (rev if change else card_rev, stamps))
+        # A legacy delegated subtask without a stamp gets the card's old changedRev on its card's next change.
+        raw = json.loads(path.read_bytes())
+        del raw["cards"][0]["subtasks"][0]["changedRev"]
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        legacy_rev = raw["cards"][0]["changedRev"]
+        with core.board_transaction(path) as doc:
+            doc["cards"][0]["title"] = "Retitled again"
+            core.save(path, doc)
+        self.assertEqual(stored()[1], {sid: legacy_rev, plain: None})
 
     def test_same_second_writes_and_malformed_or_ambiguous_actions(self):
         path = core.board_file("delegated")
@@ -513,6 +546,36 @@ class DelegationWorkflow(unittest.TestCase):
         self.action("accept", sid)
         result = self.json(["done", self.ref, "--writeup", "Integration remains compatible"])
         self.assertEqual(result["column"], "done")
+
+    def test_card_owner_finishes_available_steps_in_one_request(self):
+        first, sid = self.add("Prerequisite", "Main's own step")
+        self.action("configure", sid, "--on", first)
+        self.reject(["subtask", self.ref, "done", sid, "--result", "Too early"], "deps")
+        self.action("done", first, "--result", "Prerequisite verified")  # Accepted at once, so it unlocks sid.
+        item = self.action("done", sid, "--result", "Done by Main")["item"]
+        delegation = item["delegation"]
+        self.assertEqual((item["done"], item["doneBy"], delegation["state"], delegation["owner"], delegation["result"]),
+                         (True, "Main", "completed", "Main", "Done by Main"))
+        self.assertTrue(delegation["claimedAt"])
+        self.assertEqual((delegation["review"]["state"], delegation["review"]["by"]), ("accepted", "Main"))
+        log = [(entry["kind"], entry["by"], entry["body"]) for entry in self.context()["card"]["log"]
+               if entry.get("subtaskId") == sid]
+        self.assertEqual(log, [("generated", "Main", "Done by Main"), ("generated", "Main", "")])  # Result, accepted.
+        self.assertEqual(self.json(["done", self.ref, "--writeup", "Main finished both steps"])["column"], "done")
+
+    def test_card_owner_takes_over_gone_workers_and_worker_results_still_need_acceptance(self):
+        gone, worker = self.add("Abandoned step", "Worker step")
+        self.action("claim", gone, actor="Ada")
+        self.action("claim", worker, actor="Grace")
+        self.reject(["subtask", self.ref, "done", gone, "--result", "Ada is gone"], "owned")
+        self.action("takeover", gone, "--reason", "Ada is gone")
+        review = self.action("done", gone, "--result", "Finished Ada's step")["item"]["delegation"]["review"]
+        self.assertEqual((review["state"], review["by"]), ("accepted", "Main"))
+        review = self.action("done", worker, "--result", "Grace's result", actor="Grace")["item"]["delegation"]["review"]
+        self.assertEqual(review["state"], "pending")
+        self.reject(["done", self.ref, "--writeup", "Grace's result is unaccepted"], "state")
+        self.action("accept", worker)
+        self.assertEqual(self.json(["done", self.ref, "--writeup", "Integrated"])["column"], "done")
 
     def test_parent_owner_rescopes_and_annotates_running_work(self):
         sid, other = self.add("Running work", "Prerequisite")
