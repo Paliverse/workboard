@@ -884,6 +884,7 @@ const WB = window.WB = {};
   WB.columns = () => (S.doc ? S.doc.columns : []);
   WB.colName = id => (WB.columns().find(c => c.id === id)?.name) || ({ backlog: 'Backlog', task: 'Task', inprogress: 'In Progress', done: 'Done', blocked: 'Blocked' })[id] || id;
   const boardKey = suffix => `workboard.ui.${suffix}::${BOARD}`;
+  S.newestFirst = store.get(boardKey('order')) === 'newest';  // A view setting: columns list the newest cards first.
 
   function setDoc(doc, meta = {}) {
     const prev = S.doc;
@@ -1393,6 +1394,7 @@ const WB = window.WB = {};
     const cap = laneLimit.get(col.id) || (col.id === 'done' ? 40 : 150);
     let items = list;
     if (col.id === 'done') items = [...list].sort((a, b) => String(b.doneAt || b.updatedAt).localeCompare(String(a.doneAt || a.updatedAt)));
+    else if (S.newestFirst) items = [...list].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || b.num - a.num);
     const shown = items.slice(0, cap);
     if (col.id === 'done') {
       let current = null, groupIndex = -1;
@@ -1841,7 +1843,7 @@ const WB = window.WB = {};
     clearDropMarks();
     if (!t) return;
     lanes.get(t.col).lane.classList.add('drop');
-    if (t.col !== 'done') t.body.insertBefore(dropLine, t.before || lanes.get(t.col).composer || null);
+    if (t.col !== 'done' && !S.newestFirst) t.body.insertBefore(dropLine, t.before || lanes.get(t.col).composer || null);
   }
   board.addEventListener('drop', e => {
     if (!drag) return;
@@ -1858,6 +1860,7 @@ const WB = window.WB = {};
         if (t.before) position = { before: t.before.dataset.id };
         else { const inCol = WB.cards().filter(c => c.column === t.col && c.id !== d.id); if (inCol.length) position = { after: inCol[inCol.length - 1].id }; }
       }
+      if (card.column === t.col && S.newestFirst) { toast('Columns show the newest cards first; turn that off in the board menu to arrange cards by hand'); return; }
       if (card.column === t.col) {
         if (!position) return;
         const cards = WB.cards().filter(c => c.column === t.col);
@@ -2018,7 +2021,7 @@ const WB = window.WB = {};
       'sep',
       { label: 'Export board ZIP', icon: 'download', run: exportBoard },
       'sep',
-      { label: 'Sort cards by newest', icon: 'sort', run: async () => { if (await confirm({ title: 'Sort every column by newest first?', body: 'This replaces the manual card order in each column. Column positions stay the same.', ok: 'Sort cards' })) WB.api.structure({ type: 'sort-cards', mode: 'created-desc' }); } },
+      { label: 'Newest cards first', icon: 'sort', checked: S.newestFirst, run: () => { S.newestFirst = !S.newestFirst; store.set(boardKey('order'), S.newestFirst ? 'newest' : null); renderBoard(); } },
       { label: 'Reset column layout', icon: 'reset', run: resetColumns },
       { label: 'In Progress limit…', icon: 'layers', run: setWip },
       'sep',

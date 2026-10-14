@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The browser's "Sort cards by newest" sorted each column once, so every card added later, including those agents add from the CLI, landed at the bottom of its column. The board menu now has a "Newest cards first" setting instead, which persists for each board in that browser: while it is on, every column except Done lists cards newest first, and dragging a card within a column is refused with a hint to turn it off (moving a card to another column still works). Turning it off restores the manual order. The saved card order is left untouched, and the `sort-cards` structure operation in the HTTP API is unchanged.
+
 ## [0.3.8] - 2026-10-11
 
 ### Changed
