@@ -98,7 +98,7 @@ Main owns the card, integrates the work and verifies it. Workers get subtasks, n
 ## Errors and refusals
 Failures exit 1 with `{"ok":false,"status","code","error","rev"}`; the error names the subtask, card or key involved and the next step.
 - `stale`: see Revision guards.
-- `owned`, `deps`, `wip`, `state`: a rule needs a decision; re-reading won't fix them.
+- `owned`, `deps`, `wip`, `state`: a rule needs a decision; re-reading won't fix them. `wip` means In Progress is at the limit the user set in the browser: finish or block work, or ask the user; only the user changes it.
 - `invalid`, `not_found`: fix the input.
 - `lock`, `scope`, `io`: fix the cause; never work around it.
 
@@ -117,4 +117,4 @@ Common refusals: `priority` is `critical`, `mid` or `low` (`high` is refused); `
 `digest`, `next`, `query`, `search`, `context`, `inbox`, `add`, `update`, `start`, `done`, `fly`, `block`, `resume`, `takeover`, `cancel`, `bug`, `improve`, `reopen`, `depends`, `note`, `note.edit|rm`, `ack`, `comment.add`, `attachment.list|add|get`, `subtask.add|done|undone|rm|delegate|configure|claim|release|takeover|accept|request-changes`, `handoff`, `wait`. Each is also a command (`workboard --actor LABEL context 12 --json`) for short one-line values; `workboard COMMAND --help` lists its options.
 
 ## Operator
-Only when the user asks: `open|serve|setup|link|skills|service|upgrade|doctor|recover|sweep|columns-core|wip|export|import`.
+Only when the user asks: `open|serve|setup|link|skills|service|upgrade|doctor|recover|sweep|columns-core|export|import`.

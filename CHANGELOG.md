@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The In Progress limit is the user's to set. `workboard wip N` let any agent set or clear it, and one did by accident: it guessed `wip 10` while looking for lane status and capped its board at 10 active cards, so further `start`s were refused while 20+ agents waited. The `wip` command is gone; the limit is set and cleared only from the browser's board menu (In Progress limit…), with no upper bound. A limit the user sets still applies to agents, and the `wip` refusal now says the user set it and to finish or block work or ask the user, instead of suggesting the agent change it. Limits already on a board stay until the user clears them.
+
 ## [0.3.10] - 2026-10-28
 
 ### Added

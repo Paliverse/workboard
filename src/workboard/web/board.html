@@ -1934,7 +1934,7 @@ const WB = window.WB = {};
   }
   async function setWip() {
     const col = WB.columns().find(c => c.id === 'inprogress');
-    const v = await prompt({ title: 'In Progress limit', body: 'Starting work fails when In Progress already holds this many cards. Leave empty for no limit.', ok: 'Save', fields: [{ name: 'limit', label: 'Maximum cards', type: 'number', value: col.wipLimit ? String(col.wipLimit) : '' }] });
+    const v = await prompt({ title: 'In Progress limit', body: 'Starting work fails, for you and for agents, when In Progress already holds this many cards. Only this menu changes it. Leave empty for no limit.', ok: 'Save', fields: [{ name: 'limit', label: 'Maximum cards', type: 'number', value: col.wipLimit ? String(col.wipLimit) : '' }] });
     if (!v) return;
     const n = v.limit === '' ? null : Math.max(0, Math.floor(Number(v.limit)));
     if (n !== null && !Number.isFinite(n)) return;

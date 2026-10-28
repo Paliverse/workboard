@@ -17,7 +17,7 @@ workboard COMMAND --help
 |---|---|
 | `--board NAME\|DIR` | A registered board name, or a project or worktree folder to find the board from (see [Board resolution](#board-resolution)). A `board.json` path is not accepted. |
 | `--json` | Print one machine-readable JSON line instead of human output. |
-| `--actor NAME` | Actor label recorded on writes and used by `--mine` and the digest's `MINE` section. Overrides `WORKBOARD_ACTOR` and `actor` in `config.json`. A command that writes a card (`add`, the lifecycle and card commands, `note`, `subtask`, `comment`, `ack`, `attachment add\|remove`, `wip`, and `recover`, `sweep` or `columns-core` with `--apply`) fails with `invalid` when none of the three is set, so the board never records an anonymous writer; reads work without one and act as `agent`. The browser records `user`. Nonblank, at most 80 characters, no control characters. Labels are attribution, not authentication. |
+| `--actor NAME` | Actor label recorded on writes and used by `--mine` and the digest's `MINE` section. Overrides `WORKBOARD_ACTOR` and `actor` in `config.json`. A command that writes a card (`add`, the lifecycle and card commands, `note`, `subtask`, `comment`, `ack`, `attachment add\|remove`, and `recover`, `sweep` or `columns-core` with `--apply`) fails with `invalid` when none of the three is set, so the board never records an anonymous writer; reads work without one and act as `agent`. The browser records `user`. Nonblank, at most 80 characters, no control characters. Labels are attribution, not authentication. |
 
 Options must be spelled in full: abbreviations such as `--act` are rejected.
 
@@ -59,7 +59,7 @@ Defaults come from environment variables and the optional `~/.workboard/config.j
 | `stale` | The reviewed state changed (see [Revision guards](#revision-guards)). |
 | `owned` | Another actor owns the card, holds the delegated subtask, or wrote the comment or attachment; take it over explicitly or leave it. |
 | `deps` | Dependencies are missing, unfinished or canceled, or a delegated subtask's prerequisites are not completed and accepted. The error names each unmet one. |
-| `wip` | The In Progress WIP limit is reached. |
+| `wip` | In Progress holds as many cards as the limit the user set in the browser. Only the user changes it: finish or block active work, or ask the user. |
 | `state` | The lifecycle transition is not allowed, for example `fly REF done` or a worker command on a subtask nobody has claimed, or a board name or project is already taken. |
 | `invalid` | Invalid input (field or column names, text such as a missing `done` write-up, revision or blank stdin), an existing export destination, or an invalid `config.json` or `boards.json`. |
 | `not_found` | Unknown card, subtask, comment, attachment or board, or a missing `attachment add --file` source (status 404). |
@@ -78,7 +78,7 @@ Board commands never start a server and never open a browser. Only `serve`, `ope
 `--expected-rev REV` makes a mutation conditional on the state you reviewed. `REV` is the `rev` from your last `context`/read, or from your own last successful mutation.
 
 - **Card commands** (`start`, `done`, `fly`, `block`, `resume`, `update`, `note`, `workpad`, `subtask`, `depends`, `comment`, `attachment add|remove`, `bug`, `improve`, `reopen`, `takeover`, `cancel`, `rework`): the guard is card-scoped. The command fails with `stale` (409) only when the target card's `changedRev` is greater than `REV`. Writes to other cards don't invalidate it, so one read's `rev` guards every card it covers: after one `query --json`, `start N --expected-rev REV` with that `rev` works for each card that hasn't changed since.
-- **Board maintenance** (`wip`, `recover --apply`, `sweep --apply`, `columns-core --apply`) and `export`: the guard requires the exact current board revision.
+- **Board maintenance** (`recover --apply`, `sweep --apply`, `columns-core --apply`) and `export`: the guard requires the exact current board revision.
 - `REV` must be a nonnegative integer. A value greater than the current board revision fails with `invalid`.
 - `add`, reads, `ack`, `handoff`, `import`, `init`, `link`, `serve` and the installation commands reject `--expected-rev`.
 - Workers on a delegated subtask don't need the guard: `claim`, `done`, `release`, `block`, `resume` and `note --subtask` check ownership and state under the board lock, while a card-scoped guard fails on every write a sibling worker makes to the same card.
@@ -153,7 +153,7 @@ Other keys are the command's full long option names, in camelCase or kebab-case:
 - Free-text positionals, including leading `-`, are safe too. `card`, `column`, an attachment or note `id` and `ack`'s `notes` can't start with `-` (`invalid`). Command limits still apply, such as a note's body length.
 - Do not use `stdin` or keys ending in `-stdin` or `Stdin`: stdin is the request stream, so text goes in the request.
 
-Available operations are `digest next context show query search inbox handoff wait boards which add start done fly block resume update note note.edit note.rm subtask.* bug improve reopen workpad takeover cancel rework depends comment.* ack attachment.list attachment.add attachment.get attachment.remove`. The subtask and comment actions are the ones documented below. Operator commands (`init link serve open setup skills service upgrade version doctor recover sweep columns-core wip export import`), `list` and `call` itself are unavailable.
+Available operations are `digest next context show query search inbox handoff wait boards which add start done fly block resume update note note.edit note.rm subtask.* bug improve reopen workpad takeover cancel rework depends comment.* ack attachment.list attachment.add attachment.get attachment.remove`. The subtask and comment actions are the ones documented below. Operator commands (`init link serve open setup skills service upgrade version doctor recover sweep columns-core export import`), `list` and `call` itself are unavailable.
 
 Unavailable operations return `{"ok":false,"status":422,"code":"invalid","error":"op X is not available in call; call ops: ..."}`, which lists every call op. Common guesses also name the op to use: `list` and `get` → `query` or `context`, `move` → `fly`, `claim` → `start` or `subtask.claim`, `create` and `new` → `add`, and `help` → `workboard COMMAND --help` outside call. On the command line, argparse's `invalid choice` for those guesses gains a `did you mean workboard fly?` line. An unknown `subtask.*` or `comment.*` action is `invalid` too and lists the real ones: `unknown op "comment.5"; comment ops: add, edit, delete`. A key the op doesn't take is refused before a missing one, lists the keys the op takes, and names the replacement for common synonyms: `search doesn't take "query" (use "terms"); search takes: terms, limit, fields, board, actor`. The synonyms are `query`, `text` and `q` on `search`; `q`, `text`, `search` and `terms` on `query` (use the `search` op) and `card` on `query` (use `context` or `show`); `tags` and `body` on `add`. A missing field and a parser usage error become `invalid` (422) with no usage text and `rev: null`, and the message names request keys, never options: `fly needs "column"`, `subtask.claim needs "subtask" or "subtasks"`, `argument "priority": invalid choice: 'high' (choose from critical, mid, low)`. A request that ends without a JSON result is `invalid` too (`OP ended without a JSON result (exit code N)`), and later requests still run. Other errors retain the ordinary command's envelope, including its current `rev`.
 
@@ -226,9 +226,9 @@ The five columns are `backlog`, `task`, `inprogress`, `done` and `blocked`.
 
 | Command | Effect |
 |---|---|
-| `add --title T [--column backlog\|task\|inprogress] [--priority P] [--tag X]... [--on REF]... [--origin TEXT \| --origin-stdin] [--notes TEXT \| --notes-stdin]` | Create a card, in Task by default. `--column inprogress` also starts it, as `start` would: its dependencies must be completed (`deps`) and the WIP limit respected (`wip`), and you become its owner; a refusal creates nothing. `done` or `blocked` is `state`. `--on` (repeatable) sets dependencies in the same transaction. `--notes` sets the pinned notes, such as acceptance criteria. Only one of `--origin-stdin` and `--notes-stdin` can read stdin (usage error otherwise). |
+| `add --title T [--column backlog\|task\|inprogress] [--priority P] [--tag X]... [--on REF]... [--origin TEXT \| --origin-stdin] [--notes TEXT \| --notes-stdin]` | Create a card, in Task by default. `--column inprogress` also starts it, as `start` would: its dependencies must be completed (`deps`) and In Progress must be under the user's limit (`wip`), and you become its owner; a refusal creates nothing. `done` or `blocked` is `state`. `--on` (repeatable) sets dependencies in the same transaction. `--notes` sets the pinned notes, such as acceptance criteria. Only one of `--origin-stdin` and `--notes-stdin` can read stdin (usage error otherwise). |
 | `add --from REF [--title T]` | Create a card from another card: its title (unless `--title`), pinned notes (unless `--notes`), tags (plus any `--tag`), priority (unless `--priority`) and subtasks. Subtasks get fresh IDs `s-1`…`s-N` in order and start open; delegated ones become available again, keeping their scope and prerequisites (renumbered). Origin, comments, notes timeline, attachments, history, owner, outcome and card dependencies are not copied. The other `add` options work as usual. Keep reusable card shapes in Backlog and copy them. A missing source is `not_found`; without `--title` or `--from`, `add` is a usage error. |
-| `start REF` | Claim the card and move it to In Progress. Dependencies must be completed and the WIP limit respected. Starting a card you already own does nothing. |
+| `start REF` | Claim the card and move it to In Progress. Dependencies must be completed, and In Progress must be under its limit if the user set one in the browser (board menu › In Progress limit; there is no CLI command for it). Starting a card you already own does nothing. |
 | `done REF (--writeup TEXT \| --writeup-stdin)` | Complete a Backlog, Task or In Progress card with a write-up of the delivered work and the checks you ran; work found already done can go straight from Task to Done. A missing or blank write-up is `invalid`. A card that isn't In Progress needs its dependencies completed (`deps`); a Blocked card is `state` (use `resume`), and so is one already Done. It fails with `state` while a delegated subtask is unfinished or its result isn't accepted; the error names each such subtask and what it waits for. |
 | `fly REF backlog\|task\|inprogress [--note TEXT]` | Move between Backlog, Task and In Progress. Use `done` to reach Done and `block`/`resume` for Blocked. |
 | `block REF (--reason TEXT \| --reason-stdin) --until CONDITION` | Move to Blocked with a reason and an observable exit condition. Releases ownership. |
@@ -376,12 +376,11 @@ These are operator tasks. Without `--apply`, `recover`, `sweep` and `columns-cor
 
 | Command | Effect |
 |---|---|
-| `wip LIMIT --expected-rev REV` | Set the In Progress WIP limit: `off` or `1`–`20`. |
 | `recover [REV] [--apply --expected-rev REV]` | List backup snapshots (newest first) or restore one. The revision and card numbering keep increasing after a restore. |
 | `sweep [--days N] [--apply --expected-rev REV]` | Archive Done cards older than N days (default 14) to the board's `archive/` folder. |
 | `columns-core [--apply --expected-rev REV]` | Consolidate a legacy board into the five core columns. Removed cards are archived. |
 
-For `--apply` and `wip`, `--expected-rev` is the current board revision you reviewed (see `which --json`), not the snapshot revision.
+For `--apply`, `--expected-rev` is the current board revision you reviewed (see `which --json`), not the snapshot revision.
 
 ## Server and browser
 

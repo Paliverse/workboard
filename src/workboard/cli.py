@@ -1095,33 +1095,6 @@ def cmd_sweep(args):
         print(f"{len(moving)} cards would be archived — re-run with --apply")
 
 
-def cmd_wip(args):
-    p = wb.find_board(args.board)
-    value = str(args.limit).strip().lower()
-    if value in ("off", "none", "0"):
-        limit = 0
-    else:
-        try:
-            limit = int(value)
-        except ValueError:
-            raise wb.WorkflowError("wip limit must be off or an integer 1..20")
-        if limit < 1 or limit > 20:
-            raise wb.WorkflowError("wip limit must be off or an integer 1..20")
-    with wb.board_transaction(p, args.expected_rev) as doc:
-        column = _column(doc, "inprogress")
-        if limit:
-            column["wipLimit"] = limit
-        else:
-            column.pop("wipLimit", None)
-        wb.save(p, doc)
-    payload = {"ok": True, "rev": doc["rev"], "column": "inprogress",
-               "actor": wb.actor(), "wipLimit": limit or None}
-    if args.json:
-        print(json.dumps(payload))
-    else:
-        print(f"In Progress WIP limit → {limit if limit else 'off'} (rev {doc['rev']})")
-
-
 def cmd_columns_core(args):
     p = wb.find_board(args.board)
     transaction = (wb.board_transaction(p, args.expected_rev) if args.apply
@@ -1242,12 +1215,12 @@ def build_parser() -> argparse.ArgumentParser:
         sp = sub.add_parser(name, help=help, allow_abbrev=False)
         _global_arguments(sp)
         if name in {"start", "done", "fly", "block", "resume", "update", "note",
-                    "subtask", "wip", "bug", "improve", "reopen", "workpad", "takeover",
+                    "subtask", "bug", "improve", "reopen", "workpad", "takeover",
                     "cancel", "rework", "depends", "comment", "recover", "columns-core", "sweep",
                     "export"}:
             sp.add_argument("--expected-rev", type=_revision, help=(
                 "exact board revision: board-scoped maintenance fails if anything changed since"
-                if name in {"wip", "recover", "columns-core", "sweep", "export"} else CARD_REV_HELP))
+                if name in {"recover", "columns-core", "sweep", "export"} else CARD_REV_HELP))
         sp.set_defaults(fn=fn)
         return sp
 
@@ -1332,9 +1305,6 @@ def build_parser() -> argparse.ArgumentParser:
     prerequisites = p.add_mutually_exclusive_group()
     prerequisites.add_argument("--on", action="append", help="prerequisite delegated subtask ID (configure; repeatable)")
     prerequisites.add_argument("--clear-deps", action="store_true")
-    p = add("wip", cmd_wip, "set the optional In Progress WIP limit")
-    p.add_argument("limit", help="off or integer 1..20")
-
 
     p = add("bug", cmd_bug, "reopen Done→In Progress with a bug tag + fix subtask")
     p.add_argument("ref")
@@ -1497,7 +1467,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 # Commands that write a card: they refuse to guess the writer, so the board never records a bare `agent`.
 WRITE_COMMANDS = frozenset({
-    "add", "start", "done", "fly", "block", "resume", "update", "note", "subtask", "wip", "bug", "improve",
+    "add", "start", "done", "fly", "block", "resume", "update", "note", "subtask", "bug", "improve",
     "reopen", "workpad", "takeover", "cancel", "rework", "depends", "comment", "ack",
 })
 

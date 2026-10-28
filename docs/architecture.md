@@ -185,8 +185,8 @@ Focused context (`context REF --subtask ID`, `--mine` or `--assigned-to ACTOR`) 
 Every check runs under the same board lock as the write it protects.
 
 - **Card-scoped (CLI):** `--expected-rev REV` fails with `stale` only if the target card's `changedRev` is greater than `REV`. Agents working on different cards don't conflict, and one read's `rev` guards every card it covers. The error carries the current board `rev` and the card's `changedRev` and last history entry, and its message names that entry's event and actor and the `context` command to re-read.
-- **Board-scoped (browser and maintenance):** browser writes (`baseRev`), `wip`, `sweep`, `recover`, `columns-core`, `export --expected-rev` and board deletion require the exact current board revision.
-- **Rules, not staleness:** ownership (`owned`), dependencies (`deps`), the WIP limit (`wip`) and illegal transitions (`state`) also return 409. They need a decision, not a re-read.
+- **Board-scoped (browser and maintenance):** browser writes (`baseRev`), `sweep`, `recover`, `columns-core`, `export --expected-rev` and board deletion require the exact current board revision.
+- **Rules, not staleness:** ownership (`owned`), dependencies (`deps`), the In Progress limit (`wip`, which only the user sets, in the browser) and illegal transitions (`state`) also return 409. They need a decision, not a re-read.
 
 Nothing is retried automatically, merged silently or reported as success after a failure.
 

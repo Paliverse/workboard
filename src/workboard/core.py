@@ -1279,7 +1279,8 @@ def _require_start(doc: dict, card: dict, ids: list | None = None, *, wip: bool 
         active = sum(c["column"] == "inprogress" for c in doc["cards"])
         if active >= limit:
             raise WorkflowError(
-                f"In Progress WIP limit is {limit}; finish, block, or pause active work", 409, "wip")
+                f"In Progress holds {active} cards and its limit is {limit}, set by the user in the browser; "
+                "finish or block active work, or ask the user to raise or clear the limit", 409, "wip")
 
 
 def _archive_cycle(card: dict, mode: str, reason: str, by: str) -> None:

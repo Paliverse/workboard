@@ -507,20 +507,23 @@ class Contracts(unittest.TestCase):
         archived = read_board(Path(payload["archive"]))["cards"]
         self.assertEqual([card["id"] for card in archived], ["legacy-discarded"])
 
-    def test_c18_wip_limit(self):
+    def test_c18_only_the_browser_sets_the_in_progress_limit_and_agents_obey_it(self):
         root = self.init("wip-board")
-        limit = wb(["wip", "1", "--json"], root)
+        self.assertNotEqual(wb(["wip", "1"], root).returncode, 0)
+        path = Path(last_json(wb(["which", "--json"], root))["board"])
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        next(c for c in doc["columns"] if c["id"] == "inprogress")["wipLimit"] = 1  # as the browser saves it
+        path.write_text(json.dumps(doc), encoding="utf-8")
         steps = [wb(args, root) for args in (["add", "--title", "first active"],
                                              ["add", "--title", "second active"], ["start", "1"])]
-        full = wb(["start", "2"], root)
+        full = wb(["start", "2", "--json"], root)
         blocked = wb(["block", "1", "--reason", "waiting", "--until", "dependency clears"], root)
         second = wb(["start", "2"], root)
-        payload = last_json(limit)
-        self.assertEqual((payload["wipLimit"], payload["actor"]), (1, "tester"))
         for proc in (*steps, blocked, second):
             self.assertEqual(proc.returncode, 0, detail(proc))
-        self.assertNotEqual(full.returncode, 0)
-        self.assertIn("WIP limit is 1", full.stdout + full.stderr)
+        refusal = last_json(full)
+        self.assertEqual((refusal["code"], refusal["status"]), ("wip", 409))
+        self.assertIn("set by the user in the browser", refusal["error"])
 
     def test_c19_dependencies_readiness_and_outcomes(self):
         root = project("dependency-contract")
@@ -840,7 +843,7 @@ class Contracts(unittest.TestCase):
                 ["start", reference], ["update", reference, "--title", "Stale"],
                 ["fly", reference, "backlog"], ["note", reference, "--summary", "Stale"],
                 ["subtask", reference, "add", "Stale"], ["depends", reference, "--clear"],
-                ["comment", reference, "add", "Stale"], ["wip", "off"],
+                ["comment", reference, "add", "Stale"],
                 ["attachment", reference, "add", "--file", source],
                 ["attachment", reference, "remove", metadata["id"]],
                 ["columns-core", "--apply"], ["sweep", "--apply"], ["recover", "--apply"]):
