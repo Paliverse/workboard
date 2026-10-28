@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-10-28
+
 ### Added
 
 - Authors couldn't edit or remove their own timeline notes without hand-editing `board.json`. `note REF edit NOTE_ID` and `note REF rm NOTE_ID` now do it (`note.edit` and `note.rm` in `call`, with `id`). Only the author may change a note; others get `owned`. Each change adds a `note-edited` or `note-removed` history event, and an edited note carries `editedAt` and shows "edited" in the browser. Editing a note clears earlier acknowledgements of it, so an edited finding shows in the card owner's inbox again, even if it was posted before its subtask was accepted. Notes the subtask workflow writes itself (results, acceptances, takeovers) can't be changed. `edit` or `rm` without a note ID is plain note text.
@@ -270,7 +272,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.9...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.10...HEAD
+[0.3.10]: https://github.com/Paliverse/workboard/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/Paliverse/workboard/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/Paliverse/workboard/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/Paliverse/workboard/compare/v0.3.6...v0.3.7
