@@ -12,7 +12,7 @@ npm install -g @paliverse/workboard
 
 This needs Node.js 18 or newer. The `@paliverse/workboard` package installs the `workboard` and `wb` commands. They launch a prebuilt binary from a platform package (`@paliverse/workboard-win32-x64`, `@paliverse/workboard-darwin-arm64`, `@paliverse/workboard-linux-x64`, …), which npm selects automatically as an optional dependency. Node.js is only used to launch the binary.
 
-On Windows, npm installs the commands as `workboard.cmd` and `wb.cmd` shims. Shells find them, but arguments pass through `cmd.exe`, which cuts text at line breaks and mangles quotes, `%`, `^` and `&`. Scripts should spawn the real `workboard.exe` that `workboard version --json` reports as `executable`; see [Windows scripts](agents.md#machine-readable-output).
+On Windows, npm installs the commands as `workboard.cmd` and `wb.cmd` shims, which pass every argument through `cmd.exe`: it cuts text at line breaks and mangles quotes, `%`, `^` and `&`, and Rust and Node programs refuse to start a `.cmd` with such arguments. So the package also copies a small launcher to `workboard.exe` and `wb.exe` in the same folder (npm's global prefix, usually `%APPDATA%\npm`). Lookups that follow `PATHEXT`, such as `cmd.exe`, Bash and Python's `subprocess`, pick the `.exe` first; it runs the platform package's `workboard.exe` with the arguments untouched. npm copies it after install, and every run through the `.cmd` shim copies it again if it is missing or outdated, so `--ignore-scripts` installs get it too. Only npm's global layout gets the launcher; other package managers keep their own shims. If `where workboard` lists `workboard.cmd` before any `workboard.exe`, scripts should spawn the real `workboard.exe` that `workboard version --json` reports as `executable`; see [Windows scripts](agents.md#machine-readable-output).
 
 ### Install script
 
@@ -207,7 +207,7 @@ Then remove the program:
 
 | Installed with | Remove |
 |---|---|
-| npm | `npm uninstall -g @paliverse/workboard` |
+| npm | `npm uninstall -g @paliverse/workboard`. On Windows, npm leaves the launchers behind: delete `workboard.exe` and `wb.exe` (and any `workboard.exe.old` or `wb.exe.old`) from npm's global folder, `npm prefix -g` (usually `%APPDATA%\npm`). Left behind, they print what is missing and exit 1. |
 | Script (Windows) | Delete `%LOCALAPPDATA%\Programs\WorkBoard\`, and remove it from your user `PATH` if the script added it |
 | Script (macOS, Linux) | Delete `${XDG_DATA_HOME:-~/.local/share}/workboard/` and the `~/.local/bin/workboard` and `~/.local/bin/wb` links |
 | GitHub Release archive | Delete the unpacked `workboard/` directory and remove it from your `PATH` |
@@ -230,6 +230,7 @@ workboard doctor --json   # full report: {"ok", "blockers", "warnings", ...}
 |---|---|
 | `workboard: command not found` | Open a new terminal. For the POSIX script, add `~/.local/bin` to `PATH`. For npm, make sure npm's global `bin` directory is on `PATH`. |
 | `the platform package @paliverse/workboard-<os>-<arch> is not installed` | npm skipped optional dependencies. Reinstall without `--omit=optional` or `--no-optional`: `npm install -g @paliverse/workboard`. |
+| `workboard: ...\workboard-win32-x64\workboard\workboard.exe is missing` | The `workboard.exe` or `wb.exe` launcher in npm's global folder outlived its package: npm uninstalled it or skipped optional dependencies. Reinstall with `npm install -g @paliverse/workboard`, or delete the launcher it names. |
 | `doctor` says `workboard` on `PATH` is a different installation | You have two installations. Uninstall one, or reorder `PATH`. |
 | `port 7891 is in use by another program` | Stop that program, or choose another port with `workboard serve --port N`, the `WORKBOARD_PORT` environment variable or `port` in `~/.workboard/config.json` (the background service reads the file). |
 | Browser shows an old version after an upgrade | `workboard service restart`. `doctor` and `service status` report a version mismatch. |

@@ -24,6 +24,11 @@ try {
   process.exit(1);
 }
 
+if (process.platform === "win32") {
+  // Silent here: the postinstall warning already reported a failure; a later run retries.
+  require("./launcher.js").installLauncher(path.dirname(binary), () => {});
+}
+
 const child = spawn(binary, process.argv.slice(2), { stdio: "inherit", windowsHide: true });
 
 // Ctrl+C reaches the child directly (same console / process group); stay alive so the

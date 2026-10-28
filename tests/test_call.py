@@ -47,6 +47,35 @@ class CallAndWait(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         return last_json(proc)
 
+    def test_note_text_overflow_edit_and_remove(self):
+        long = "-first line " + "word " * 60 + "\nsecond line"
+        added, both = self.calls({"op": "note", "card": 1, "text": long},
+                                 {"op": "note", "card": 1, "text": "a", "summary": "b"}, ok=False)
+        self.assertEqual((added["summaryMoved"], added["item"]["body"]), (True, long))
+        self.assertLessEqual(len(added["item"]["summary"]), 160)
+        self.assertTrue(added["item"]["summary"].endswith("…"))
+        self.assertEqual(both["code"], "invalid")
+        self.assertIn('"text"', both["error"])
+        self.assertIn('"summary"', both["error"])
+        words = self.calls({"op": "note", "card": 1, "text": "edit"}, {"op": "note", "card": 1, "text": "rm"})
+        self.assertEqual([r["item"]["summary"] for r in words], ["edit", "rm"])
+        words.append(last_json(self.cli(["note", "1", "rm", "--json"])))
+        self.assertEqual(words[-1]["item"]["summary"], "rm")
+        for word in words:
+            self.calls({"op": "note.rm", "card": 1, "id": word["item"]["id"]})
+        note_id = added["item"]["id"]
+        edited, foreign, removed, shown = self.calls(
+            {"op": "note.edit", "card": 1, "id": note_id, "summary": "Short again"},
+            {"op": "note.rm", "card": 1, "id": note_id, "actor": "Grace"},
+            {"op": "note.rm", "card": 1, "id": note_id},
+            {"op": "show", "card": 1, "full": True}, ok=False)
+        self.assertEqual((edited["item"]["summary"], edited["summaryMoved"]), ("Short again", False))
+        self.assertIn("editedAt", edited["item"])
+        self.assertEqual(foreign["code"], "owned")
+        self.assertIn("Main", foreign["error"])
+        self.assertEqual((removed["ok"], shown["card"]["log"]), (True, []))
+        self.assertEqual([e["ev"] for e in shown["card"]["history"][-2:]], ["note-edited", "note-removed"])
+
     def test_order_errors_and_card_scoped_stale(self):
         results = self.calls(
             {"op": "show", "card": 1},
@@ -147,7 +176,8 @@ class CallAndWait(unittest.TestCase):
             self.assertNotIn("usage:", result["error"])
             self.assertTrue(result["error"])
         for request, result in zip(requests[:18], results[:18]):
-            self.assertEqual(result["error"], f"op {request['op']} is not available in call")
+            self.assertTrue(result["error"].startswith(f"op {request['op']} is not available in call"), result)
+            self.assertIn("; call ops: ", result["error"])
         self.assertIn("text goes in the request", results[18]["error"])
         self.assertIn('"summary"', results[21]["error"])
 
@@ -309,11 +339,48 @@ class CallAndWait(unittest.TestCase):
         self.assertEqual(json.loads(done.stdout.splitlines()[-1])["item"]["delegation"]["state"], "completed")
 
     def test_empty_and_malformed_input(self):
-        for text in ("", " \n\t", '{"op":', '{"op":"show"}\nnot JSON'):
+        for text in ("", " \n\t", '{"op":', '{"op":"show"}\nnot JSON', "{op:context,card:1}"):
             proc = self.cli(["call"], input=text)
             self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
             result = last_json(proc)
             self.assertEqual((result["code"], result["status"], result["rev"]), ("invalid", 422, None))
+            self.assertEqual(len(result["error"].splitlines()), 1)
+            if '"' not in text:  # Nothing arrived, or a shell ate the quotes: show the heredoc form.
+                self.assertIn("workboard call <<'EOF'", result["error"])
+        stripped = last_json(self.cli(["call"], input="{op:context,card:1}"))["error"]
+        self.assertIn("'{op:context,card:1}'", stripped)
+        excerpt = last_json(self.cli(["call"], input='{"op":"' + "x" * 200))["error"]
+        self.assertIn("'" + '{"op":"' + "x" * 53 + "'", excerpt)
+        self.assertNotIn("<<'EOF'", excerpt)
+
+    def test_guessed_keys_and_ops_name_the_right_ones(self):
+        before = Path(self.board).read_bytes()
+        search, query, add, show, move, claim = self.calls(
+            {"op": "search", "query": "needle"},
+            {"op": "query", "q": "needle"},
+            {"op": "add", "title": "t", "tags": "x", "body": "y"},
+            {"op": "show", "card": 1, "notAnOption": True, "nothing": None},
+            {"op": "move", "card": 1, "column": "done"},
+            {"op": "claim", "card": 1}, ok=False)
+        # The unknown key outranks the missing "terms" it was meant to be.
+        self.assertTrue(search["error"].startswith('search doesn\'t take "query" (use "terms")'), search)
+        self.assertIn("search takes: terms, limit, fields", search["error"])
+        self.assertIn('op "search"', query["error"])
+        self.assertIn('"tags" (use "tag")', add["error"])
+        self.assertIn('"body" (use "notes"', add["error"])
+        self.assertIn("add takes: title, from, column, priority, tag, origin, notes, on, board, actor", add["error"])
+        self.assertEqual(show["error"], 'show doesn\'t take "notAnOption"; show takes: card, full, board, actor')
+        self.assertIn('use "fly"', move["error"])
+        self.assertIn('use "start" or "subtask.claim"', claim["error"])
+        for result in (search, query, add, show, move, claim):
+            self.assertEqual((result["status"], result["code"], result["rev"]), (422, "invalid", None))
+        self.assertEqual(Path(self.board).read_bytes(), before)
+        for command, hint in ((["move", "1", "done"], "did you mean workboard fly?"),
+                              (["help"], "did you mean workboard --help or workboard COMMAND --help?")):
+            proc = self.cli(command)
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            self.assertIn("invalid choice", proc.stderr)
+            self.assertEqual(proc.stderr.splitlines()[-1], hint)
 
     def test_stream_flushes_before_stdin_closes(self):
         proc = subprocess.Popen([*command(), "call"], cwd=self.project, env=self.env,

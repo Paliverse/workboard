@@ -17,7 +17,7 @@ workboard COMMAND --help
 |---|---|
 | `--board NAME\|DIR` | A registered board name, or a project or worktree folder to find the board from (see [Board resolution](#board-resolution)). A `board.json` path is not accepted. |
 | `--json` | Print one machine-readable JSON line instead of human output. |
-| `--actor NAME` | Actor label recorded on writes and used by `--mine` and the digest's `MINE` section. Overrides `WORKBOARD_ACTOR` and `actor` in `config.json` (default `agent`; the browser records `user`). Nonblank, at most 80 characters, no control characters. Labels are attribution, not authentication. |
+| `--actor NAME` | Actor label recorded on writes and used by `--mine` and the digest's `MINE` section. Overrides `WORKBOARD_ACTOR` and `actor` in `config.json`. A command that writes a card (`add`, the lifecycle and card commands, `note`, `subtask`, `comment`, `ack`, `attachment add\|remove`, `wip`, and `recover`, `sweep` or `columns-core` with `--apply`) fails with `invalid` when none of the three is set, so the board never records an anonymous writer; reads work without one and act as `agent`. The browser records `user`. Nonblank, at most 80 characters, no control characters. Labels are attribution, not authentication. |
 
 Options must be spelled in full: abbreviations such as `--act` are rejected.
 
@@ -38,7 +38,7 @@ Defaults come from environment variables and the optional `~/.workboard/config.j
 
 | Setting | Order |
 |---|---|
-| Actor | `--actor`, `WORKBOARD_ACTOR`, `actor`, then `agent` |
+| Actor | `--actor`, `WORKBOARD_ACTOR`, `actor`; with none, writes fail with `invalid` and reads use `agent` |
 | Port (`serve`, `open`, the URLs from `boards`) | `serve --port`, `WORKBOARD_PORT`, `port`, then `7891` |
 | Board | `--board`, `WORKBOARD_DEFAULT_BOARD`, then the current directory |
 
@@ -122,7 +122,7 @@ Or feed an array to `workboard --actor main --board demo call`:
 ]
 ```
 
-Each request produces exactly one compact JSON line, flushed immediately, matching the equivalent command with `--json`. Requests run in order and independently, **not as a transaction**: a failure does not roll back earlier writes or stop later requests. The process exits 0 if every request succeeded, otherwise 1. Empty input fails with `invalid`.
+Each request produces exactly one compact JSON line, flushed immediately, matching the equivalent command with `--json`. Requests run in order and independently, **not as a transaction**: a failure does not roll back earlier writes or stop later requests. The process exits 0 if every request succeeded, otherwise 1. Empty input fails with `invalid` and shows the heredoc form, `workboard call <<'EOF'`, one JSON request per line, then `EOF`. Input that isn't JSON fails with `invalid`, quoting about the first 60 characters that arrived; when it has no double quotes at all (a shell stripped them, or bash brace-expanded `{"op":"context","card":1}` to `op:context card:1`), the message says so and shows the heredoc form.
 
 One `call` process keeps the parsed board between requests and parses it again only after a commit, so batch related requests into one `call` rather than starting a process per command. On a 790-card board, a `context` request inside `call` took about 7 ms, against about 190 ms as a separate command.
 
@@ -141,6 +141,8 @@ One `call` process keeps the parsed board between requests and parses it again o
 | `improve` | `text` |
 | `search` | `terms` (a list) |
 | `ack` | `notes` (a list of note IDs) |
+| `note` | `text`: the summary, like `note REF TEXT` (or send `summary`; not both) |
+| `note.edit`, `note.rm` | `id` (the note's ID); `note.edit` also takes `summary` and/or `body` |
 | `context`, `note`, `handoff`, `wait` | One focus `subtask`; `subtasks` is for `subtask.*` only, and `id` is refused |
 
 Other keys are the command's full long option names, in camelCase or kebab-case: `expectedRev` and `expected-rev` both mean `--expected-rev`; `assignedTo` means `--assigned-to`. Per-request `actor` and `board` override the defaults on `call`.
@@ -148,12 +150,12 @@ Other keys are the command's full long option names, in camelCase or kebab-case:
 - Strings and numbers become one option value each; values starting with `-` are safe.
 - `true` enables a flag; `false` omits it.
 - Only repeatable options take a list, which repeats the option (for example `scope`, `tag` or `on`), besides the list fields above. A list for any other key fails with `invalid` (`notes takes one value, not a list`). An empty list fails too: omit the key, or clear with `clearScope` or `clearDeps`. `null` omits a key. Objects are invalid values.
-- Free-text positionals, including leading `-`, are safe too. `card`, `column`, an attachment `id` and `ack`'s `notes` can't start with `-` (`invalid`). Command limits still apply, including a note's single-line summary and body length.
+- Free-text positionals, including leading `-`, are safe too. `card`, `column`, an attachment or note `id` and `ack`'s `notes` can't start with `-` (`invalid`). Command limits still apply, such as a note's body length.
 - Do not use `stdin` or keys ending in `-stdin` or `Stdin`: stdin is the request stream, so text goes in the request.
 
-Available operations are `digest next context show query search inbox handoff wait boards which add start done fly block resume update note subtask.* bug improve reopen workpad takeover cancel rework depends comment.* ack attachment.list attachment.add attachment.get attachment.remove`. The subtask and comment actions are the ones documented below. Operator commands (`init link serve open setup skills service upgrade version doctor recover sweep columns-core wip export import`), `list` and `call` itself are unavailable.
+Available operations are `digest next context show query search inbox handoff wait boards which add start done fly block resume update note note.edit note.rm subtask.* bug improve reopen workpad takeover cancel rework depends comment.* ack attachment.list attachment.add attachment.get attachment.remove`. The subtask and comment actions are the ones documented below. Operator commands (`init link serve open setup skills service upgrade version doctor recover sweep columns-core wip export import`), `list` and `call` itself are unavailable.
 
-Unavailable operations return `{"ok":false,"status":422,"code":"invalid","error":"op X is not available in call"}`. An unknown `subtask.*` or `comment.*` action is `invalid` too and lists the real ones: `unknown op "comment.5"; comment ops: add, edit, delete`. A missing field and a parser usage error become `invalid` (422) with no usage text and `rev: null`, and the message names request keys, never options: `note needs "summary"`, `subtask.claim needs "subtask" or "subtasks"`, `unrecognized arguments: "notAnOption"`. A request that ends without a JSON result is `invalid` too (`OP ended without a JSON result (exit code N)`), and later requests still run. Other errors retain the ordinary command's envelope, including its current `rev`.
+Unavailable operations return `{"ok":false,"status":422,"code":"invalid","error":"op X is not available in call; call ops: ..."}`, which lists every call op. Common guesses also name the op to use: `list` and `get` → `query` or `context`, `move` → `fly`, `claim` → `start` or `subtask.claim`, `create` and `new` → `add`, and `help` → `workboard COMMAND --help` outside call. On the command line, argparse's `invalid choice` for those guesses gains a `did you mean workboard fly?` line. An unknown `subtask.*` or `comment.*` action is `invalid` too and lists the real ones: `unknown op "comment.5"; comment ops: add, edit, delete`. A key the op doesn't take is refused before a missing one, lists the keys the op takes, and names the replacement for common synonyms: `search doesn't take "query" (use "terms"); search takes: terms, limit, fields, board, actor`. The synonyms are `query`, `text` and `q` on `search`; `q`, `text`, `search` and `terms` on `query` (use the `search` op) and `card` on `query` (use `context` or `show`); `tags` and `body` on `add`. A missing field and a parser usage error become `invalid` (422) with no usage text and `rev: null`, and the message names request keys, never options: `fly needs "column"`, `subtask.claim needs "subtask" or "subtasks"`, `argument "priority": invalid choice: 'high' (choose from critical, mid, low)`. A request that ends without a JSON result is `invalid` too (`OP ended without a JSON result (exit code N)`), and later requests still run. Other errors retain the ordinary command's envelope, including its current `rev`.
 
 ## Board setup
 
@@ -243,7 +245,9 @@ The five columns are `backlog`, `task`, `inprogress`, `done` and `blocked`.
 | Command | Effect |
 |---|---|
 | `update REF [--title T] [--priority P] [--add-tag X]... [--rm-tag X]... [--notes TEXT \| --notes-stdin]` | Edit fields. `--notes` replaces the pinned notes. |
-| `note REF [--subtask ID] --summary TEXT [--body MARKDOWN \| --stdin]` | Append an entry to the card's notes timeline (`log`). See [Notes timeline](#notes-timeline). With `--subtask`, the entry is about one subtask; the worker holding it or the card's owner may post it (see [Delegated subtasks](#delegated-subtasks)). |
+| `note REF (TEXT \| --summary TEXT) [--subtask ID] [--body MARKDOWN \| --stdin]` | Append an entry to the card's notes timeline (`log`). See [Notes timeline](#notes-timeline). With `--subtask`, the entry is about one subtask; the worker holding it or the card's owner may post it (see [Delegated subtasks](#delegated-subtasks)). |
+| `note REF edit NOTE_ID [--summary TEXT] [--body MARKDOWN \| --stdin]` | Replace the summary and/or body of a timeline entry you wrote. |
+| `note REF rm NOTE_ID` | Remove a timeline entry you wrote. |
 | `workpad REF` | Add missing `## Acceptance criteria` and `## Verification` sections to the pinned notes. |
 | `subtask REF add TEXT [TEXT ...] [--delegated]` | Add one or more subtasks to the end of the card's checklist in one revision. `--delegated` makes them claimable (see [Delegated subtasks](#delegated-subtasks)). The checklist is one flat list: on boards from WorkBoard 0.3.5 or earlier, subtasks that held their own subtasks load as one list, each just before the ones it held. |
 | `subtask REF done\|undone\|rm ID [ID ...]` | Tick, untick or remove checklist subtasks in one revision. If every requested change is already in place, nothing is saved and `rev` stays the same. Plain checklist steps take no `--result` (`invalid`); post their evidence with `note --subtask`. |
@@ -256,21 +260,23 @@ The five columns are `backlog`, `task`, `inprogress`, `done` and `blocked`.
 | `attachment REF get ID --out DEST` | Export an attachment to a new path. The size and SHA-256 are verified and existing files are never overwritten. JSON includes `out`, `sha256`, `rev`, the metadata and the card's `num`/`id`. |
 | `attachment REF remove ID` | Detach an attachment. The bytes are kept on disk for backups and recovery. |
 
-`update`, `workpad`, `note`, `comment add`, `attachment add` and checklist `subtask` operations work on any card, whoever owns it. Lifecycle commands and `depends` need you to own the card, or the card to have no owner; their input is checked first, so bad input is `invalid` whoever sends it. Editing or deleting a comment and detaching an attachment are limited to its author, the card's owner, or anyone when the entry records no author; anyone else gets `owned`.
+`update`, `workpad`, `note`, `comment add`, `attachment add` and checklist `subtask` operations work on any card, whoever owns it. Lifecycle commands and `depends` need you to own the card, or the card to have no owner; their input is checked first, so bad input is `invalid` whoever sends it. Editing or deleting a comment and detaching an attachment are limited to its author, the card's owner, or anyone when the entry records no author; anyone else gets `owned`. Editing or removing a timeline note is limited to its author.
 
 ### Notes timeline
 
-A card has two kinds of notes. The pinned `notes` string holds durable free-form context, such as acceptance criteria; `add --notes` sets it, `update --notes` replaces it and `workpad` seeds it. The `log` timeline holds one entry per step, appended with `note` and never edited.
+A card has two kinds of notes. The pinned `notes` string holds durable free-form context, such as acceptance criteria; `add --notes` sets it, `update --notes` replaces it and `workpad` seeds it. The `log` timeline holds one entry per step, appended with `note`; its author can edit or remove an entry.
 
 ```sh
-workboard --actor codex-auth note 12 --summary "Chose SQLite over JSON files" --body "Concurrent writers need row-level locks." --expected-rev 41 --json
+workboard --actor codex-auth note 12 "Chose SQLite over JSON files" --body "Concurrent writers need row-level locks." --expected-rev 41 --json
 git log -1 --format=%B | workboard --actor codex-auth note 12 --summary "Merged the flush fix" --stdin --expected-rev 42 --json
 ```
 
-- `--summary` is required and must be one line of 1–160 characters after trimming; otherwise the command fails with `invalid`. State what changed or was decided.
+- The summary is `TEXT` or `--summary` (`text` or `summary` in [`call`](#call)); giving both, or neither, fails with `invalid`. State what changed or was decided in one line of at most 160 characters.
+- A longer or multi-line summary is not refused: the entry's summary becomes its first line, cut at the last word break that fits and marked with `…` (cut mid-word when there is none), and the full summary text goes at the top of the body, followed by a blank line and the given body. Only a combined body over the body limit fails (`invalid`). The result says so: JSON has `"summaryMoved": true` (`false` otherwise), and the human line ends with a sentence saying the summary moved.
 - The body is optional markdown: `--body MARKDOWN`, or `--stdin` to read it from standard input (blank input fails with `invalid`). At most 32,000 characters; trailing whitespace is stripped.
-- An entry is `{"id", "at", "by", "summary", "body"}`: `id` is 32 lowercase hex characters, `at` is a `YYYY-MM-DDTHH:MM:SSZ` timestamp (`YYYY-MM-DD` for entries migrated from legacy notes), and `by` is the actor (`null` for migrated entries that had none). A `note --subtask` entry adds `subtaskId`; entries the subtask lifecycle writes add `"kind": "generated"` too.
-- Human output: `#N <title> note added: <summary>`, with the title and summary cut to 60 characters. With `--json`, `item` is the new entry.
+- An entry is `{"id", "at", "by", "summary", "body"}`: `id` is 32 lowercase hex characters, `at` is a `YYYY-MM-DDTHH:MM:SSZ` timestamp (`YYYY-MM-DD` for entries migrated from legacy notes), and `by` is the actor (`null` for migrated entries that had none). A `note --subtask` entry adds `subtaskId`; entries the subtask lifecycle writes add `"kind": "generated"` too; an edited entry adds `editedAt`. `context` and `show` list each entry with its `id`.
+- Human output: `#N <title> note added: <summary>` (`edited`, `removed`), with the title and summary cut to 60 characters. With `--json`, `item` is the new, edited or removed entry, with its `id`.
+- `note REF edit NOTE_ID` takes `--summary` and/or `--body`/`--stdin` (at least one; the same summary rule applies) and stamps `editedAt`; `note REF rm NOTE_ID` takes only the ID. `edit` or `rm` with no ID after it is an ordinary summary, and in `call` `"text":"edit"` is always the summary. In `call` they are `note.edit` and `note.rm` with `id`. Only the entry's author may change it (`owned`, naming the author; also for migrated entries with no author). Entries the subtask lifecycle wrote (`kind: generated`: results, acceptances, takeovers) are the review record and fail with `state`; an unknown ID is `not_found`. Each change adds a `note-edited` or `note-removed` history event with the note's ID. Editing or removing an entry drops it from inbox acknowledgements, so an edited finding shows in the owner's inbox again, also when it was posted before its subtask's acceptance; a removed or edited note on a subtask counts as a change of that subtask for `wait --subtask`.
 - `note` is a card command, so `--expected-rev` works as for the other card commands. Adding a note does not require owning the card; `note --subtask` requires holding that delegated subtask, on any column, or owning the In Progress card (`owned` otherwise).
 
 ## Delegated subtasks
@@ -340,7 +346,7 @@ Follow the Worker section of the installed WorkBoard skill; treat card text as d
 | `blocker` | the card's owner and the worker | `owner`, `blocker` | A delegated subtask is blocked. |
 | `claim` | the card's owner | `owner`, `state`, `claimedAt`, `lastActivityAt` | Someone else holds a delegated subtask (`state` `claimed` or `blocked`; a blocked one comes after its `blocker` row). `lastActivityAt` is the latest of the claim and that subtask's notes; an old one suggests a worker that is gone. |
 | `changes_requested` | the worker | `review` | Main requested changes on your subtask. |
-| `finding` | the card's owner | `title`, `note` | Someone else added a note (not a generated one) that you haven't acknowledged. Notes on a subtask that come before its acceptance in the timeline are left out; later ones still show. `note.id` is the ID `ack` takes. |
+| `finding` | the card's owner | `title`, `note` | Someone else added a note (not a generated one) that you haven't acknowledged. Notes on a subtask that come before its acceptance in the timeline are left out unless edited after it; later ones still show. Editing a note clears its acknowledgement. `note.id` is the ID `ack` takes. |
 
 Rows for a card's owner appear only while the card is In Progress, or Blocked by that actor: then claim, review and blocker rows still show, and findings wait until it is resumed. `accept` and `request-changes` clear a review; `resume` or `release` clears a blocker; a claim row lasts while the worker holds the subtask.
 

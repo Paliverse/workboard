@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Authors couldn't edit or remove their own timeline notes without hand-editing `board.json`. `note REF edit NOTE_ID` and `note REF rm NOTE_ID` now do it (`note.edit` and `note.rm` in `call`, with `id`). Only the author may change a note; others get `owned`. Each change adds a `note-edited` or `note-removed` history event, and an edited note carries `editedAt` and shows "edited" in the browser. Editing a note clears earlier acknowledgements of it, so an edited finding shows in the card owner's inbox again, even if it was posted before its subtask was accepted. Notes the subtask workflow writes itself (results, acceptances, takeovers) can't be changed. `edit` or `rm` without a note ID is plain note text.
+- On Windows, npm installed only `workboard.cmd` and `wb.cmd`, so every argument went through `cmd.exe`: line breaks cut the command short, quotes, `%`, `^` and `&` were mangled, Rust-based shells such as omp's refused multi-line arguments with "batch file arguments are invalid", and Python's `subprocess` couldn't find `workboard` at all. Global npm installs now also get `workboard.exe` and `wb.exe`, a small launcher that runs the real binary with the arguments untouched; killing the launcher (a caller's timeout) also ends the binary, while servers and upgrades the binary starts keep running. npm copies it after install, and each run through the `.cmd` shim restores it if it is missing or outdated. `npm uninstall -g` leaves the two launchers behind; run on their own they say what is missing and how to fix it, and the uninstall instructions list them.
+
+### Changed
+
+- A note summary over 160 characters or with a line break was refused, so agents retried or cut their own text. The summary now keeps its first line, cut at a word break with "…" if still too long, and the full text moves to the top of the body. This holds for the CLI, `call` and the browser API. Only a body that ends up over the body limit is refused, and results report `"summaryMoved": true`.
+- `note 12 "text"` failed because `--summary` was required. The text can now be given positionally (`"text"` in `call`); giving both is refused with both named.
+- Commands that write a card recorded the writer as `agent` when no label was set. They now refuse with `invalid` and ask for `--actor`, `"actor"` in the call request, or `WORKBOARD_ACTOR`. Reads still work without a label, and the browser still records `user`.
+- A `call` request with a key its op doesn't take said only `OP doesn't take "x"`, and a guessed key that replaced a required one (`{"op":"search","query":…}`) was reported as `search needs "terms"`. The unknown key is now reported first, with the keys the op takes and, for common guesses, the key to use: `search doesn't take "query" (use "terms"); search takes: terms, limit, fields, board, actor`.
+- An unknown `call` op said only `op X is not available in call`. It now lists every call op and names the right one for common guesses (list/get → query or context, move → fly, claim → start or subtask.claim, create/new → add, help → `workboard COMMAND --help` outside call). On the command line, argparse's "invalid choice" for those guesses gains a `did you mean workboard fly?` line.
+- Input to `call` that wasn't JSON failed with a bare decoder message such as `Expecting value: line 1 column 1 (char 0)`. The error now quotes the first 60 characters that arrived; when the double quotes are missing (a shell stripped them, or bash brace-expanded the object) it says so and shows the heredoc form. Empty stdin shows the heredoc form too.
+
 ## [0.3.9] - 2026-10-11
 
 ### Fixed

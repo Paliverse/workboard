@@ -630,7 +630,10 @@ class MultiBoardApiTest(unittest.TestCase):
         self.assertEqual(data["card"]["log"], [entry])
 
         self.assertEqual(life(ctx, cid, "note", {"summary": "Late"}, rev=before)[0], 409)
-        self.assertEqual(life(ctx, cid, "note", {"summary": "two\nlines"})[0], 422)
+        self.assertEqual(life(ctx, cid, "note", {"summary": " "})[0], 422)
+        status, moved, _ = life(ctx, cid, "note", {"summary": "two\nlines"})
+        self.assertEqual((status, moved["summaryMoved"], moved["item"]["summary"], moved["item"]["body"]),
+                         (200, True, "two", "two\nlines"))
         on_disk = ctx["path"].read_bytes()
         status, error, _ = mutate(ctx, f"/api/card/{cid}", {"card": {"log": [{**entry, "summary": "Rewritten"}]}})
         self.assertEqual(status, 422, error)

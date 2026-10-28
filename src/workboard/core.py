@@ -222,13 +222,21 @@ def configured_port() -> int:
     return port
 
 
-def actor() -> str:
-    """CLI writer label: --actor (the CLI sets $WORKBOARD_ACTOR) > $WORKBOARD_ACTOR > config actor > `agent`.
+ACTOR_REQUIRED = ('this command writes the board: pass --actor LABEL (or "actor" in the call request, '
+                  'or set WORKBOARD_ACTOR) so the board records who wrote this')
 
-    Agents use the CLI, so unlabeled writes are `agent`; the browser records `user`."""
-    configured = config().get("actor", "agent")
-    value = os.environ.get("WORKBOARD_ACTOR")
-    return validate_actor(configured if value is None else value)
+
+def actor(required: bool = False) -> str:
+    """CLI writer label: --actor (the CLI sets $WORKBOARD_ACTOR) > $WORKBOARD_ACTOR > config actor.
+
+    With none set, reads act as `agent` and writes (required=True) are refused; the browser records `user`."""
+    configured = config().get("actor")
+    value = os.environ.get("WORKBOARD_ACTOR", configured)
+    if value is None:
+        if required:
+            raise WorkflowError(ACTOR_REQUIRED)
+        return "agent"
+    return validate_actor(value)
 
 
 def _validate_board_name(value) -> str:
@@ -754,6 +762,28 @@ def normalize_log(entries) -> list[dict]:
     return log
 
 
+def fit_note(summary, body) -> tuple[str, str]:
+    """Caller text → a valid (summary, body). A multi-line or over-long summary keeps its first line,
+    clipped at a word, and moves whole to the top of the body: nothing is refused or lost."""
+    if isinstance(summary, str) and summary.strip():
+        text = summary.strip()
+        first = re.split(r"[\r\n]", text, maxsplit=1)[0].rstrip()
+        if first != text or len(text) > NOTE_SUMMARY_MAX:
+            summary = _clip_line(first)
+            if body is None or isinstance(body, str):  # Other bodies stay as given: validate_note refuses them.
+                rest = (body or "").rstrip()
+                body = f"{text}\n\n{rest}" if rest else text
+    return validate_note(summary, body)
+
+
+def _clip_line(line: str) -> str:
+    """One line within NOTE_SUMMARY_MAX: cut at the last word break that fits, else hard, marked with …"""
+    if len(line) <= NOTE_SUMMARY_MAX:
+        return line
+    cut = re.match(r"(.*\S)\s", line[:NOTE_SUMMARY_MAX - 1])
+    return (cut[1] if cut else line[:NOTE_SUMMARY_MAX - 1]) + "…"
+
+
 def derive_summary(text: str) -> tuple[str, str]:
     """Split one legacy note's text into a one-line summary and a markdown body."""
     lines = text.strip().splitlines()
@@ -767,8 +797,7 @@ def derive_summary(text: str) -> tuple[str, str]:
             return summary, "\n".join([first[end.start() + 1:], *lines[1:]]).strip()
     if len(first) <= NOTE_SUMMARY_MAX:
         return first, "\n".join(lines[1:]).strip()
-    cut = re.match(r"(.*\S)\s", first[:NOTE_SUMMARY_MAX - 1])
-    return (cut[1] if cut else first[:NOTE_SUMMARY_MAX - 1]) + "…", "\n".join(lines).strip()
+    return _clip_line(first), "\n".join(lines).strip()
 
 
 def split_legacy_notes(card_id: str, text: str) -> tuple[str, list[dict]]:
@@ -1550,14 +1579,64 @@ def board_stats(doc: dict) -> dict:
 
 
 def append_note(card: dict, summary, body, by: str) -> dict:
-    """Append one timeline entry (one-line summary, optional markdown body) and return it."""
+    """Append one timeline entry (summary per fit_note, optional markdown body) and return it."""
     by = validate_actor(by)
-    summary, body = validate_note(summary, body)
+    summary, body = fit_note(summary, body)
     entry = {"id": uuid.uuid4().hex, "at": now_iso(), "by": by, "summary": summary, "body": body}
     card.setdefault("log", []).append(entry)
     hist(card, "note", by=by, note=summary[:80])
     touch(card)
     return entry
+
+
+def _note_entry(card: dict, note_id) -> dict:
+    entry = next((entry for entry in card.get("log") or [] if entry["id"] == note_id), None)
+    if entry is None:
+        raise WorkflowError(f"note {note_id!r} not found on card #{card['num']}", 404)
+    return entry
+
+
+def _require_note_author(entry: dict, by: str) -> None:
+    # Generated entries (result, accepted, takeover...) are the delegation record: review and inbox read them.
+    if entry.get("kind") == "generated":
+        raise WorkflowError(f"note {entry['id']} is a workflow record ({entry['summary']}); it can't be "
+                            "changed", 409, "state")
+    if entry.get("by") != by:
+        raise WorkflowError(f"note {entry['id']} was written by {entry.get('by') or 'an unknown author'}; "
+                            "only its author can change it", 409, "owned")
+
+
+def edit_note(card: dict, note_id, summary, body, by: str) -> dict:
+    """Replace the summary and/or body of the actor's own timeline note; stamps editedAt."""
+    by = validate_actor(by)
+    if summary is None and body is None:
+        raise WorkflowError("note edit needs a new summary or body")
+    entry = _note_entry(card, note_id)
+    summary, body = fit_note(entry["summary"] if summary is None else summary,
+                             entry["body"] if body is None else body)
+    _require_note_author(entry, by)
+    entry.update(summary=summary, body=body, editedAt=now_iso())
+    _forget_acknowledgements(card, entry["id"])  # Changed text is a new finding for its readers.
+    hist(card, "note-edited", by=by, note=entry["id"])
+    touch(card)
+    return entry
+
+
+def remove_note(card: dict, note_id, by: str) -> dict:
+    """Remove the actor's own timeline note, and any inbox acknowledgement of it; returns the entry."""
+    by = validate_actor(by)
+    entry = _note_entry(card, note_id)
+    _require_note_author(entry, by)
+    card["log"].remove(entry)
+    _forget_acknowledgements(card, entry["id"])
+    hist(card, "note-removed", by=by, note=entry["id"])
+    touch(card)
+    return entry
+
+
+def _forget_acknowledgements(card: dict, note_id: str) -> None:
+    for reader, ids in (card.get("inboxAcknowledged") or {}).items():
+        card["inboxAcknowledged"][reader] = [i for i in ids if i != note_id]
 
 
 def comment_action(card: dict, operation: dict, by: str) -> dict | None:
@@ -2192,12 +2271,15 @@ def inbox(doc: dict, by: str, ref=None) -> list[dict]:
         if main and card.get("column") == "inprogress":  # Findings wait for resume: ack needs In Progress.
             acknowledged = set((card.get("inboxAcknowledged") or {}).get(by) or [])
             log = card.get("log") or []
-            # Notes on an accepted subtask posted before its (latest) acceptance were part of that review.
-            cut = {entry["subtaskId"]: i for i, entry in enumerate(log) if entry.get("kind") == "generated"
-                   and entry.get("subtaskId") in accepted and entry.get("summary") == f"accepted {entry['subtaskId']}"}
+            # Notes on an accepted subtask posted before its (latest) acceptance were part of that review,
+            # unless edited after it.
+            cut = {entry["subtaskId"]: (i, entry["at"]) for i, entry in enumerate(log)
+                   if entry.get("kind") == "generated" and entry.get("subtaskId") in accepted
+                   and entry.get("summary") == f"accepted {entry['subtaskId']}"}
             for i, entry in enumerate(log):
+                index, at = cut.get(entry.get("subtaskId"), (-1, ""))
                 if (entry.get("by") != by and entry.get("kind") != "generated" and entry["id"] not in acknowledged
-                        and i > cut.get(entry.get("subtaskId"), -1)):
+                        and (i > index or (entry.get("editedAt") or "") > at)):
                     rows.append({"kind": "finding", "num": card["num"], "cardId": card["id"],
                                  "title": card["title"], "subtaskId": entry.get("subtaskId"), "note": entry})
     return rows
@@ -2208,7 +2290,7 @@ def publish_subtask_note(doc: dict, card: dict, subtask_id: str, summary, body, 
     subtask (claimed, blocked or completed, so rechecks after review need no reopen)."""
     by = validate_actor(by)
     subtask_id = _required_text(subtask_id, "subtask ID")
-    validate_note(summary, body)  # Input errors first, so one round trip reports them.
+    fit_note(summary, body)  # Input errors first, so one round trip reports them.
     if not any(candidate is card for candidate in doc.get("cards") or []):
         raise WorkflowError("subtask note must use the current board card", 409)
     # No column gate: the card's owner may note any subtask, and a holder may recheck after Done or Blocked.

@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unittest
+from unittest import mock
 from collections import Counter
 
 import tests.support  # noqa: F401  (puts src/ on sys.path)
@@ -166,8 +167,8 @@ class TimelineEntries(unittest.TestCase):
 
     def test_append_note_validates_and_records(self):
         card = self.card()
-        for summary, body in (("   ", ""), (None, ""), ("two\nlines", ""), ("carriage\rreturn", ""),
-                              ("s" * 161, ""), ("ok", "b" * (core.NOTE_BODY_MAX + 1)), ("ok", 5)):
+        for summary, body in (("   ", ""), (None, ""), ("ok", "b" * (core.NOTE_BODY_MAX + 1)), ("ok", 5),
+                              ("s" * 161, "b" * (core.NOTE_BODY_MAX - 100))):  # Moved summary overflows the body.
             with self.subTest(summary=str(summary)[:20], body=str(body)[:20]):
                 with self.assertRaises(core.WorkflowError) as caught:
                     core.append_note(card, summary, body, "tester")
@@ -183,6 +184,87 @@ class TimelineEntries(unittest.TestCase):
         self.assertEqual({k: card["history"][-1][k] for k in ("ev", "by", "note")},
                          {"ev": "note", "by": "Ada", "note": "s" * 80})
         self.assertEqual(core.append_note(card, "No body", None, "Ada")["body"], "")
+
+    def test_long_or_multiline_summary_moves_to_the_body(self):
+        card = self.card()
+        words = ("word " * 60).strip()   # 299 characters
+        cases = [
+            ("s" * 160, None, ("s" * 160, "")),                                   # at the limit: kept
+            ("s" * 161, None, ("s" * 159 + "…", "s" * 161)),                      # no whitespace: hard cut
+            (words, "evidence", (("word " * 31).strip() + "…", words + "\n\nevidence")),
+            ("two\nlines", "", ("two", "two\nlines")),                             # first line fits: no …
+            ("carriage\rreturn", "- e", ("carriage", "carriage\rreturn\n\n- e")),
+        ]
+        for summary, body, expected in cases:
+            with self.subTest(summary=summary[:20]):
+                entry = core.append_note(card, summary, body, "Ada")
+                self.assertEqual((entry["summary"], entry["body"]), expected)
+                self.assertLessEqual(len(entry["summary"]), core.NOTE_SUMMARY_MAX)
+
+    def test_only_the_author_edits_or_removes_a_note(self):
+        doc = core.normalize_doc({"cards": [{"id": "c", "num": 1, "column": "inprogress", "activeOwner": "Main"}]})
+        card = doc["cards"][0]
+        note = core.append_note(card, "Finding", "old body", "Ada")
+        core.ack_inbox_notes(doc, card, [note["id"]], "Main")
+        for change in (lambda by: core.edit_note(card, note["id"], "Hijacked", None, by),
+                       lambda by: core.remove_note(card, note["id"], by)):
+            with self.assertRaises(core.WorkflowError) as caught:
+                change("Grace")
+            self.assertEqual((caught.exception.code, "Ada" in str(caught.exception)), ("owned", True))
+        with self.assertRaises(core.WorkflowError) as caught:
+            core.remove_note(card, "f" * 32, "Ada")
+        self.assertEqual(caught.exception.status, 404)
+
+        edited = core.edit_note(card, note["id"], "x" * 200, None, "Ada")
+        self.assertEqual((edited["summary"], edited["body"]), ("x" * 159 + "…", "x" * 200 + "\n\nold body"))
+        self.assertIn("editedAt", edited)
+        self.assertEqual(core.edit_note(card, note["id"], None, "new body", "Ada")["summary"], "x" * 159 + "…")
+        core.remove_note(card, note["id"], "Ada")
+        self.assertEqual((card["log"], card["inboxAcknowledged"]["Main"]), ([], []))
+        self.assertEqual([(e["ev"], e["by"], e["note"]) for e in card["history"][-3:]],
+                         [("note-edited", "Ada", note["id"]), ("note-edited", "Ada", note["id"]),
+                          ("note-removed", "Ada", note["id"])])
+        core.normalize_doc(doc)   # Still a valid board.
+
+    def test_an_edited_finding_returns_to_the_inbox(self):
+        doc = core.normalize_doc({"cards": [{"id": "c", "num": 1, "title": "T", "column": "task"}]})
+        card = doc["cards"][0]
+        core.workflow_action(doc, card, "start", {}, "Main")
+        core.subtask_action(doc, card, "add", {"texts": ["Step"], "delegated": True}, "Main")
+        core.subtask_action(doc, card, "claim", {"ids": ["s-1"]}, "W")
+
+        def findings():
+            return [row["note"]["id"] for row in core.inbox(doc, "Main") if row["kind"] == "finding"]
+
+        # A: an acknowledged finding that its author edits is new again.
+        shared = core.append_note(card, "Tests pass", "", "W")
+        core.ack_inbox_notes(doc, card, [shared["id"]], "Main")
+        self.assertEqual(findings(), [])
+        core.edit_note(card, shared["id"], "Tests FAIL on X", None, "W")
+        self.assertEqual(findings(), [shared["id"]])
+        core.ack_inbox_notes(doc, card, [shared["id"]], "Main")
+
+        # B: a subtask note posted before the acceptance, edited after it.
+        early = core.publish_subtask_note(doc, card, "s-1", "Looks fine", "", "W")
+        core.subtask_action(doc, card, "done", {"ids": ["s-1"], "result": "Shipped"}, "W")
+        core.subtask_action(doc, card, "accept", {"ids": ["s-1"]}, "Main")
+        self.assertEqual(findings(), [])
+        with mock.patch.object(core, "now_iso", return_value="2999-01-01T00:00:00Z"):
+            core.edit_note(card, early["id"], "Actually broken", None, "W")
+        self.assertEqual(findings(), [early["id"]])
+
+    def test_workflow_records_cannot_be_edited_or_removed(self):
+        doc = core.normalize_doc({"cards": [{"id": "c", "num": 1, "title": "T", "column": "task"}]})
+        card = doc["cards"][0]
+        core.workflow_action(doc, card, "start", {}, "Main")
+        core.subtask_action(doc, card, "add", {"texts": ["Step"], "delegated": True}, "Main")
+        core.subtask_action(doc, card, "claim", {"ids": ["s-1"]}, "W")
+        core.subtask_action(doc, card, "done", {"ids": ["s-1"], "result": "Shipped"}, "W")
+        result = card["log"][-1]
+        with self.assertRaises(core.WorkflowError) as caught:
+            core.remove_note(card, result["id"], "W")
+        self.assertEqual(caught.exception.code, "state")
+        self.assertIn(result, card["log"])
 
     def test_note_action_ignores_ownership(self):
         doc = core.normalize_doc({"cards": [{"id": "c", "num": 1, "column": "inprogress", "activeOwner": "Ada"}]})

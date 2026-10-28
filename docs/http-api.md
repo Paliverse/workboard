@@ -176,7 +176,7 @@ Body: `{"baseRev", "actor"?, "action", "details": {}}`. If the card has another 
 | `move` | `to`, `writeup`?, `note`? | not Blocked, not Done | To Done runs `complete`, to In Progress runs `start`, and moving to Blocked is 409 `state` (use `block`). |
 | `dependencies` | `ids` (the full list; `[]` clears) | any | Rejects self-dependencies, unknown ids and cycles. |
 | `workpad` | | any | Adds missing acceptance and verification sections to the pinned notes. |
-| `note` | `summary`, `body`? | any | Appends an entry to the card's `log` (see [Notes timeline](#notes-timeline)). `summary` is trimmed and must be one line of 1–160 characters; `body` is markdown of at most 32,000 characters (`null` or omitted means `""`). Otherwise 422. |
+| `note` | `summary`, `body`? | any | Appends an entry to the card's `log` (see [Notes timeline](#notes-timeline)). `summary` is trimmed; a summary over 160 characters or with a line break keeps its first line (cut at a word break with `…` if still too long) and moves whole to the top of `body`. `body` is markdown of at most 32,000 characters, counting a moved summary (`null` or omitted means `""`). Otherwise 422. The response adds `item` (the new entry) and `summaryMoved`. |
 | `subtask` | `op`, `ids`, and the fields `op` needs | see below | Runs the subtask lifecycle. The response adds `items` (the selected subtasks) and, for one subtask, `item`. |
 
 An unknown action is 422. The response adds `card`, `action` and `"event": "card-updated"`.
@@ -224,7 +224,8 @@ Adding a note:
             "log": [{"id": "9b1c2e7f40a84d6c8e3f5a2b1d0c9e7f", "at": "2026-09-24T08:15:02Z", "by": "user",
                      "summary": "Chose SQLite over JSON files",
                      "body": "- Concurrent writers need row locks\n- Commit `abc1234`"}] },
-  "document": { /* the saved document */ }, "event": "card-updated", "action": "note" }
+  "document": { /* the saved document */ }, "event": "card-updated", "action": "note",
+  "item": { /* the new log entry */ }, "summaryMoved": false }
 ```
 
 A stale `baseRev` is 409 like any other write.
@@ -323,5 +324,6 @@ Card fields:
 | `body` | Markdown, at most 32,000 characters, trailing whitespace stripped; `""` when empty |
 | `subtaskId` | Optional: the delegated subtask a note is about, on a CLI `note --subtask` entry (by the worker or the card's owner) or a generated note |
 | `kind` | Optional: `"generated"` for notes the subtask lifecycle writes (results, releases, takeovers, reviews); the inbox ignores them |
+| `editedAt` | Optional: when its author last edited the entry (CLI `note edit`) |
 
-Entries are added only through the `note` lifecycle action (or the CLI's `note`) and the subtask lifecycle. A card PATCH or snapshot that changes `log` is 422.
+Entries are added only through the `note` lifecycle action (or the CLI's `note`) and the subtask lifecycle, and edited or removed only by their author through the CLI's `note edit` and `note rm`. A card PATCH or snapshot that changes `log` is 422.

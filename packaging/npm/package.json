@@ -13,6 +13,9 @@
     "workboard": "bin/workboard.js",
     "wb": "bin/workboard.js"
   },
+  "scripts": {
+    "postinstall": "node bin/launcher.js"
+  },
   "files": ["bin/"],
   "engines": {
     "node": ">=18"

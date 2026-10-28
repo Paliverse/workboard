@@ -2673,6 +2673,8 @@ const WB = window.WB = {};
     'subtask-accept': 'accepted a subtask result',
     'subtask-request-changes': 'requested changes on a subtask',
     note: 'added a note',
+    'note-edited': 'edited a note',
+    'note-removed': 'removed a note',
   };
   // Events whose note is a human-written reason worth showing.
   const REASONED = new Set(['start', 'move', 'blocked', 'unblocked', 'cancel', 'rework', 'reopened', 'bug', 'improve', 'takeover',
@@ -2948,7 +2950,8 @@ const WB = window.WB = {};
       const parts = [h('span', { class: 'tl-dot' }), h('span', { class: 'tl-chev' }, e.body ? icon('right', 'sm') : null),
         h('span', { class: 'tl-sum', text: e.summary }),
         h('span', { class: 'tl-meta' }, e.by ? [ui.avatar(e.by), h('span', { class: 'tl-by', text: e.by })] : null,
-          t.time ? h('time', { dateTime: e.at, text: t.time }) : null)];
+          t.time ? h('time', { dateTime: e.at, text: t.time }) : null,
+          e.editedAt ? h('span', { class: 'faint', text: 'edited', title: `Edited ${e.editedAt}` }) : null)];
       if (!e.body) return { el: h('div', { class: 'tl-item' }, h('div', { class: 'tl-row static', title: t.title }, parts)) };
       // Date-only entries were migrated from pre-timeline plain-text notes: never reinterpret them as markdown.
       const r = { id: e.id, text: e.body, body: null, plain: /^\d{4}-\d{2}-\d{2}$/.test(e.at) };
@@ -2957,7 +2960,7 @@ const WB = window.WB = {};
       r.el = h('div', { class: 'tl-item' }, r.btn);
       return r;
     }
-    slot(c => json((c.log || []).map(e => e.id)) + st.all + dayKey(new Date()), c => {
+    slot(c => json((c.log || []).map(e => [e.id, e.editedAt])) + st.all + dayKey(new Date()), c => {
       const log = c.log || [];
       const last = log[log.length - 1];
       if (last && last.id !== st.newest) { st.newest = last.id; if (last.body) st.open.add(last.id); }

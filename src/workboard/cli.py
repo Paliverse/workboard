@@ -28,7 +28,7 @@ wb.configure_utf8()
 
 
 def _emit(args, card: dict, doc: dict, action: str, extra: str = "",
-          *, item=None, items=None) -> None:
+          *, item=None, items=None, fields=None) -> None:
     rev = doc["rev"]
     n_cards = len(doc["cards"])
     if getattr(args, "json", False):
@@ -41,6 +41,7 @@ def _emit(args, card: dict, doc: dict, action: str, extra: str = "",
             result["item"] = item
         if items is not None:
             result["items"] = items
+        result.update(fields or {})
         print(json.dumps(result, ensure_ascii=False))
         return
     tail = f" (rev {rev} · {n_cards} cards)"
@@ -177,20 +178,31 @@ def cmd_update(args):
         print(f"{wb.fmt_ref(card)} updated: {', '.join(changed) or 'nothing'}")
 
 
+NOTE_MOVED = ("summary was over 160 characters or had a line break: kept its first line, "
+              "moved the full text to the top of the body")
+
+
 def cmd_note(args):
+    change = args.change  # main() checked the argument shape and read edit / rm as the action.
+    summary = args.summary if change or args.summary is not None else args.text
     body = _read_stdin() if args.stdin else args.body
-    if args.subtask is None:
-        card, doc = _run_workflow(args, "note", {"summary": args.summary, "body": body})
-        entry = card["log"][-1]
-    else:
-        p, by = wb.find_board(args.board), wb.actor()
-        with wb.board_transaction(p, args.expected_rev, args.ref) as doc:
-            card = _resolve(doc, args.ref)
-            entry = wb.publish_subtask_note(doc, card, args.subtask, args.summary, body, by)
-            wb.save(p, doc, by=by)
-    action = f"note added: {entry['summary'][:60]}"
+    p, by = wb.find_board(args.board), wb.actor()
+    with wb.board_transaction(p, args.expected_rev, args.ref) as doc:
+        card = _resolve(doc, args.ref)
+        if change == "edit":
+            entry = wb.edit_note(card, args.id, summary, body, by)
+        elif change == "rm":
+            entry = wb.remove_note(card, args.id, by)
+        elif args.subtask is None:
+            entry = wb.workflow_action(doc, card, "note", {"summary": summary, "body": body}, by)["log"][-1]
+        else:
+            entry = wb.publish_subtask_note(doc, card, args.subtask, summary, body, by)
+        wb.save(p, doc, by=by)
+    moved = summary is not None and entry["summary"] != summary.strip()
+    verb = {"edit": "edited", "rm": "removed"}.get(change, "added")
+    action = f"note {verb}: {entry['summary'][:60]}" + (f" · {NOTE_MOVED}" if moved else "")
     if args.json:
-        _emit(args, card, doc, action, item=entry)
+        _emit(args, card, doc, action, item=entry, fields={"summaryMoved": moved})
     else:
         print(f"{wb.fmt_ref(card)} {card['title'][:60]} {action}")
 
@@ -331,7 +343,7 @@ def cmd_wait(args):
     item, start, snapshot = subtask()
     notes = start
     changed = (card["changedRev"] if item is None else item.get("changedRev", card["changedRev"])) > after
-    if changed and start:  # Catching up: the log only appends, so report what others posted after your last entry.
+    if changed and start:  # Catching up: report what others posted after your last entry.
         mine = max((i for i, entry in enumerate(start) if entry.get("by") == wb.actor()), default=-1)
         start = start[:mine + 1]
     deadline = started + args.timeout
@@ -369,11 +381,22 @@ def cmd_wait(args):
 
 CALL_OPS = frozenset({
     "digest", "next", "context", "show", "query", "search", "inbox", "handoff", "wait",
-    "boards", "which", "add", "start", "done", "fly", "block", "resume", "update", "note",
+    "boards", "which", "add", "start", "done", "fly", "block", "resume", "update", "note", "note.edit", "note.rm",
     "bug", "improve", "reopen", "workpad", "takeover", "cancel", "rework", "depends", "ack",
     "attachment.list", "attachment.add", "attachment.get", "attachment.remove",
 })
 CALL_CARD_OPS = CALL_OPS - {"digest", "next", "query", "search", "boards", "which", "add"}
+# Keys agents guess for an op, by kebab-case key: what to send instead.
+CALL_KEY_HINTS = {
+    "search": dict.fromkeys(("query", "text", "q"), '"terms"'),
+    "query": {**dict.fromkeys(("q", "text", "search", "terms"), 'op "search" with "terms"'),
+              "card": 'op "context" or "show"'},
+    "add": {"tags": '"tag"', "body": '"notes" for pinned text or "origin" for where the work came from'},
+}
+# Ops agents guess that don't exist: the ops to use instead.
+OP_HINTS = {**dict.fromkeys(("list", "get"), ("query", "context")), "move": ("fly",),
+            "claim": ("start", "subtask.claim"), **dict.fromkeys(("create", "new"), ("add",))}
+HEREDOC = "workboard call <<'EOF', one JSON request per line, then EOF"
 
 
 def _camel(name):
@@ -404,7 +427,10 @@ def _call_argv(request, board):
         raise wb.WorkflowError("each call request needs a string op")
     verb, _, operation = op.partition(".")
     if op not in CALL_OPS and not (operation and verb in {"subtask", "comment"}):
-        raise wb.WorkflowError(f"op {op} is not available in call")
+        hint = ("; for help run `workboard COMMAND --help` outside call" if op == "help" else
+                "; use " + " or ".join(f"\"{name}\"" for name in OP_HINTS[op]) if op in OP_HINTS else "")
+        raise wb.WorkflowError(f"op {op} is not available in call{hint}; call ops: "
+                               + ", ".join([*sorted(CALL_OPS), "subtask.*", "comment.*"]))
     parser = _subparser(build_parser(), verb)
     if verb in {"subtask", "comment"}:
         choices = next(action.choices for action in parser._actions if action.dest == "op")
@@ -417,7 +443,10 @@ def _call_argv(request, board):
     if verb == "attachment":
         parser = _subparser(parser, operation)
 
+    taken, missing = [], []
+
     def positional(*keys, required=True, fixed=False):
+        taken.extend(keys)
         present = [key for key in keys if values.get(key) is not None]
         if len(present) > 1:
             raise wb.WorkflowError(f"choose only one of {', '.join(keys)}")
@@ -431,7 +460,8 @@ def _call_argv(request, board):
         if any(type(item) not in (str, int, float) for item in items):
             raise wb.WorkflowError(f"{keys[0]} must contain strings or numbers")
         if required and not items:
-            raise wb.WorkflowError(f"{op} needs " + " or ".join(f"\"{key}\"" for key in keys))
+            missing.append(f"{op} needs " + " or ".join(f"\"{key}\"" for key in keys))
+            return []
         items = [str(item) for item in items]
         # Fixed positionals precede "--": argparse would read "-h" as help, "-x" as an option.
         dashed = next((item for item in items if fixed and item.startswith("-")), None)
@@ -461,6 +491,30 @@ def _call_argv(request, board):
         trailing = positional("terms")
     elif op == "ack":
         fixed += positional("notes", fixed=True)
+    elif op == "note":  # "text" is the summary, sent as --summary so "edit" or "rm" stay plain text.
+        if values.get("text") is not None and values.get("summary") is not None:
+            raise wb.WorkflowError('note needs the summary once: "text" or "summary", not both')
+        if values.get("text") is not None:
+            values["summary"] = values.pop("text")
+        taken.append("text")
+        values.pop("text", None)
+    elif op in {"note.edit", "note.rm"}:
+        fixed += [operation, *positional("id", fixed=True)]
+
+    # An unknown key outranks a missing one: `{"op":"search","query":…}` lacks "terms" only by mistake.
+    options = sorted((name[2:] for name in parser._option_string_actions if name.startswith("--")),
+                     key=lambda name: name in {"board", "actor"})
+    unknown = [key for key, value in values.items()
+               if key not in options and value is not None and value is not False]
+    if unknown:
+        hints = CALL_KEY_HINTS.get(op, {})
+        accepted = [*taken, *(_camel(name) for name in options
+                              if name not in {"help", "json"} and not name.endswith("stdin"))]
+        raise wb.WorkflowError(f"{op} doesn't take " + ", ".join(
+            f"\"{_camel(key)}\"" + (f" (use {hints[key]})" if key in hints else "") for key in unknown)
+            + f"; {op} takes: " + ", ".join(accepted))
+    if missing:
+        raise wb.WorkflowError(missing[0])
 
     if values.get("board") is None and board is not None:
         values["board"] = board
@@ -496,9 +550,6 @@ def _call_invalid(message):
 
 def _call_usage(op, message):
     """Name request keys in a usage error: call refuses the stdin alternatives."""
-    unknown = re.findall(r"(?<![\w-])--([a-z][a-z0-9-]*)", message) if message.startswith("unrecognized arguments:") else []
-    if unknown:
-        return f"{op} doesn't take " + ", ".join(f"\"{_camel(key)}\"" for key in dict.fromkeys(unknown))
     message = re.sub(r" (?:\(or |or )?--[\w-]*stdin\b\)?", "", message)
     message = re.sub(r"(?<![\w'-])--([a-z][a-z0-9-]*)", lambda m: f"\"{_camel(m[1])}\"", message)
     return re.sub(r"^(?:the following arguments are required:|one of the arguments) (.*?)(?: is required)?$",
@@ -561,9 +612,12 @@ def cmd_call(args):
         try:
             decoder.raw_decode(pending.lstrip())
         except json.JSONDecodeError as exc:
-            emit(_call_invalid(f"invalid JSON input: {exc}"))
+            text = pending.strip()
+            cause = (f"; the double quotes JSON needs are missing (a shell stripped them?): use {HEREDOC}"
+                     if '"' not in text else "")
+            emit(_call_invalid(f"invalid JSON input: {exc}; received {text[:60]!r}{cause}"))
     elif not received:
-        emit(_call_invalid("call requires JSON requests on stdin"))
+        emit(_call_invalid(f"call requires JSON requests on stdin, e.g. {HEREDOC}"))
     if failed:
         raise SystemExit(1)
 
@@ -1165,10 +1219,21 @@ def _revision(value):
 CARD_REV_HELP = "rev from your last read or mutation; card verbs fail only if this card changed since"
 
 
+class _Parser(argparse.ArgumentParser):
+    """Adds a did-you-mean line when a guessed command is a known mistake (`move` for `fly`)."""
+
+    def error(self, message):
+        guess = re.match(r"argument cmd: invalid choice: '([^']*)'", message)
+        if guess and (guess[1] == "help" or guess[1] in OP_HINTS):
+            names = ("--help", "COMMAND --help") if guess[1] == "help" else OP_HINTS[guess[1]]
+            message += "\ndid you mean " + " or ".join(f"workboard {name.replace('.', ' ')}" for name in names) + "?"
+        super().error(message)
+
+
 @functools.cache  # `call` runs main() per request; argparse parsers are reusable.
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="workboard", description=__doc__, allow_abbrev=False,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = _Parser(prog="workboard", description=__doc__, allow_abbrev=False,
+                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"workboard {__version__}")
     _global_arguments(ap, root=True)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1238,10 +1303,14 @@ def build_parser() -> argparse.ArgumentParser:
     notes.add_argument("--notes")
     notes.add_argument("--notes-stdin", action="store_true")
 
-    p = add("note", cmd_note, "append a timeline note: one-line summary, optional markdown body")
+    p = add("note", cmd_note, "append a timeline note (note REF TEXT); edit or remove your own: "
+                              "note REF edit|rm NOTE_ID")
     p.add_argument("ref")
+    p.add_argument("text", nargs="?", help="the summary (instead of --summary), or edit / rm")
+    p.add_argument("id", nargs="?", metavar="NOTE_ID", help="with edit / rm: the note's ID")
     p.add_argument("--subtask", help="your claimed delegated subtask this note reports on")
-    p.add_argument("--summary", required=True, help="one line, at most 160 characters")
+    p.add_argument("--summary", help="one line of at most 160 characters; a longer or multi-line summary keeps "
+                                     "its first line and moves whole to the top of the body")
     body = p.add_mutually_exclusive_group()
     body.add_argument("--body", help="markdown body")
     body.add_argument("--stdin", action="store_true", help="read the markdown body from stdin")
@@ -1426,6 +1495,13 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+# Commands that write a card: they refuse to guess the writer, so the board never records a bare `agent`.
+WRITE_COMMANDS = frozenset({
+    "add", "start", "done", "fly", "block", "resume", "update", "note", "subtask", "wip", "bug", "improve",
+    "reopen", "workpad", "takeover", "cancel", "rework", "depends", "comment", "ack",
+})
+
+
 def main(argv=None):
     ap = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -1458,6 +1534,21 @@ def main(argv=None):
         if args.op != "configure" and (args.scope is not None or args.clear_scope or args.on is not None
                                        or args.clear_deps):
             ap.error("scope and dependency options apply only to subtask configure")
+    if args.cmd == "note":
+        # edit / rm is the action only with a NOTE_ID after it; alone it is the summary text.
+        args.change = args.text if args.text in ("edit", "rm") and args.id is not None else None
+        change = args.change
+        if args.id is not None and not change:
+            ap.error("note takes one TEXT: quote the summary, or change a note with note REF edit|rm NOTE_ID")
+        if change and args.subtask is not None:
+            ap.error(f"note {change} finds the note by its ID; drop --subtask")
+        if change == "rm" and (args.summary is not None or args.body is not None or args.stdin):
+            ap.error("note rm takes only the note's ID")
+        if change == "edit" and args.summary is None and args.body is None and not args.stdin:
+            ap.error("note edit needs --summary, --body or --stdin")
+        if not change and (args.text is None) == (args.summary is None):
+            ap.error('note needs the summary once: TEXT ("text" in call) or --summary'
+                     + ("" if args.text is None else ", not both"))
     if args.cmd == "add" and args.title is None and args.source is None:
         ap.error("add requires --title or --from")
     if args.cmd == "add" and args.origin_stdin and args.notes_stdin:
@@ -1466,7 +1557,9 @@ def main(argv=None):
     try:
         if args.actor is not None:
             wb.os.environ["WORKBOARD_ACTOR"] = wb.validate_actor(args.actor)
-        wb.actor()
+        wb.actor(required=args.cmd in WRITE_COMMANDS
+                 or (args.cmd in {"recover", "columns-core", "sweep"} and args.apply)
+                 or (args.cmd == "attachment" and args.op in ("add", "remove")))
         args.fn(args)
     except (wb.WorkflowError, wb.RefError, wb.LockTimeout,
             OSError, ValueError, KeyError, TypeError, SystemExit) as exc:

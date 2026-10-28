@@ -1,9 +1,11 @@
 """WorkBoard release tool (stdlib only). Run from anywhere; paths are repo-relative.
 
-  binary                          PyInstaller app -> dist/workboard-<os>-<arch>.{zip,tar.gz}
+  binary                          PyInstaller app -> dist/workboard-<os>-<arch>.{zip,tar.gz}; on Windows
+                                  also compiles npm's launcher (packaging/launcher.cs) into _internal/
   smoke PATH                      run a release archive (or an installed executable) end to end
                                   in a scratch home: --version, init, one delegated subtask round trip,
-                                  add --from, export, digest, serve + HTTP
+                                  add --from, export, digest, serve + HTTP; a Windows archive also runs
+                                  a two-line argument through the npm launcher in a fake npm prefix
   checksums [DIR]                 DIR/SHA256SUMS over every file in DIR (default: dist)
   notes --version X               print the CHANGELOG.md section of X (GitHub Release notes)
   npm --version X                 build/npm/: the `@paliverse/workboard` package + one package per archive in dist/
@@ -31,6 +33,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
 PYINSTALLER = BUILD / "pyinstaller"
+# npm's Windows launcher (packaging/launcher.cs), shipped under _internal/ so it never lands on PATH.
+LAUNCHER = "workboard-launcher.exe"
 # Release target -> (npm os, npm cpu). Asset names are unversioned so releases/latest/download works.
 TARGETS = {
     "windows-x64": ("win32", "x64"), "windows-arm64": ("win32", "arm64"),
@@ -71,6 +75,16 @@ def write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
+def compile_launcher(out: Path) -> None:
+    """Build packaging/launcher.cs with the .NET Framework 4.x csc.exe that ships with Windows."""
+    framework = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Microsoft.NET"
+    csc = next((p for p in (framework / d / "v4.0.30319" / "csc.exe" for d in ("Framework64", "Framework")) if p.is_file()), None)
+    if csc is None:
+        raise SystemExit(f"csc.exe not found under {framework}: enable .NET Framework 4.x")
+    subprocess.run([str(csc), "-nologo", "-optimize+", "-platform:anycpu", "-target:exe", f"-out:{out}",
+                    str(ROOT / "packaging" / "launcher.cs")], check=True)
+
+
 def binary(args) -> None:
     target = current_target()
     app = PYINSTALLER / "dist" / "workboard"
@@ -80,6 +94,8 @@ def binary(args) -> None:
                     str(ROOT / "packaging" / "workboard.spec")],
                    check=True, env={**os.environ, "PYINSTALLER_CONFIG_DIR": str(PYINSTALLER / "cache")})
     shutil.copy2(ROOT / "LICENSE", app / "LICENSE")
+    if sys.platform == "win32":
+        compile_launcher(app / "_internal" / LAUNCHER)
     DIST.mkdir(exist_ok=True)
     out = DIST / asset(target)
     if out.suffix == ".zip":
@@ -105,16 +121,23 @@ def smoke(args) -> None:
     with tempfile.TemporaryDirectory(prefix="wb-smoke-") as tmp:
         tmp = Path(tmp)
         target = Path(args.path).resolve()
-        if target.name.endswith((".zip", ".tar.gz")):
-            target = extract(target, tmp / "app") / ("workboard.exe" if target.suffix == ".zip" else "workboard")
+        launcher = target.name.endswith(".zip")
+        if launcher:
+            # Unpack into npm's global layout, so the launcher finds the binary the way it does after npm install -g.
+            prefix = tmp / "npm"
+            package = prefix / "node_modules/@paliverse/workboard/node_modules/@paliverse"
+            cpu = "arm64" if "arm64" in target.name else "x64"
+            target = extract(target, package / f"workboard-win32-{cpu}") / "workboard.exe"
+        elif target.name.endswith(".tar.gz"):
+            target = extract(target, tmp / "app") / "workboard"
         project = tmp / "project"
         project.mkdir()
         env = make_env(tmp / "home")
         env.pop("PYTHONPATH", None)  # exercise the packaged code only
         (tmp / "home").mkdir()
 
-        def cli(*argv: str) -> str:
-            proc = subprocess.run([str(target), *argv], cwd=project, env=env, stdin=subprocess.DEVNULL,
+        def cli(*argv: str, exe: Path = target) -> str:
+            proc = subprocess.run([str(exe), *argv], cwd=project, env=env, stdin=subprocess.DEVNULL,
                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
             print(f"$ workboard {' '.join(argv)}  [exit {proc.returncode}]\n{proc.stdout}{proc.stderr}".rstrip())
             if proc.returncode:
@@ -129,6 +152,12 @@ def smoke(args) -> None:
         cli("init", "smoke")
         # One delegated round trip plus add --from and export load every private module in the frozen app.
         num = str(cli_json("--actor", "Main", "add", "--title", "Smoke card")["num"])
+        if launcher:
+            # The npm launcher passes its raw command line through, line breaks included.
+            shutil.copy2(target.parent / "_internal" / LAUNCHER, prefix / "workboard.exe")
+            cli("--actor", "Main", "note", num, "--summary", "launcher", "--body", "two\nlines", exe=prefix / "workboard.exe")
+            if cli_json("context", num)["card"]["log"][-1].get("body") != "two\nlines":
+                raise SystemExit("smoke failed: the npm launcher did not pass a two-line argument through intact")
         cli("--actor", "Main", "start", num)
         subtask = cli_json("--actor", "Main", "subtask", num, "add", "Produce")["items"][0]["id"]
         cli("--actor", "Main", "subtask", num, "delegate", subtask)

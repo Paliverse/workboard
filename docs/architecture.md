@@ -90,7 +90,7 @@ To restore a deleted board, move its folder back into `boards/` under an unused 
 `config.json` is optional and WorkBoard never writes it. Both keys are optional: `port` (1–65535) and `actor` (a valid actor label). An unknown key, a wrong type or an invalid value fails with `invalid`, naming the file. The file is read on each call, so changes apply to the next command.
 
 - Port: `serve --port`, else `WORKBOARD_PORT`, else `port`, else 7891 (`core.configured_port()`).
-- CLI actor: `--actor`, else `WORKBOARD_ACTOR`, else `actor`, else `agent` (`core.actor()`). The browser records `user` unless you change its label.
+- CLI actor: `--actor`, else `WORKBOARD_ACTOR`, else `actor` (`core.actor()`). With none set, reads act as `agent`, and the CLI refuses commands that write a card (`core.actor(required=True)` in `cli.main`, `invalid`) rather than record an anonymous writer. The browser records `user` unless you change its label.
 
 ## Persistence
 
@@ -151,7 +151,7 @@ Card field edits never check card ownership (`update`, `workpad`, legacy checkli
 Schema 3 introduced the timeline, and schema 4 keeps it unchanged; versions 1 and 2 are still read. A card has two kinds of notes:
 
 - **Pinned notes** (`notes`): one free-form markdown string for durable context such as acceptance criteria. `add --notes`, `update --notes`, `workpad` and the browser's notes editor change it.
-- **Timeline** (`log`): append-only entries `{"id", "at", "by", "summary", "body"}`, oldest first. A subtask note (`note --subtask`, by the worker holding the subtask or the parent's active owner) also carries `subtaskId`, and notes the subtask lifecycle writes carry `"kind": "generated"`. Only `note` in the CLI, the `note` lifecycle action and the subtask lifecycle add them. The summary is one line of 1–160 characters and the body is markdown of at most 32,000 characters. The [HTTP API](http-api.md#notes-timeline) lists the entry rules.
+- **Timeline** (`log`): entries `{"id", "at", "by", "summary", "body"}`, oldest first. A subtask note (`note --subtask`, by the worker holding the subtask or the parent's active owner) also carries `subtaskId`, and notes the subtask lifecycle writes carry `"kind": "generated"`. Only `note` in the CLI, the `note` lifecycle action and the subtask lifecycle add them. The summary is one line of 1–160 characters and the body is markdown of at most 32,000 characters. Caller text goes through `core.fit_note`: a longer or multi-line summary keeps its first line (cut at the last word break within 159 characters plus `…`, or hard) and moves whole to the top of the body; stored entries are still validated strictly. An entry's author may change it with `note edit` (`core.edit_note`, which adds `editedAt` and a `note-edited` history event) or remove it with `note rm` (`core.remove_note`: a `note-removed` event with the note ID, and the ID leaves `inboxAcknowledged`). Generated entries can't be changed: inbox acceptance cut-offs and reviews read them. The [HTTP API](http-api.md#notes-timeline) lists the entry rules.
 
 Before version 3, `note` appended `[YYYY-MM-DD actor] text` lines to `notes`. When a raw document's `schemaVersion` is below 3, normalization splits every card's notes with `core.split_legacy_notes`. A version 3 or 4 document is never split again.
 

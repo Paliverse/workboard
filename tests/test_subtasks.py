@@ -613,7 +613,7 @@ class DelegationWorkflow(unittest.TestCase):
         self.assertEqual([row["kind"] for row in self.inbox()], ["review"])
         recheck = ["note", self.ref, "--subtask", sid, "--summary", "Recheck: both files still pass"]
         self.assertEqual(self.json(recheck, "Ada")["item"]["by"], "Ada")  # Completed work: no reopen needed.
-        self.reject(["note", self.ref, "--subtask", sid, "--summary", "x" * 170], "invalid", "Grace")
+        self.reject(["note", self.ref, "--subtask", sid, "--summary", " "], "invalid", "Grace")
         plain = self.json(["subtask", self.ref, "add", "Plain integration step"])["item"]["id"]
         step = self.json(["note", self.ref, "--subtask", plain, "--summary", "Step evidence"])["item"]
         self.assertEqual(step["subtaskId"], plain)

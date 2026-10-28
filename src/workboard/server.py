@@ -633,10 +633,14 @@ def _handle_lifecycle_patch(handler, reference: str) -> None:
     except (BodyError, wb.WorkflowError, SystemExit, wb.LockTimeout,
             OSError, ValueError, KeyError, TypeError) as e:
         return _send_error(handler, e)
+    if action == "note":  # A long or multi-line summary moved to the body: tell the caller.
+        extra = {"item": card["log"][-1], "summaryMoved": card["log"][-1]["summary"] != details["summary"].strip()}
+    elif action == "subtask":
+        extra = {"items": items, **({"item": items[0]} if len(items) == 1 else {})}
+    else:
+        extra = {}
     handler._json({"ok": True, **_saved_meta(doc), "card": card,
-                   "document": doc, "event": "card-updated", "action": action,
-                   **({"items": items, **({"item": items[0]} if len(items) == 1 else {})}
-                      if action == "subtask" else {})}, 200)
+                   "document": doc, "event": "card-updated", "action": action, **extra}, 200)
 
 
 def _handle_structure_patch(handler) -> None:

@@ -7,7 +7,7 @@ A release is one annotated tag, `vX.Y.Z`. Pushing the tag runs [`.github/workflo
 | Job | Runs on | Does |
 |---|---|---|
 | `verify` | `ubuntu-latest` | Fails unless the tag equals `v` + `workboard.__version__` and `CHANGELOG.md` has a `## [X.Y.Z]` section. Runs the full test suite. |
-| `binaries` | one native runner per target | Builds the PyInstaller app with `packaging/build.py binary`, then smoke-tests the archive with `packaging/build.py smoke`: CLI startup, one delegated subtask round trip through parent completion, `add --from`, `export`, `serve --port 0 --json`, `/health`, `/b/<board>/` and token shutdown, all in a scratch home. |
+| `binaries` | one native runner per target | Builds the PyInstaller app with `packaging/build.py binary` (on Windows it also compiles npm's launcher), then smoke-tests the archive with `packaging/build.py smoke`: CLI startup, one delegated subtask round trip through parent completion, `add --from`, `export`, `serve --port 0 --json`, `/health`, `/b/<board>/` and token shutdown, all in a scratch home. On Windows the smoke test also runs a two-line argument through the launcher in a fake npm prefix. |
 | `github-release` | `ubuntu-latest` | Creates the GitHub Release with the six archives, `install.sh`, `install.ps1` and `SHA256SUMS`. The notes are that version's CHANGELOG section. |
 | `npm` | `ubuntu-latest` | Builds the seven npm packages from the archives. It publishes the six platform packages first, then `@paliverse/workboard` (environment `npm`), authenticating through npm trusted publishing (OIDC). npm attaches provenance automatically. |
 
@@ -24,7 +24,7 @@ Release assets have unversioned names, so `releases/latest/download/<asset>` alw
 | Linux x64 | `ubuntu-22.04` | `workboard-linux-x64.tar.gz` |
 | Linux arm64 | `ubuntu-22.04-arm` | `workboard-linux-arm64.tar.gz` |
 
-The runner labels were checked against GitHub's [hosted runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) on 2026-09-24. The Linux binaries are built on Ubuntu 22.04 so they only need glibc 2.35 or newer. When GitHub retires a label, update the `binaries` matrix and this table. Each archive has a top-level `workboard/` directory that holds the executables, `_internal/` and `LICENSE`.
+The runner labels were checked against GitHub's [hosted runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) on 2026-09-24. The Linux binaries are built on Ubuntu 22.04 so they only need glibc 2.35 or newer. When GitHub retires a label, update the `binaries` matrix and this table. Each archive has a top-level `workboard/` directory that holds the executables, `_internal/` and `LICENSE`. The Windows archives also hold npm's launcher as `_internal/workboard-launcher.exe`, out of the way of `PATH`.
 
 ## One-time setup
 
@@ -88,8 +88,8 @@ WORKBOARD_TEST_COMMAND="$PWD/build/pyinstaller/dist/workboard/workboard" python 
 
 `packaging/build.py` has five commands:
 
-- `binary`: runs PyInstaller with `packaging/workboard.spec` and archives the result.
-- `smoke PATH`: exercises an archive or an installed `workboard` executable end to end, in a scratch home.
+- `binary`: runs PyInstaller with `packaging/workboard.spec` and archives the result. On Windows it also compiles `packaging/launcher.cs` into `_internal/workboard-launcher.exe` with the .NET Framework 4.x `csc.exe` that ships with Windows (`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\`, else `Framework\`).
+- `smoke PATH`: exercises an archive or an installed `workboard` executable end to end, in a scratch home. For a Windows archive it also runs a two-line `note --body` through the launcher in a fake npm prefix.
 - `checksums [DIR]`: writes `SHA256SUMS`.
 - `notes --version X`: prints the CHANGELOG section of that version.
 - `npm --version X`: builds `build/npm/` from the archives in `dist/`.
@@ -115,6 +115,7 @@ HOME=$(mktemp -d) WORKBOARD_INSTALL_BASE_URL=http://127.0.0.1:8000 sh scripts/in
 | `packaging/workboard.spec`, `packaging/entry.py` | PyInstaller onedir build. It produces the console `workboard` executable, plus the windowed `workboardw` on Windows for the background service, and bundles the package data at package-relative paths. |
 | `packaging/build.py` | The release tool described above (stdlib only). |
 | `packaging/npm/` | Template for the main npm package and its `bin/workboard.js` launcher, which runs the platform binary. |
+| `packaging/launcher.cs` | npm's Windows launcher. The npm package's postinstall (`bin/launcher.js`), and every Windows run of `bin/workboard.js`, copy it to `workboard.exe` and `wb.exe` next to npm's global `.cmd` shims; it runs the platform package's `workboard.exe` with the raw command line, so arguments never pass through `cmd.exe`. |
 | `scripts/install.sh`, `scripts/install.ps1` | The one-line installers attached to every release. |
 | `.github/workflows/ci.yml` | Tests on Ubuntu, macOS and Windows with Python 3.11 to 3.14, and a PyInstaller build per OS that smoke-tests the archive and runs the CLI, delegated-subtask, focused-context and review/inbox suites against the binary. |
 | `.github/workflows/release.yml` | The release pipeline. Third-party actions are pinned to commit SHAs. |
