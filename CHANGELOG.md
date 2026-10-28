@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-10-28
+
 ### Changed
 
 - The In Progress limit is the user's to set. `workboard wip N` let any agent set or clear it, and one did by accident: it guessed `wip 10` while looking for lane status and capped its board at 10 active cards, so further `start`s were refused while 20+ agents waited. The `wip` command is gone; the limit is set and cleared only from the browser's board menu (In Progress limit…), with no upper bound. A limit the user sets still applies to agents, and the `wip` refusal now says the user set it and to finish or block work or ask the user, instead of suggesting the agent change it. Limits already on a board stay until the user clears them.
@@ -276,7 +278,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.10...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.11...HEAD
+[0.3.11]: https://github.com/Paliverse/workboard/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/Paliverse/workboard/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/Paliverse/workboard/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/Paliverse/workboard/compare/v0.3.7...v0.3.8
