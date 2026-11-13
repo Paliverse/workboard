@@ -544,13 +544,8 @@ def _await_server(timeout: float = 10.0) -> dict:
         time.sleep(0.2)
 
 
-STALE_SERVER = "the running server cannot read boards that use delegated subtasks; run `workboard service restart`"
-
-
-def reads_current_schema(info: dict) -> bool:
-    """Can this server read every schema this CLI writes? Every version's /health lists supportedSchemaVersions."""
-    supported = info.get("supportedSchemaVersions")
-    return isinstance(supported, list) and wb.SCHEMA_VERSION in supported
+STALE_SERVER = ("a server of another version may not read these boards (0.3.x cannot read board.db stores); "
+                "run `workboard service restart`")
 
 
 def _server_executable(info: dict) -> str:
@@ -568,8 +563,7 @@ def service_status(backend=None) -> dict:
     status = (backend or _backend()).status()
     info = _server().server_info()
     return {**status, "running": info is not None, "server": info,
-            "versionMatch": None if info is None else info.get("version") == __version__,
-            "schemaMatch": None if info is None else reads_current_schema(info)}
+            "versionMatch": None if info is None else info.get("version") == __version__}
 
 
 def service_install(backend=None) -> dict:
@@ -604,12 +598,10 @@ def service_restart(backend=None) -> dict:
         server.start_background()
     info = _await_server()
     # The service definition may start another installation; leaving it up would strand the next board write.
-    reads = reads_current_schema(info)
-    if info.get("version") != __version__ or not reads:
-        problem = (f"is not this v{__version__} installation" if reads
-                   else "cannot read boards that use delegated subtasks")
+    if info.get("version") != __version__:
         raise wb.WorkflowError(
-            f"the restarted server (v{info.get('version')}, {_server_executable(info)}) {problem}; the service "
+            f"the restarted server (v{info.get('version')}, {_server_executable(info)}) is not this "
+            f"v{__version__} installation; the service "
             "starts another installation: run `workboard service install`, then `workboard service restart`",
             409, "state")
     return {**status, "action": "restarted", "running": True, "server": info}
@@ -635,7 +627,7 @@ def _service_line(result: dict) -> str:
         state = ("installed" + ("" if result["current"] else " (outdated: run `workboard service install`)")
                  if result["installed"] else "not installed")
         line = f"service: {state} · {where} · {_server_text(result.get('server'))}"
-        return line + (f" · {STALE_SERVER}" if result.get("schemaMatch") is False else "")
+        return line + (f" · {STALE_SERVER}" if result.get("versionMatch") is False else "")
     if action == "absent":
         return f"service: not installed · {where}"
     if action == "removed":

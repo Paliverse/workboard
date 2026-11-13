@@ -410,8 +410,7 @@ class ServiceTest(ScratchCase):
         self.assertEqual(result["action"], "unchanged")
         self.assertEqual(self.server.calls, ["start_background"], "a running server is left alone")
         _, status = invoke_json("service", "status", "--json")
-        self.assertEqual((status["installed"], status["current"], status["versionMatch"], status["schemaMatch"]),
-                         (True, True, True, True))
+        self.assertEqual((status["installed"], status["current"], status["versionMatch"]), (True, True, True))
 
         _, result = invoke_json("service", "restart", "--json")
         self.assertEqual(self.server.calls[1:], ["stop", "start_background"])
@@ -426,7 +425,7 @@ class ServiceTest(ScratchCase):
         backend = install.WindowsService(registry=FakeRegistry())
         self.enterContext(mock.patch.object(install, "_backend", lambda: backend))
         old = self.home / "old" / "workboard.exe"
-        stale = [{"version": "0.0.1"}, {"supportedSchemaVersions": [1, 2, 3]}, {"supportedSchemaVersions": None}]
+        stale = [{"version": "0.3.0"}, {"version": None}]
         for difference in stale:
             with self.subTest(difference=difference):
                 info = {**RUNNING, **difference}
@@ -437,12 +436,12 @@ class ServiceTest(ScratchCase):
                 self.assertIn(str(old), error["error"])
                 self.assertIsNotNone(self.server.info, "the stale server is reported, not stopped again")
 
-    def test_status_flags_a_server_that_cannot_read_current_boards(self):
+    def test_status_flags_a_server_of_another_version(self):
         backend = install.WindowsService(registry=FakeRegistry())
         self.enterContext(mock.patch.object(install, "_backend", lambda: backend))
-        self.server.info = {**RUNNING, "supportedSchemaVersions": [1, 2, 3]}
+        self.server.info = {**RUNNING, "version": "0.3.0"}
         code, status = invoke_json("service", "status", "--json")
-        self.assertEqual((code, status["running"], status["schemaMatch"]), (0, True, False))
+        self.assertEqual((code, status["running"], status["versionMatch"]), (0, True, False))
         self.assertIn(install.STALE_SERVER, invoke("service", "status")[1])
 
     def test_setup_reports_skills_and_service(self):

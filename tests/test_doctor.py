@@ -3,6 +3,8 @@
 Data-integrity cases are ported from the preview release checks. Every case runs
 in a scratch home with a fake server, a fake service registry, and no
 `workboard` on PATH, so doctor never talks to a real server or registration.
+Boards are made by core, so they live in board.db; `legacy` turns one back into
+a pre-0.4 board.json, which doctor must check without migrating it.
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import unittest
@@ -60,15 +63,35 @@ def write_json(path, value):
 
 
 def make_board(root, name="source"):
-    """A registered board for project root/name, overwritten with a fixed schema-2 document normalized to v3."""
+    """A registered board for project root/name holding one card, in board.db as core writes it."""
     project = root / name
     project.mkdir()
-    board = wb.create_board(name, project)
-    doc = wb.normalize_doc({"schemaVersion": 2, "name": name, "rev": 4, "nextNum": 2,
-                            "columns": copy.deepcopy(wb.DEFAULT_COLUMNS),
-                            "cards": [{"id": "one", "num": 1, "title": "Review input", "column": "task"}]})
+    board = wb.create_board(name, project, {
+        "name": name, "rev": 4, "nextNum": 2, "columns": copy.deepcopy(wb.DEFAULT_COLUMNS),
+        "cards": [{"id": "one", "num": 1, "title": "Review input", "column": "task"}]})
+    return board, wb.load(board)
+
+
+def legacy(board, doc):
+    """Make the board pre-0.4 again: board.json holds the whole document and board.db is gone."""
+    board.with_name(wb.DB_NAME).unlink()
     write_json(board, doc)
-    return board, doc
+
+
+def commit(board, doc):
+    """Save a whole-board doc as a new revision, the way a fixture edits an existing board."""
+    with wb.board_transaction(board):
+        wb.save(board, doc, by="fixture")
+
+
+def tamper(board, sql, *params):
+    """Change board.db rows directly, past save()'s normalization."""
+    con = sqlite3.connect(board.with_name(wb.DB_NAME))
+    try:
+        with con:
+            con.execute(sql, params)
+    finally:
+        con.close()
 
 
 def tree_state(root):
@@ -88,7 +111,7 @@ def attachment(board, doc, content=b"required evidence", identity="a" * 32):
     blob.parent.mkdir(exist_ok=True)
     blob.write_bytes(content)
     doc["cards"][0]["attachments"].append(metadata)
-    write_json(board, doc)
+    commit(board, doc)
     return metadata, blob
 
 
@@ -143,7 +166,62 @@ class DataIntegrityTest(DoctorCase):
             self.assertFalse(self.inspect()["ok"])
         self.assertEqual(tree_state(self.root), before)
 
-    def test_corrupted_board_json_is_a_blocker(self):
+    def test_legacy_board_is_checked_without_migrating(self):
+        legacy(self.board, self.doc)
+        self.board.with_name(wb.DB_NAME + ".tmp").write_bytes(b"an interrupted migration")
+        before = tree_state(self.root)
+        with contextlib.chdir(self.root / "source"):
+            code, out = self.cli("doctor", "--json", "--all")
+        report = json.loads(out)
+        self.assertEqual((code, report["blockers"]), (0, []), report)
+        self.assertEqual(report["boards"][0]["rev"], self.doc["rev"])
+        self.assertLessEqual({"legacy-storage", "store-leftover"}, codes(report, "warnings"))
+        self.assertEqual(tree_state(self.root), before, "board.json stays byte-identical")
+        self.assertFalse(self.board.with_name(wb.DB_NAME).exists())
+
+    def test_stub_and_store_must_agree(self):
+        db, tmp, stub = self.board.with_name(wb.DB_NAME), self.board.with_name(wb.DB_NAME + ".tmp"), self.board.read_bytes()
+        write_json(self.board, self.doc)
+        self.assertIn("split-brain", codes(self.inspect()))
+        self.board.write_bytes(stub)
+        shutil.copyfile(db, tmp)
+        report = self.inspect()
+        self.assertTrue(report["ok"], report)
+        self.assertIn("store-leftover", codes(report, "warnings"))
+        db.rename(self.root / "aside.db")  # Crashed after the stub commit: the tmp holds the board until next use.
+        report = self.inspect()
+        self.assertEqual((report["ok"], report["boards"][0]["rev"]), (True, self.doc["rev"]), report)
+        tmp.unlink()
+        self.assertIn("store-missing", codes(self.inspect()))
+        (self.root / "aside.db").rename(db)
+        self.board.unlink()
+        self.assertIn("stub-missing", codes(self.inspect()))
+
+    def test_store_rows_and_pages_are_checked(self):
+        card = copy.deepcopy(self.doc["cards"][0])
+        tamper(self.board, "UPDATE cards SET body = ?", json.dumps({**card, "priority": "urgent"}))
+        self.assertIn("normalization-loss", codes(self.inspect()))
+        tamper(self.board, "UPDATE cards SET body = ?, col = 'done'", json.dumps(card))
+        self.assertIn("row-mismatch", codes(self.inspect()))
+        tamper(self.board, "UPDATE cards SET body = '{truncated', col = 'task'")
+        self.assertIn("board-invalid", codes(self.inspect()))
+        tamper(self.board, "UPDATE cards SET body = ?", json.dumps(card))
+        self.assertTrue(self.inspect()["ok"])
+
+        db = self.board.with_name(wb.DB_NAME)
+        con = sqlite3.connect(db)
+        page = con.execute("SELECT rootpage FROM sqlite_master WHERE name = 'cards_col'").fetchone()[0]
+        size = con.execute("PRAGMA page_size").fetchone()[0]
+        con.close()
+        with db.open("r+b") as stream:  # A broken index page: quick_check fails, though every read works.
+            stream.seek((page - 1) * size)
+            stream.write(b"\x0d" + b"\xff" * 7)
+        report = self.inspect()
+        self.assertIn("store-corrupt", codes(report))
+        self.assertIn("cards_col", next(item["message"] for item in report["blockers"]))
+
+    def test_corrupted_legacy_board_json_is_a_blocker(self):
+        legacy(self.board, self.doc)
         self.board.write_text('{"rev":1,"rev":2}', encoding="utf-8")
         code, out = self.cli("doctor", "--json", "--board", "source")
         report = json.loads(out)
@@ -158,12 +236,12 @@ class DataIntegrityTest(DoctorCase):
             lambda doc: doc.update(schemaVersion=5),
             lambda doc: doc.update(schemaVersion=True),
             lambda doc: doc.update(schemaVersion="2"),
+            lambda doc: doc.update(schemaVersion=2),  # Schema 1–2 boards are refused since 0.4.
             lambda doc: doc.update(rev=-1),
             lambda doc: doc.update(nextNum=1),
             lambda doc: doc["cards"].append(copy.deepcopy(doc["cards"][0])),
             lambda doc: doc["cards"].append({**doc["cards"][0], "id": "two"}),
             lambda doc: doc["columns"].append(copy.deepcopy(doc["columns"][0])),
-            lambda doc: doc["cards"][0].update(comments=["silently-dropped-comment"]),
             lambda doc: doc["cards"][0].update(priority="unrecognized-but-not-discardable"),
             lambda doc: doc["cards"][0].update(activeOwner="must-not-disappear"),
         ]
@@ -176,13 +254,11 @@ class DataIntegrityTest(DoctorCase):
         write_json(self.board, self.doc)
         with mock.patch.object(doctor, "MAX_JSON_BYTES", 4):
             self.assertFalse(self.inspect()["ok"])
-        shutil.rmtree(self.board.parent / wb.BACKUP_DIR)
         (self.board.parent / wb.BACKUP_DIR).write_text("not a storage directory", encoding="utf-8")
-        self.assertFalse(self.inspect()["ok"])
+        self.assertFalse(self.inspect()["ok"], "migration keeps the original bytes in .backups")
 
     def test_missing_or_damaged_attachment_blob_is_a_blocker(self):
         metadata, blob = attachment(self.board, self.doc)
-        write_json(self.board.parent / wb.BACKUP_DIR / "board-4.json", self.doc)
         self.assertTrue(self.inspect()["ok"])
         blob.unlink()
         code, out = self.cli("doctor", "--json", "--board", "source")
@@ -192,86 +268,63 @@ class DataIntegrityTest(DoctorCase):
         blob.write_bytes(b"wrong bytes")
         self.assertIn("attachment-integrity", codes(self.inspect()))
         blob.write_bytes(b"required evidence")
-
-        archive = self.board.parent / wb.ARCHIVE_DIR / "board-2026-09.json"
-        archived = copy.deepcopy(self.doc["cards"])
-        archived[0]["attachments"][0]["sha256"] = "0" * 64
-        write_json(archive, {"cards": archived})
-        self.assertIn("attachment-integrity", codes(self.inspect()))
-        write_json(archive, {"cards": self.doc["cards"]})
         self.assertTrue(self.inspect()["ok"])
 
         self.doc["cards"][0]["attachments"][0]["size"] = wb.MAX_ATTACHMENT_BYTES + 1
-        write_json(self.board, self.doc)
+        commit(self.board, self.doc)
         self.assertFalse(self.inspect()["ok"])
         self.doc["cards"][0]["attachments"][0] = {**metadata, "size": 1, "sha256": hashlib.sha256(b"x").hexdigest()}
-        write_json(self.board, self.doc)
+        commit(self.board, self.doc)
         with blob.open("wb") as stream:
             stream.write(b"x")
             stream.truncate(wb.MAX_ATTACHMENT_BYTES + 1)
         self.assertIn("attachment-integrity", codes(self.inspect()))
 
-    def test_recovery_snapshots_are_validated(self):
-        damaged = self.board.parent / wb.BACKUP_DIR / "board-4.json"
-        damaged.parent.mkdir(exist_ok=True)
-        damaged.write_text("{broken recovery JSON", encoding="utf-8")
-        report = self.inspect()
-        self.assertTrue(any(item["code"] == "recovery-invalid" and item["path"] == str(damaged)
-                            for item in report["blockers"]), report)
-        write_json(damaged, {**self.doc, "rev": 3})
-        self.assertIn("recovery-invalid", codes(self.inspect()), "filename revision must match")
-
     def test_attachment_metadata_is_validated_per_reference(self):
         attachment(self.board, self.doc, content=b"x")
-        backup = self.board.parent / wb.BACKUP_DIR / "board-4.json"
+
+        def with_second_reference(field, value):
+            doc = copy.deepcopy(self.doc)
+            second = {**copy.deepcopy(doc["cards"][0]), "id": "two", "num": 2}  # The same blob, its own manifest.
+            if value is None:
+                second["attachments"][0].pop(field)
+            else:
+                second["attachments"][0][field] = value
+            doc["cards"].append(second)
+            commit(self.board, doc)
+
         broken = [("size", True), ("size", 1.0), ("name", "\ninput.txt"),
                   ("mime", "text/plain\r\nInjected: value"), ("by", {}), ("createdAt", False)]
         for field in ("name", "mime", "by", "createdAt"):
             broken.append((field, None))
         for field, value in broken:
-            recovery = copy.deepcopy(self.doc)
-            if value is None:
-                recovery["cards"][0]["attachments"][0].pop(field)
-            else:
-                recovery["cards"][0]["attachments"][0][field] = value
-            write_json(backup, recovery)
+            with_second_reference(field, value)
             with self.subTest(field=field, value=value):
                 report = self.inspect()
-                self.assertTrue(any(item["code"] == "attachment-integrity" and str(backup) in item["path"]
+                self.assertTrue(any(item["code"] == "attachment-integrity" and item["path"].endswith("#two")
                                     for item in report["blockers"]), report)
-        recovery = copy.deepcopy(self.doc)
-        recovery["cards"][0]["attachments"][0]["createdAt"] = "2026-09-11 05:00:00 +0000"
-        write_json(backup, recovery)
+        with_second_reference("createdAt", "2026-09-11 05:00:00 +0000")
         self.assertTrue(self.inspect()["ok"], "historical timestamp spellings stay valid")
 
-    def test_legacy_schema_and_aliases_warn_but_conflicts_block(self):
+    def test_legacy_aliases_and_removed_fields_warn_but_conflicts_block(self):
         doc = self.doc
-        doc.pop("schemaVersion")
         doc["extension"] = {"retain": [1, 2]}
         doc["columns"][0]["extension"] = "column"
         card = doc["cards"][0]
         card["extension"] = {"linkedCards": ["not-a-card-alias"]}
         card["subtasks"] = [{"id": "s1", "text": "work", "done": False, "children": [], "extension": 42}]
-        card["linkedCards"] = card.pop("links")
-        write_json(self.board, doc)
+        card["lifecycleCycles"] = card.pop("cycles")
+        # Removed in 0.4: migration drops links and inbox acknowledgements and folds comments into the log.
+        card.pop("links", None)
+        card.update(linkedCards=["two"], inboxAcknowledged={"Ada": ["b" * 32]},
+                    comments=[{"id": "c" * 32, "at": "2026-09-01T00:00:00Z", "by": "ada", "text": "Looks good"}])
+        legacy(self.board, doc)
         report = self.inspect()
         self.assertTrue(report["ok"], report)
-        self.assertLessEqual({"legacy-schema", "legacy-alias"}, codes(report, "warnings"))
-        card["links"] = ["deliberately-different"]
+        self.assertLessEqual({"legacy-alias", "legacy-storage"}, codes(report, "warnings"))
+        card["cycles"] = [{"deliberately": "different"}]
         write_json(self.board, doc)
         self.assertIn("board-invalid", codes(self.inspect()))
-
-    def test_legacy_stamped_notes_are_an_expected_migration_not_a_loss(self):
-        doc = copy.deepcopy(self.doc)
-        doc["schemaVersion"] = 2
-        card = doc["cards"][0]
-        card.pop("log", None)
-        card["notes"] = ("## Acceptance criteria\n- parser handles stamps\n\n"
-                         "[2026-09-01] Shipped the parser. Tests pass.\n[2026-09-02 ada] Fixed review nits")
-        write_json(self.board, doc)
-        report = self.inspect()
-        self.assertEqual(report["blockers"], [], report)
-        self.assertIn("legacy-schema", codes(report, "warnings"))
 
     def test_timeline_entries_are_validated_from_schema_3(self):
         entry = {"id": "a" * 32, "at": "2026-09-24T10:00:00Z", "by": "ada", "summary": "Shipped", "body": ""}
@@ -282,27 +335,20 @@ class DataIntegrityTest(DoctorCase):
                     "columns": copy.deepcopy(wb.DEFAULT_COLUMNS),
                     "cards": [{"id": "one", "num": 1, "title": "Review input", "column": "task", "log": log}]}
 
-        for version in (3, wb.SCHEMA_VERSION):  # Both are current: 0.1.x still writes v3, delegation v4.
+        legacy(self.board, self.doc)
+        for version in (3, wb.SCHEMA_VERSION):  # Legacy files are v3, or v4 once delegation wrote them.
             for log in ([entry, dict(entry)], [{**entry, "summary": "two\nlines"}], [{**entry, "summary": " padded"}]):
                 write_json(self.board, document(version, log))
                 with self.subTest(version=version, log=log):
                     self.assertEqual(codes(self.inspect()), {"log-invalid"})
             write_json(self.board, document(version, healthy))
-            report = self.inspect()
             with self.subTest(version=version):
-                self.assertTrue(report["ok"], report)
-                self.assertNotIn("legacy-schema", codes(report, "warnings"))
-
-    def test_recovery_snapshots_keep_their_schema_without_legacy_warnings(self):
-        backup = self.board.parent / wb.BACKUP_DIR / "board-4.json"
-        write_json(backup, {**self.doc, "schemaVersion": 2})
-        report = self.inspect()
-        self.assertTrue(report["ok"], report)
-        self.assertNotIn("legacy-schema", codes(report, "warnings"))
+                self.assertTrue(self.inspect()["ok"])
 
     def test_delegated_subtasks_are_checked_without_writing(self):
         doc = {**copy.deepcopy(self.doc), "schemaVersion": wb.SCHEMA_VERSION}  # Delegation writes schema 4.
-        # 0.3.5 wrote children, collapsed and opt-in reviews; loading them flat with required reviews loses nothing.
+        # 0.3.5 wrote children, collapsed, opt-in reviews and the blocker and prerequisites 0.4 dropped;
+        # loading them flat with required reviews loses nothing that is kept.
         subtask = {"id": "s-1", "text": "Review", "done": False, "createdAt": wb.now_iso(),
                    "doneAt": None, "collapsed": True, "children": [
                        {"id": "s-2", "text": "Nested step", "done": True, "children": [], "collapsed": False}],
@@ -313,31 +359,33 @@ class DataIntegrityTest(DoctorCase):
                        "review": {"required": False, "state": "accepted", "by": "Main",
                                   "at": wb.now_iso(), "reason": ""}, "blocker": None}}
         doc["cards"][0]["subtasks"] = [subtask]
-        write_json(self.board, doc)
+        legacy(self.board, doc)
         before = tree_state(self.root)
         report = self.inspect()
         self.assertTrue(report["ok"], report)
         self.assertEqual(tree_state(self.root), before)
 
-        for field, value in (("scope", ["../outside"]), ("dependsOn", ["missing"]),
-                             ("blocker", {"reason": "stale"})):
-            broken = copy.deepcopy(doc)
-            if field == "blocker":
-                broken["cards"][0]["subtasks"][0]["delegation"].update(state="blocked", blocker=value)
-            else:
-                broken["cards"][0]["subtasks"][0]["delegation"][field] = value
-            write_json(self.board, broken)
-            with self.subTest(field=field):
-                self.assertIn("delegation-invalid", codes(self.inspect()))
+        blocked = copy.deepcopy(doc)  # 0.4 loads blocked delegated work as claimed and drops its blocker.
+        blocked["cards"][0]["subtasks"][0]["delegation"].update(state="blocked", blocker={"reason": "waiting"})
+        write_json(self.board, blocked)
+        report = self.inspect()
+        self.assertTrue(report["ok"], report)
+
+        broken = copy.deepcopy(doc)
+        broken["cards"][0]["subtasks"][0]["delegation"]["scope"] = ["../outside"]
+        write_json(self.board, broken)
+        self.assertIn("delegation-invalid", codes(self.inspect()))
 
     def test_links_and_path_traversal_are_rejected(self):
-        external = self.root / "same-bytes.json"
-        os.link(self.board, external)
-        self.assertFalse(self.inspect()["ok"])
-        external.unlink()
+        for name in ("board.json", wb.DB_NAME):
+            external = self.root / f"same-bytes-{name}"
+            os.link(self.board.with_name(name), external)
+            with self.subTest(linked=name):
+                self.assertFalse(self.inspect()["ok"])
+            external.unlink()
         attachment(self.board, self.doc)
         self.doc["cards"][0]["attachments"][0]["id"] = "../board.json"
-        write_json(self.board, self.doc)
+        commit(self.board, self.doc)
         self.assertIn("attachment-integrity", codes(self.inspect()))
         other, _ = make_board(self.root, "other")
         shutil.rmtree(other.parent)
@@ -371,14 +419,14 @@ class RegistryTest(DoctorCase):
 
     def test_store_and_project_drift_are_warnings(self):
         project = self.root / "source"
-        legacy = project / "board" / "board.json"
-        write_json(legacy, self.doc)
+        legacy_copy = project / "board" / "board.json"
+        write_json(legacy_copy, self.doc)
         stray = wb.boards_dir() / "stray"
         stray.mkdir()
         report = self.inspect()
         self.assertTrue(report["ok"], report)
         found = {item["code"]: item for item in report["warnings"]}
-        self.assertEqual(found["legacy-project-board"]["path"], str(legacy))
+        self.assertEqual(found["legacy-project-board"]["path"], str(legacy_copy))
         self.assertEqual(found["unregistered-board-dir"]["path"], str(stray))
         self.assertNotIn("project-missing", found)
         shutil.rmtree(project)
@@ -390,8 +438,7 @@ class RegistryTest(DoctorCase):
 
     def test_all_validates_every_registered_board(self):
         other, future = make_board(self.root, "other")
-        future["schemaVersion"] = 99
-        write_json(other, future)
+        legacy(other, {**future, "schemaVersion": 99})
         self.assertTrue(self.inspect()["ok"], "without --all only the current board is validated")
         code, out = self.cli("doctor", "--all", "--json", "--board", "source")
         report = json.loads(out)
@@ -403,10 +450,12 @@ class RegistryTest(DoctorCase):
 
     def test_attachment_blobs_are_checked_per_board_storage(self):
         attachment(self.board, self.doc)
-        other, _ = make_board(self.root, "other")
-        write_json(other, self.doc)  # Same ID/hash/size, but the bytes live only in the source board.
+        other, other_doc = make_board(self.root, "other")
+        # Same ID/hash/size, but the bytes live only in the source board.
+        other_doc["cards"][0]["attachments"] = copy.deepcopy(self.doc["cards"][0]["attachments"])
+        commit(other, other_doc)
         report = self.inspect(all_registered=True)
-        self.assertTrue(any(item["code"] == "attachment-integrity" and str(other) in item["path"]
+        self.assertTrue(any(item["code"] == "attachment-integrity" and str(other.parent) in item["path"]
                             for item in report["blockers"]), report)
 
 
@@ -419,25 +468,35 @@ class InstallationTest(DoctorCase):
         code, out = self.cli("doctor", "--json", "--board", "source")
         report = json.loads(out)
         self.assertEqual((code, report["ok"]), (0, True))
-        legacy = {item["path"] for item in report["warnings"] if item["code"] == "legacy-viewer-file"}
-        self.assertEqual(legacy, {str(viewers), str(port_file)})
+        legacy_files = {item["path"] for item in report["warnings"] if item["code"] == "legacy-viewer-file"}
+        self.assertEqual(legacy_files, {str(viewers), str(port_file)})
 
-    def test_skills_service_and_server_drift_are_warnings(self):
+    def test_home_on_a_synced_or_network_folder_warns(self):
+        self.assertNotIn("home-not-local", codes(self.inspect(), "warnings"))
+        synced = self.root / "OneDrive - Contoso" / ".workboard"
+        with mock.patch.dict(os.environ, WORKBOARD_HOME=str(synced)):
+            self.assertIn("home-not-local", codes(doctor.diagnose(), "warnings"))
+        if os.name == "nt":
+            import ctypes
+            with mock.patch.object(ctypes.windll.kernel32, "GetDriveTypeW", return_value=4):  # DRIVE_REMOTE
+                self.assertIn("home-not-local", codes(self.inspect(), "warnings"))
+
+    def test_skills_and_service_drift_are_warnings(self):
         install.skills_install()
         agents = Path(install.skill_targets()[0])
         agents.write_text("---\nname: workboard\n---\nold\n", encoding="utf-8")
         self.run_key[install.RUN_VALUE] = '"C:\\old\\workboardw.exe" serve --service'
-        self.server.info = {"app": "workboard", "version": "0.0.1", "pid": 9, "port": 7999,
-                            "supportedSchemaVersions": list(wb.SUPPORTED_SCHEMA_VERSIONS)}
+        self.server.info = {"app": "workboard", "version": __version__, "pid": 9, "port": 7999}
         report = self.inspect()
         self.assertTrue(report["ok"], report)
-        self.assertLessEqual({"skill-stale", "service-stale", "server-version-mismatch"}, codes(report, "warnings"))
+        self.assertLessEqual({"skill-stale", "service-stale"}, codes(report, "warnings"))
         self.assertNotIn("skills-missing", codes(report, "warnings"))
         self.assertEqual(report["installation"]["service"]["running"], True)
 
-    def test_a_running_server_that_cannot_read_current_boards_blocks(self):
-        self.server.info = {"app": "workboard", "version": __version__, "pid": 9, "port": 7999,
-                            "supportedSchemaVersions": [1, 2, 3]}
+    def test_a_running_server_of_another_version_blocks(self):
+        # A 0.3.x server lists every schema it reads, but cannot read board.db stores: only the version counts.
+        self.server.info = {"app": "workboard", "version": "0.3.0", "pid": 9, "port": 7999,
+                            "supportedSchemaVersions": [1, 2, 3, 4]}
         code, out = self.cli("doctor", "--json", "--board", "source")
         self.assertEqual(code, 1)
         self.assertIn("server-schema-mismatch", codes(json.loads(out)))

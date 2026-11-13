@@ -53,7 +53,8 @@ def detail(proc) -> str:
 
 
 def read_board(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    """A board through the store (board.json is a stub over board.db); archives are plain JSON."""
+    return core.load(path) if path.name == "board.json" else json.loads(path.read_text(encoding="utf-8"))
 
 
 def has_ref(text: str, num: int) -> bool:
@@ -76,9 +77,9 @@ class BoardLifecycle(unittest.TestCase):
         return core.board_file("smoke-board")
 
     def show(self, ref, *extra) -> dict:
-        proc = wb(["show", ref, *extra], self.proj)
+        proc = wb(["show", ref, *extra], self.proj)  # show is context's shorthand.
         self.assertEqual(proc.returncode, 0, detail(proc))
-        return json.loads(proc.stdout)
+        return json.loads(proc.stdout)["card"]
 
     def test_c01_init_registers_board_and_starts_no_server(self):
         r = wb(["init", "smoke-board"], self.proj)
@@ -93,12 +94,12 @@ class BoardLifecycle(unittest.TestCase):
 
         ordinary_env = dict(ENV)
         ordinary_env.pop("WORKBOARD_ACTOR")
-        for args in (["digest"], ["query"], ["list"], ["next"], ["which"], ["boards"]):
+        for args in (["digest"], ["query"], ["list"], ["which"], ["boards"]):
             proc = wb(args, self.proj, ordinary_env)
             self.assertEqual(proc.returncode, 0, (args, detail(proc)))
         state = HOME / ".workboard"
         self.assertFalse((state / "server.json").exists(), "an ordinary command started a server")
-        self.assertFalse((state / "logs").exists(), "an ordinary command started a server")
+        self.assertFalse((state / "logs" / "server.log").exists(), "an ordinary command started a server")
 
         registry = json.loads((state / "boards.json").read_text(encoding="utf-8"))
         self.assertEqual(registry["boards"]["smoke-board"], {"dir": "smoke-board", "project": str(self.proj)})
@@ -143,7 +144,7 @@ class BoardLifecycle(unittest.TestCase):
         self.assertEqual(len(set(revs)), 4)
         item = results[2]["item"]
         self.assertEqual(results[2]["items"], [item])
-        self.assertEqual((item["text"], item["by"]), ("json subtask", "tester"))
+        self.assertEqual((item["by"], "text" in item), ("tester", False))  # Results never echo the text back.
 
     def test_c03_start_and_digest(self):
         r = wb(["start", "1"], self.proj)
@@ -185,8 +186,7 @@ class BoardLifecycle(unittest.TestCase):
         self.assertEqual(next(c for c in pulse["attention"] if c["num"] == 1)["owner"], "tester")
         self.assertIn(1, [c["num"] for c in pulse["mine"]])
         self.assertEqual({tuple(row) for row in pulse["mine"]}, {("num", "title", "column")})
-        self.assertEqual(pulse["sweepCandidateCount"], 0)
-        self.assertNotIn("sweepCandidates", pulse)
+        self.assertNotIn("sweepCandidateCount", pulse)
 
     def test_c05_update_fields(self):
         u = wb(["update", "2", "--title", "Renamed Card", "--priority", "low",
@@ -208,10 +208,10 @@ class BoardLifecycle(unittest.TestCase):
         self.assertTrue(entry["at"].startswith(utc_today()), entry)
 
     def test_c07_done_requires_writeup_and_closes_task_work(self):
-        before = self.board.read_bytes()
+        before = core.board_rev(self.board)
         no_writeup = wb(["done", "2"], self.proj)
         self.assertNotEqual(no_writeup.returncode, 0)
-        self.assertEqual(self.board.read_bytes(), before)
+        self.assertEqual(core.board_rev(self.board), before)
         good = wb(["done", "2", "--writeup", "shipped it"], self.proj)  # Task work closes without start.
         self.assertEqual(good.returncode, 0, detail(good))
         card = next(c for c in read_board(self.board)["cards"] if c["num"] == 2)
@@ -221,34 +221,31 @@ class BoardLifecycle(unittest.TestCase):
         self.assertIsNone(card["activeOwner"])
         self.assertIsNone(card["claimedAt"])
 
-    def test_c08_bug_cycle(self):
+    def test_c08_bug_reopens_as_bug(self):
         steps = [wb(args, self.proj) for args in (
             ["add", "--title", "buggy feature"], ["start", "3"],
             ["done", "3", "--writeup", "v1 shipped"], ["bug", "3", "--reason", "crash on load"])]
         for proc in steps:
             self.assertEqual(proc.returncode, 0, detail(proc))
         card = self.show("3")
-        self.assertEqual((card["column"], card["activeOwner"]), ("inprogress", "tester"))
-        self.assertIn("bug", card["tags"])
-        self.assertTrue(any(st["text"] == "fix bug: crash on load" and not st["done"]
-                            for st in card["subtasks"]), card["subtasks"])
+        self.assertEqual((card["column"], card["activeOwner"]), ("task", None))
         self.assertEqual(card["cycles"][-1]["writeup"], "v1 shipped")
         self.assertEqual((card["writeup"], card["reworkReason"]), ("", "crash on load"))
-        fixed = wb(["done", "3", "--writeup", "fix applied"], self.proj)
-        self.assertEqual(fixed.returncode, 0, detail(fixed))
+        for args in (["start", "3"], ["done", "3", "--writeup", "fix applied"]):
+            fixed = wb(args, self.proj)
+            self.assertEqual(fixed.returncode, 0, detail(fixed))
         card = self.show("3")
         self.assertEqual(card["outcome"], "completed")
         self.assertIsNone(card["reworkReason"])
         self.assertIsNone(card["activeOwner"])
 
     def test_c09_improve_and_reopen(self):
-        imp = wb(["improve", "3", "make it faster"], self.proj)
+        imp = wb(["improve", "3", "--reason", "make it faster"], self.proj)
         self.assertEqual(imp.returncode, 0, detail(imp))
         improved = self.show("3")
-        self.assertEqual((improved["column"], improved["activeOwner"]), ("inprogress", "tester"))
+        self.assertEqual((improved["column"], improved["activeOwner"]), ("task", None))
         self.assertEqual(improved["cycles"][-1]["writeup"], "fix applied")
-        self.assertTrue(any(st["text"] == "make it faster" and not st["done"]
-                            for st in improved["subtasks"]))
+        self.assertEqual(improved["reopenReason"], "make it faster")
         reopened = wb(["reopen", "3", "--reason", "needs more testing"], self.proj)
         self.assertEqual(reopened.returncode, 0, detail(reopened))
         card = self.show("3")
@@ -310,11 +307,13 @@ class BoardLifecycle(unittest.TestCase):
 
         long_notes = "N" * 500
         self.assertEqual(wb(["update", "5", "--notes", long_notes], self.proj).returncode, 0)
-        self.assertNotEqual(self.show("5")["notes"], long_notes)
-        full = last_json(wb(["show", "5", "--full", "--json"], self.proj))
-        self.assertIs(full["ok"], True)
-        self.assertEqual(full["card"]["notes"], long_notes)
-        self.assertEqual(full["rev"], read_board(self.board)["rev"])
+        shown = last_json(wb(["show", "5", "--json"], self.proj))
+        self.assertEqual(shown, last_json(wb(["context", "5", "--json"], self.proj)))  # show is context's shorthand.
+        self.assertEqual((shown["card"]["notes"], shown["rev"]), (long_notes, read_board(self.board)["rev"]))
+        self.assertNotIn("history", shown["card"])
+        self.assertTrue(last_json(wb(["show", "5", "--full", "--json"], self.proj))["card"]["history"])
+        searched = last_json(wb(["search", "alpha", "payload", "--json", "--fields", "num,origin"], self.proj))
+        self.assertEqual(searched["cards"], [{"num": 5, "origin": "deep origin story"}])
 
     def test_c12_ref_resolution(self):
         a6 = wb(["add", "--title", "alpha other"], self.proj)
@@ -335,34 +334,23 @@ class BoardLifecycle(unittest.TestCase):
         self.assertIn(id6, output)
         self.assertNotEqual(wb(["show", "zzz-no-such-card"], self.proj).returncode, 0)
 
-    def test_c13_sweep_archive_and_recover(self):
-        month = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
-        archive = self.board.parent / "archive" / f"board-{month}.json"
+    def test_c13_recover_lists_and_restores_revisions(self):
         rev_before = read_board(self.board)["rev"]
-        dry = wb(["sweep", "--days", "0"], self.proj)
-        self.assertEqual(dry.returncode, 0, detail(dry))
-        self.assertEqual(read_board(self.board)["rev"], rev_before)
-        applied = wb(["sweep", "--days", "0", "--apply", "--json"], self.proj)
-        self.assertEqual(applied.returncode, 0, detail(applied))
-        self.assertEqual(last_json(applied)["actor"], "tester")
-        self.assertEqual([c["num"] for c in read_board(archive)["cards"]], [2])
-        after = read_board(self.board)
-        self.assertEqual(len(after["cards"]), 5)
-
+        self.assertEqual(wb(["update", "2", "--title", "renamed for recover"], self.proj).returncode, 0)
         listed = wb(["recover", "--json"], self.proj)
         self.assertEqual(listed.returncode, 0, detail(listed))
-        self.assertIn(rev_before, [item["rev"] for item in last_json(listed)["backups"]])
-        restore = wb(["recover", str(rev_before), "--apply", "--json"], self.proj)
+        versions = last_json(listed)
+        self.assertEqual((versions["rev"], versions["revisions"][0]), (rev_before + 1, {"rev": rev_before + 1,
+                                                                                         "cards": [2]}))
+        self.assertEqual(wb(["recover", "--expected-rev", "1"], self.proj).returncode, 2)  # Needs --apply.
+        restore = wb(["recover", "--apply", "--json"], self.proj)  # Default: undo the newest revision.
         self.assertEqual(restore.returncode, 0, detail(restore))
-        self.assertEqual(last_json(restore)["actor"], "tester")
+        result = last_json(restore)
+        self.assertEqual((result["actor"], result["restoredTo"], result["restored"]), ("tester", rev_before, [2]))
         restored = read_board(self.board)
-        self.assertEqual({c["num"] for c in restored["cards"]}, {1, 2, 3, 4, 5, 6})
-        self.assertGreater(restored["rev"], after["rev"])
-
-        repeat = wb(["sweep", "--days", "0", "--apply"], self.proj)
-        self.assertEqual(repeat.returncode, 0, detail(repeat))
-        self.assertEqual([c["num"] for c in read_board(archive)["cards"]], [2])
-        self.assertEqual(len(read_board(self.board)["cards"]), 5)
+        self.assertEqual(restored["rev"], rev_before + 2)
+        self.assertNotEqual(next(c for c in restored["cards"] if c["num"] == 2)["title"], "renamed for recover")
+        self.assertEqual(wb(["sweep", "--apply"], self.proj).returncode, 2)  # Sweeping archives is gone.
 
     def test_c14_utf8_emoji_roundtrip(self):
         title = "rocket ship 🚀 launch"
@@ -373,7 +361,7 @@ class BoardLifecycle(unittest.TestCase):
         self.assertEqual(started.returncode, 0, detail(started))
         shown = wb(["show", num], self.proj)
         digest = wb(["digest"], self.proj)
-        self.assertEqual(json.loads(shown.stdout)["title"], title)
+        self.assertEqual(json.loads(shown.stdout)["card"]["title"], title)
         self.assertIn("🚀", digest.stdout)
         self.assertNotIn("\ufffd", added.stdout + added.stderr + shown.stdout + digest.stdout)
 
@@ -457,19 +445,23 @@ class Contracts(unittest.TestCase):
         self.assertEqual(sorted(c["num"] for c in doc["cards"]), list(range(1, 21)))
         self.assertEqual(doc["rev"], initial + 20)
 
-    def test_c16_lock_timeout_is_visible(self):
+    def test_c16_a_writer_waits_out_another_writers_transaction(self):
+        import sqlite3
         root = self.init("lock-board")
-        board = core.board_file("lock-board")
-        before = board.read_bytes()
-        with core.board_lock(board, timeout=8.0):
-            proc = wb(["add", "--title", "lock victim"], root, timeout=30)
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("lock", (proc.stderr + proc.stdout).lower())
-        self.assertEqual(board.read_bytes(), before)
+        holder = sqlite3.connect(core._db(core.board_file("lock-board")), isolation_level=None,
+                                 check_same_thread=False)
+        holder.execute("BEGIN IMMEDIATE")
+        release = threading.Timer(1.0, holder.rollback)
+        release.start()
+        started = time.monotonic()
+        proc = wb(["add", "--title", "lock victim", "--json"], root, timeout=60)
+        release.join()
+        holder.close()
+        self.assertEqual(proc.returncode, 0, detail(proc))
+        self.assertGreaterEqual(time.monotonic() - started, 0.9)
 
     def test_c17_consolidates_legacy_columns(self):
         root = project("proj-migrate")
-        board = core.create_board("legacy-migration", root)
         now = "2026-08-20T00:00:00Z"
         columns = [
             {"id": "notes", "name": "Notes", "kind": "intake"},
@@ -485,9 +477,8 @@ class Contracts(unittest.TestCase):
                   "writeup": "", "subtasks": [], "links": [], "history": [], "cycles": [],
                   "createdAt": now, "updatedAt": now, "doneAt": None, "reopenReason": None}
                  for num, column in enumerate((c["id"] for c in columns), 1)]
-        board.write_text(json.dumps({"schemaVersion": 2, "name": "legacy-migration", "rev": 0,
-                                     "nextNum": 8, "columns": columns, "cards": cards}, indent=2),
-                         encoding="utf-8")
+        board = core.create_board("legacy-migration", root, {"schemaVersion": 3, "name": "legacy-migration", "rev": 0,
+                                                            "nextNum": 8, "columns": columns, "cards": cards})
         dry = wb(["columns-core", "--json"], root)
         applied = wb(["columns-core", "--apply", "--json"], root)
         self.assertEqual((dry.returncode, applied.returncode), (0, 0), (detail(dry), detail(applied)))
@@ -511,23 +502,30 @@ class Contracts(unittest.TestCase):
         root = self.init("wip-board")
         self.assertNotEqual(wb(["wip", "1"], root).returncode, 0)
         path = Path(last_json(wb(["which", "--json"], root))["board"])
-        doc = json.loads(path.read_text(encoding="utf-8"))
-        next(c for c in doc["columns"] if c["id"] == "inprogress")["wipLimit"] = 1  # as the browser saves it
-        path.write_text(json.dumps(doc), encoding="utf-8")
+        with core.board_transaction(path) as doc:
+            next(c for c in doc["columns"] if c["id"] == "inprogress")["wipLimit"] = 1  # as the browser saves it
+            core.save(path, doc)
         steps = [wb(args, root) for args in (["add", "--title", "first active"],
                                              ["add", "--title", "second active"], ["start", "1"])]
         full = wb(["start", "2", "--json"], root)
         blocked = wb(["block", "1", "--reason", "waiting", "--until", "dependency clears"], root)
         second = wb(["start", "2"], root)
-        for proc in (*steps, blocked, second):
+        third = wb(["add", "--title", "third active"], root)
+        for proc in (*steps, blocked, second, third):
             self.assertEqual(proc.returncode, 0, detail(proc))
         refusal = last_json(full)
         self.assertEqual((refusal["code"], refusal["status"]), ("wip", 409))
         self.assertIn("set by the user in the browser", refusal["error"])
+        # Every way into In Progress counts the other open cards, not just start.
+        for args in (["resume", "1", "--note", "dependency cleared"], ["fly", "3", "inprogress"],
+                     ["fly", "3", "In Progress"]):
+            refused = wb([*args, "--json"], root)
+            self.assertEqual((last_json(refused)["code"], last_json(refused)["status"]), ("wip", 409), args)
+        self.assertEqual([c["column"] for c in core.load(path)["cards"]], ["blocked", "inprogress", "task"])
 
     def test_c19_dependencies_readiness_and_outcomes(self):
         root = project("dependency-contract")
-        doc = core.normalize_doc({"cards": [
+        doc = core.normalize_doc({"schemaVersion": 3, "cards": [
             {"num": 1, "id": "pre", "column": "done", "writeup": "verified",
              "doneAt": "2020-01-01T00:00:00Z"},
             {"num": 2, "id": "dependent", "priority": "critical", "dependsOn": ["pre"],
@@ -563,7 +561,6 @@ class Contracts(unittest.TestCase):
         self.assertTrue(rejected("missing", "start", {}, 409))
         self.assertTrue(rejected("canceled-child", "move", {"to": "inprogress"}, 409))
         self.assertTrue(rejected("missing", "bug", {"reason": "cannot skip prerequisite"}, 409))
-        self.assertEqual(core._sweep_candidates(doc, 14), [])
         core.workflow_action(doc, by_id["canceled"], "move", {"to": "done"}, "tester")
         self.assertEqual(by_id["canceled"]["outcome"], "canceled")
         self.assertTrue(rejected("canceled", "complete", {"writeup": "bypass"}, 409))
@@ -590,17 +587,7 @@ class Contracts(unittest.TestCase):
         self.assertIsNone(by_id["canceled"]["cancelReason"])
 
         path = core.create_board("dependency-contract", root, doc)
-        before = path.read_bytes()
-        backups = sorted(p.name for p in (path.parent / core.BACKUP_DIR).iterdir())
-        result = wb(["next", "--limit", "2", "--json"], root)
-        payload = last_json(result)
-        self.assertEqual(result.returncode, 0, detail(result))
-        self.assertEqual(payload["rev"], doc["rev"])
-        self.assertEqual([c["id"] for c in payload["cards"]], ["critical-old", "dependent"])
-        self.assertTrue(all(set(c) == {"num", "id", "title", "priority", "tags", "createdAt",
-                                       "dependsOn"} for c in payload["cards"]))
-        self.assertEqual(path.read_bytes(), before)
-        self.assertEqual(sorted(p.name for p in (path.parent / core.BACKUP_DIR).iterdir()), backups)
+        self.assertEqual([c["id"] for c in core.ready_cards(core.load(path))[:2]], ["critical-old", "dependent"])
         remove = wb(["depends", "missing", "--remove", "deleted-predecessor", "--json"], root)
         add = wb(["depends", "missing", "--on", "#1", "--on", "pre", "--json"], root)
         clear = wb(["depends", "missing", "--clear", "--json"], root)
@@ -608,9 +595,9 @@ class Contracts(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, detail(proc))
         self.assertEqual([last_json(p)["dependsOn"] for p in (remove, add, clear)], [[], ["pre"], []])
 
-    def test_c20_owner_race_workpad_and_collaboration(self):
+    def test_c20_owner_race_and_collaboration(self):
         root = project("owner-contract")
-        doc = core.normalize_doc({"cards": [{"id": "shared", "num": 1, "title": "Shared task",
+        doc = core.normalize_doc({"schemaVersion": 3, "cards": [{"id": "shared", "num": 1, "title": "Shared task",
                                              "notes": "Existing notes\n\n## Acceptance criteria\nKeep this."}]})
         path = core.create_board("owner-contract", root, doc)
         envs = {label: dict(ENV, WORKBOARD_ACTOR=label) for label in ("Ada", "Grace")}
@@ -638,68 +625,23 @@ class Contracts(unittest.TestCase):
         self.assertEqual((error["ok"], error["code"], error["status"], error["rev"]),
                          (False, "owned", 409, current["rev"]))
 
-        before = path.read_bytes()
-        for args in (["fly", "1", "task"], ["done", "1", "--writeup", "cannot steal"],
-                     ["cancel", "1", "--reason", "cannot steal"],
-                     ["rework", "1", "--reason", "cannot steal"], ["takeover", "1", "--reason", "   "]):
+        before = core.board_rev(path)
+        for args in (["fly", "1", "task"], ["takeover", "1", "--reason", "   "]):
             self.assertNotEqual(wb(args, root, envs[loser]).returncode, 0, args)
         self.assertEqual(wb(["start", "1", "--json"], root, envs[winner]).returncode, 0)
-        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(core.board_rev(path), before)
 
-        first = wb(["workpad", "1", "--json"], root, envs[loser])
-        workpad = path.read_bytes()
-        second = wb(["workpad", "1", "--json"], root, envs[loser])
-        self.assertEqual((first.returncode, second.returncode), (0, 0))
-        self.assertEqual(path.read_bytes(), workpad)
-        notes = core.load(path)["cards"][0]["notes"]
-        self.assertTrue(notes.startswith("Existing notes\n\n## Acceptance criteria\nKeep this."), notes)
-        self.assertEqual((notes.count("## Acceptance criteria"), notes.count("## Verification")), (1, 1))
         retitled = wb(["update", "1", "--title", "Shared task (reviewed)", "--json"], root, envs[loser])
         self.assertEqual(retitled.returncode, 0, detail(retitled))
         card = core.load(path)["cards"][0]
         self.assertEqual((card["title"], card["activeOwner"]), ("Shared task (reviewed)", winner))
 
-        added = wb(["comment", "1", "add", "Please verify the boundary", "--json"], root, envs[loser])
-        comment = core.load(path)["cards"][0]["comments"][0]
-        third = dict(ENV, WORKBOARD_ACTOR="Lin")
-        unchanged = path.read_bytes()
-        for args in (["edit", comment["id"], "Hijacked"], ["delete", comment["id"]]):
-            refused = wb(["comment", "1", *args, "--json"], root, third)
-            self.assertEqual(last_json(refused)["code"], "owned", detail(refused))
-        self.assertEqual(path.read_bytes(), unchanged)
-        edited = wb(["comment", "1", "edit", comment["id"], "Boundary verified", "--json"],
-                    root, envs[winner])
-        changed = core.load(path)["cards"][0]["comments"][0]
-        deleted = wb(["comment", "1", "delete", comment["id"], "--json"], root, envs[loser])
-        for proc in (added, edited, deleted):
-            self.assertEqual(proc.returncode, 0, detail(proc))
-        self.assertEqual((changed["text"], changed["updatedBy"]), ("Boundary verified", winner))
-        self.assertTrue(changed["updatedAt"])
-        self.assertEqual(last_json(added)["item"], comment)
-        self.assertEqual(last_json(edited)["item"], changed)
-        self.assertEqual(last_json(deleted)["item"], changed)
-        self.assertEqual({key: changed[key] for key in ("id", "at", "by")},
-                         {key: comment[key] for key in ("id", "at", "by")})
-        self.assertEqual(core.load(path)["cards"][0]["comments"], [])
-        with core.board_transaction(path) as board:
-            board["cards"][0]["comments"] = [
-                {"id": "imported", "at": "2026-01-01T00:00:00Z", "text": "Imported without an author"},
-                {"id": "foreign", "at": "2026-01-01T00:00:00Z", "by": loser, "text": "Loser's note"}]
-            core.save(path, board)
-        for label, comment_id, env in (("authorless", "imported", third),
-                                       ("card owner", "foreign", envs[winner])):
-            proc = wb(["comment", "1", "delete", comment_id, "--json"], root, env)
-            self.assertEqual(proc.returncode, 0, (label, detail(proc)))
-        self.assertEqual(core.load(path)["cards"][0]["comments"], [])
-
         takeover = wb(["takeover", "1", "--reason", "handoff agreed", "--json"], root, envs[loser])
-        stale_owner = wb(["done", "1", "--writeup", "old owner"], root, envs[winner])
-        cancel = wb(["cancel", "1", "--reason", "scope removed", "--json"], root, envs[loser])
+        cancel = wb(["cancel", "1", "--reason", "scope removed", "--json"], root, envs[winner])  # No takeover needed.
         rework = wb(["rework", "1", "--reason", "scope restored", "--json"], root, envs[winner])
         for proc in (takeover, cancel, rework):
             self.assertEqual(proc.returncode, 0, detail(proc))
         self.assertEqual(last_json(takeover)["activeOwner"], loser)
-        self.assertNotEqual(stale_owner.returncode, 0)
         self.assertEqual(last_json(cancel)["outcome"], "canceled")
         self.assertIsNone(last_json(cancel)["activeOwner"])
         card = core.load(path)["cards"][0]
@@ -708,7 +650,7 @@ class Contracts(unittest.TestCase):
 
     def test_c21_normalization_identity_and_attachment_recovery(self):
         path = core.create_board("durable-contract", project("durable-contract"))
-        doc = core.normalize_doc({
+        doc = core.normalize_doc({"schemaVersion": 3,
             "tagTaxonomy": {"main": [{"name": "core", "color": "#123456"}]},
             "activeWork": {"agent": "durable"}, "activeWorkId": "durable",
             "cards": [{"id": "durable", "num": 1, "column": "inprogress", "activeOwner": "Ada",
@@ -722,41 +664,33 @@ class Contracts(unittest.TestCase):
                        "agentRuns": [{"status": "finished", "summary": "legacy fact"}]}],
         })
         card = doc["cards"][0]
-        comment = core.comment_action(card, {"type": "add", "text": "Durable comment"}, "Grace")
+        note = core.append_note(card, "Durable note", "", "Grace")
         blob = b"\x00binary\r\nattachment\xff"
         metadata = core.attachment_store(path, "../original-name.bin", blob, "Grace")
         card["attachments"].append(metadata)
         doc["rev"] = core.load(path)["rev"]
-        with core.board_lock(path):
+        with core.board_transaction(path):
             core.save(path, doc, by="Ada")
         revision = doc["rev"]
         loaded = core.load(path)
         self.assertEqual(loaded, doc)
-        self.assertEqual(loaded["cards"][0]["links"], ["related"])
+        self.assertNotIn("links", loaded["cards"][0])
         self.assertEqual(loaded["cards"][0]["cycles"], [{"writeup": "historical evidence"}])
         self.assertNotIn("linkedCards", loaded["cards"][0])
         self.assertNotIn("lifecycleCycles", loaded["cards"][0])
-        self.assertEqual(loaded["cards"][0]["comments"][0]["id"], comment["id"])
+        self.assertEqual(loaded["cards"][0]["log"][0]["id"], note["id"])
         self.assertEqual(core.attachment_path(path, metadata["id"]).read_bytes(), blob)
 
-        for operation in ({"type": "add", "text": " "}, {"type": "add", "text": "a" * 16001},
-                          {"type": "edit", "id": comment["id"], "text": "forged", "by": "Ada"}):
-            before = json.dumps(card, sort_keys=True)
-            with self.assertRaises(core.WorkflowError) as caught:
-                core.comment_action(card, operation, "Grace")
-            self.assertEqual(caught.exception.status, 422)
-            self.assertEqual(json.dumps(card, sort_keys=True), before)
         for attachment_id in ("../outside", "/absolute", "A" * 32):
             with self.assertRaises(core.WorkflowError):
                 core.attachment_path(path, attachment_id)
 
         card["attachments"] = []
-        with core.board_lock(path):
+        with core.board_transaction(path):
             core.save(path, doc, by="Ada")
-        backup = next(p for rev, p in core.list_backups(path) if rev == revision)
-        recovered = core.normalize_doc(json.loads(core.read_text_shared(backup)))
         self.assertEqual(core.load(path)["cards"][0]["attachments"], [])
-        self.assertEqual(recovered["cards"][0]["attachments"][0], metadata)
+        self.assertEqual(core.restore(path, revision, by="Ada")["restored"], [1])  # Earlier revisions are kept.
+        self.assertEqual(core.load(path)["cards"][0]["attachments"][0], metadata)
         self.assertEqual(core.attachment_path(path, metadata["id"]).read_bytes(), blob)
 
         old_id = core.unique_id(doc, "same title")
@@ -780,7 +714,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(created_path.resolve(), path.resolve())
         identity = last_json(wb(["--json", "--board", root, "add", "--title", "Inspect every input"], BASE))
         reference = str(identity["num"])
-        comment = wb(["comment", reference, "add", "User context " + "x" * 1000,
+        comment = wb(["note", reference, "User context " + "x" * 1000,
                       "--expected-rev", identity["rev"], "--board", root, "--json"], BASE)
         self.assertEqual(comment.returncode, 0, detail(comment))
         source = BASE / "source.bin"
@@ -810,13 +744,11 @@ class Contracts(unittest.TestCase):
             self.assertEqual(result["rev"], rev)
             self.assertEqual([card["num"] for card in result["cards"]], [identity["num"]])
 
-        lock = path.parent / ".board.lock"
-        lock.unlink()
         context = last_json(wb(["--board", root, "--json", "context", reference], BASE))
         manifest = last_json(wb(["attachment", reference, "list", "--board", root, "--json"], BASE))
-        self.assertFalse(lock.exists(), "read-only context/list created a board lock")
+        self.assertEqual(core.board_rev(path), rev, "read-only context/list wrote to the board")
         self.assertEqual(context["rev"], rev)
-        self.assertTrue(context["card"]["comments"][0]["text"].endswith("x" * 1000))
+        self.assertTrue(context["card"]["log"][0]["body"].endswith("x" * 1000))
         self.assertEqual(context["card"]["attachments"], [metadata])
         self.assertEqual(manifest["attachments"], [metadata])
         self.assertTrue(context["ready"])
@@ -838,38 +770,37 @@ class Contracts(unittest.TestCase):
         self.assertEqual((last_json(refused)["status"], last_json(refused)["code"]), (422, "invalid"))
         self.assertEqual(destination.read_bytes(), content)
 
-        before = path.read_bytes()
+        before = core.board_rev(path)
         for operation in (
                 ["start", reference], ["update", reference, "--title", "Stale"],
                 ["fly", reference, "backlog"], ["note", reference, "--summary", "Stale"],
                 ["subtask", reference, "add", "Stale"], ["depends", reference, "--clear"],
-                ["comment", reference, "add", "Stale"],
                 ["attachment", reference, "add", "--file", source],
                 ["attachment", reference, "remove", metadata["id"]],
-                ["columns-core", "--apply"], ["sweep", "--apply"], ["recover", "--apply"]):
+                ["columns-core", "--apply"], ["recover", "--apply"]):
             proc = wb([*operation, "--board", root, "--json", "--expected-rev", rev - 1], BASE)
             self.assertNotEqual(proc.returncode, 0, operation)
             error = last_json(proc)
             self.assertEqual((error["ok"], error["status"], error["code"], error["rev"]),
                              (False, 409, "stale", rev), (operation, proc.stdout, proc.stderr))
-            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(core.board_rev(path), before)
         self.assertEqual(list((path.parent / "attachments").iterdir()),
                          [path.parent / "attachments" / metadata["id"]])
         for operation in (["add", "--title", "Wrong", "--borad", str(root)],
                           ["add", "--title", "No guard on add", "--expected-rev", str(rev)],
                           ["context", reference, "--expected-rev", str(rev)],
                           ["attachment", reference, "list", "--expected-rev", str(rev)],
-                          ["sweep", "--expected-rev", str(rev)],
+                          ["recover", "--expected-rev", str(rev)],
                           ["init", "--dir", str(root / "wrong")],
                           ["--board", str(root), "start", reference]):
             proc = wb(["--board", root, *operation, "--json"], BASE)
             self.assertNotEqual(proc.returncode, 0, (operation, proc.stdout))
-            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(core.board_rev(path), before)
         self.assertFalse((root / "wrong").exists())
         intruder = wb(["attachment", reference, "remove", metadata["id"], "--board", root, "--json"],
                       BASE, dict(ENV, WORKBOARD_ACTOR="Lin"))
         self.assertEqual(last_json(intruder)["code"], "owned", detail(intruder))
-        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(core.board_rev(path), before)
 
         removed = wb(["attachment", reference, "remove", metadata["id"], "--expected-rev", rev,
                       "--board", root, "--json"], BASE)
@@ -887,7 +818,7 @@ class Contracts(unittest.TestCase):
 
     def test_c23_schema_threads_and_export_boundaries(self):
         root = project("schema-contract")
-        raw = {"vendorDocument": {"keep": 1}, "columns": [
+        raw = {"schemaVersion": 3, "vendorDocument": {"keep": 1}, "columns": [
             {**column, "vendorColumn": ["keep"]} for column in core.DEFAULT_COLUMNS],
             "cards": [{"id": "subject", "num": 1, "title": "Subject", "vendorCard": {"keep": 2},
                        "dependsOn": ["done-dep", "lost-dep"],
@@ -897,7 +828,6 @@ class Contracts(unittest.TestCase):
                        "column": "done", "outcome": "completed", "writeup": "Evidence"}]}
         subject = raw["cards"][0]
         subject["notes"] = "Resume notes " * 100
-        subject["comments"] = [{"id": "discussion", "by": "Ada", "text": "Complete discussion " * 100}]
         subject["history"] = [{"ev": "note", "by": "Ada", "note": str(n)} for n in range(30)]
         subject["subtasks"].append({"id": "ancestor", "done": True, "doneAt": "2020-01-01T00:00:00Z",
                                     "children": [{"id": "open-child", "text": "Still needed",
@@ -919,8 +849,7 @@ class Contracts(unittest.TestCase):
         visible = {item["id"] for item in context["card"]["subtasks"]}  # Nesting flattens in pre-order.
         self.assertLessEqual({"step", "open-child", "done-11"}, visible)
         self.assertFalse({"ancestor", "done-0", "done-1"} & visible)
-        self.assertEqual(context["card"]["notes"], subject["notes"].strip())
-        self.assertEqual(context["card"]["comments"], subject["comments"])
+        self.assertEqual(context["card"]["notes"], actual["cards"][0]["notes"])
         self.assertNotIn("history", context["card"])
         full = last_json(wb(["context", "1", "--full", "--json"], root))
         self.assertNotIn("omitted", full)
@@ -928,42 +857,37 @@ class Contracts(unittest.TestCase):
         self.assertEqual(core.card_context(path, "2")["dependents"], [{
             "num": 1, "id": "subject", "title": "Subject", "column": "task", "outcome": None}])
 
-        healthy = path.read_bytes()
-        lock = path.parent / core.LOCK_NAME
-        for legacy in (raw, {**raw, "schemaVersion": 1}):
-            path.write_text(json.dumps(legacy), encoding="utf-8")
-            core.save(path, core.load(path), by="Ada")
-            saved = json.loads(path.read_bytes())
-            self.assertEqual(saved["schemaVersion"], 3)
+        def legacy_board(name, document):  # A board.json with no board.db migrates on first touch.
+            legacy = path.parent.parent / name / "board.json"
+            legacy.parent.mkdir()
+            legacy.write_text(json.dumps(document), encoding="utf-8")
+            return legacy
+
+        for n, legacy in enumerate((raw, {**raw, "schemaVersion": 4})):
+            saved = core.load(legacy_board(f"legacy-{n}", legacy))
             self.assertEqual(saved["vendorDocument"], raw["vendorDocument"])
             self.assertNotIn("linkedCards", saved["cards"][0])
             self.assertNotIn("lifecycleCycles", saved["cards"][0])
-        for version in (True, False, 0, 5, "2", 2.0, None):
-            path.write_text(json.dumps({**raw, "schemaVersion": version}), encoding="utf-8")
-            before = path.read_bytes()
-            lock.unlink(missing_ok=True)
-            with self.assertRaises(core.WorkflowError, msg=f"unsupported schema written: {version!r}"):
-                core.save(path, doc, by="Ada")
-            self.assertEqual(path.read_bytes(), before)
-            self.assertFalse(lock.exists())
-        for canonical, alias in (("links", "linkedCards"), ("cycles", "lifecycleCycles")):
-            invalid = json.loads(healthy)
+        for n, version in enumerate((True, False, 0, 1, 2, 99, "2", 2.0, None)):
+            legacy = legacy_board(f"unsupported-{n}", {**raw, "schemaVersion": version})
+            with self.assertRaises(core.WorkflowError, msg=f"unsupported schema migrated: {version!r}"):
+                core.load(legacy)
+            self.assertFalse(core._db(legacy).exists())
+        for canonical, alias in (("cycles", "lifecycleCycles"),):
+            invalid = json.loads(json.dumps(raw))
             invalid["cards"][0][alias] = []
-            invalid["cards"][0][canonical] = ["conflict"] if canonical == "links" else [{"writeup": "conflict"}]
-            path.write_text(json.dumps(invalid), encoding="utf-8")
-            before = path.read_bytes()
+            invalid["cards"][0][canonical] = [{"writeup": "conflict"}]
+            legacy = legacy_board(f"alias-{alias}", invalid)
             with self.assertRaises(core.WorkflowError):
-                with core.board_transaction(path):
+                with core.board_transaction(legacy):
                     self.fail("ambiguous alias was accepted")
-            self.assertEqual(path.read_bytes(), before)
-            self.assertFalse(lock.exists())
+            self.assertFalse(core._db(legacy).exists())
             invalid["cards"][0][alias] = invalid["cards"][0][canonical]
             self.assertNotIn(alias, core.normalize_doc(invalid)["cards"][0])
         with self.assertRaises(core.WorkflowError) as caught:
             core.normalize_card({"cycles": [{"extension": True}], "lifecycleCycles": [{"extension": 1}]})
         self.assertEqual(caught.exception.status, 409)
 
-        path.write_bytes(healthy)
         entered, excluded, acquired = threading.Event(), threading.Event(), threading.Event()
         errors = []
 
@@ -1052,11 +976,11 @@ class Contracts(unittest.TestCase):
         self.assertEqual(caught.exception.status, 404)
 
         blob.write_bytes(b"safe")
-        before, blobs = path.read_bytes(), set(blob.parent.iterdir())
+        before, blobs = core.board_rev(path), set(blob.parent.iterdir())
         with mock.patch.object(core, "save", side_effect=OSError("uncommitted save failure")):
             with self.assertRaises(OSError):
                 core.attachment_add(path, "1", "uncommitted.bin", b"never saved", "Ada")
-        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(core.board_rev(path), before)
         self.assertEqual(set(blob.parent.iterdir()), blobs)
         real_save = core.save
 
@@ -1087,7 +1011,7 @@ class Contracts(unittest.TestCase):
         current = last_json(wb(["context", x["id"], "--full", "--json"], root))  # History comes only with full.
         self.assertEqual(current["card"]["changedRev"], claimed["rev"])
         path = core.board_file("card guards")
-        before = path.read_bytes()
+        before = core.board_rev(path)
         stale = wb(["note", x["id"], "--summary", "old decision", "--expected-rev", reviewed["rev"],
                     "--actor", "Agent-X", "--json"], root)
         error = last_json(stale)
@@ -1095,13 +1019,13 @@ class Contracts(unittest.TestCase):
                          (1, 409, "stale", claimed["rev"]))
         self.assertEqual(error["card"], {"num": x["num"], "id": x["id"], "changedRev": claimed["rev"],
                                          "last": current["card"]["history"][-1]})
-        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(core.board_rev(path), before)
         last = current["card"]["history"][-1]
         for message in (error["error"], wb(["note", x["id"], "--summary", "old decision", "--expected-rev",
                                             reviewed["rev"], "--actor", "Agent-X"], root).stderr):
             self.assertIn(f"last: {last['ev']} by Agent-X", message)
             self.assertIn(f"context {x['num']}", message)
-        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(core.board_rev(path), before)
         projection = ["num", "id", "title", "column", "priority", "tags", "outcome", "owner",
                       "deps", "changedRev", "createdAt", "updatedAt", "doneAt", "origin"]
         mine = last_json(wb(["--actor", "Agent-X", "query", "--mine", "--fields", ",".join(projection),
@@ -1157,7 +1081,7 @@ class Contracts(unittest.TestCase):
             self.assertIn(more, lines)
         self.assertLessEqual(max(map(len, lines)), 200, max(lines, key=len))
         pulse = last_json(wb(["digest", "--json", "--actor", "Main"], root))
-        self.assertEqual((len(pulse["contributions"]), pulse["sweepCandidateCount"]), (10, 1))
+        self.assertEqual(len(pulse["contributions"]), 10)
 
     def test_c27_bulk_subtasks_are_atomic_and_idempotent(self):
         root = self.init("bulk", "bulk-subtasks")
@@ -1170,7 +1094,9 @@ class Contracts(unittest.TestCase):
         ids = [item["id"] for item in items]
         self.assertEqual(result["rev"], card["rev"] + 1)
         self.assertEqual(len(set(ids)), 3)
-        self.assertEqual([item["text"] for item in items], ["First", "Second", "Third"])
+        self.assertTrue(all("text" not in item for item in items))  # Results never echo the text back.
+        subtasks = last_json(wb(["context", "1", "--json"], root))["card"]["subtasks"]
+        self.assertEqual([(st["id"], st["text"]) for st in subtasks], list(zip(ids, ["First", "Second", "Third"])))
         self.assertTrue(all(item["by"] == "Ada" and not item["done"] for item in items))
         done = wb(["subtask", "1", "done", *ids, "--actor", "Grace", "--json"], root)
         self.assertEqual(done.returncode, 0, detail(done))
@@ -1178,22 +1104,22 @@ class Contracts(unittest.TestCase):
         self.assertEqual(completed["rev"], result["rev"] + 1)
         self.assertTrue(all(item["done"] and item["doneBy"] == "Grace" for item in completed["items"]))
         path = core.board_file("bulk")
-        before = path.read_bytes()
+        before = core.board_rev(path)
         repeat = wb(["subtask", "1", "done", *ids, "--actor", "Ada", "--json"], root)
         self.assertEqual(repeat.returncode, 0, detail(repeat))
         self.assertEqual(last_json(repeat)["rev"], completed["rev"])
         self.assertEqual(last_json(repeat)["items"], completed["items"])
-        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(core.board_rev(path), before)
         missing = wb(["subtask", "1", "undone", ids[0], "absent", "--json"], root)
         self.assertEqual((missing.returncode, last_json(missing)["code"]), (1, "not_found"))
-        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(core.board_rev(path), before)
         reopened = last_json(wb(["subtask", "1", "undone", *ids, "--json"], root))
         self.assertTrue(all(not item["done"] and item.get("doneBy") is None and item["doneAt"] is None
                             for item in reopened["items"]))
-        before = path.read_bytes()
+        before = core.board_rev(path)
         again = wb(["subtask", "1", "undone", *ids, "--json"], root)
         self.assertEqual((again.returncode, last_json(again)["rev"]), (0, reopened["rev"]))
-        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(core.board_rev(path), before)
         history = last_json(wb(["context", "1", "--full", "--json"], root))["card"]["history"]
         self.assertEqual([(entry["ev"], entry["by"]) for entry in history[-3:]],
                          [("subtask-add", "Ada"), ("subtask-done", "Grace"), ("subtask-undone", "tester")])
@@ -1203,7 +1129,7 @@ class Contracts(unittest.TestCase):
         root = self.init("errors", "error-envelope")
         card = last_json(wb(["add", "--title", "Error target", "--json"], root))
         path = core.board_file("errors")
-        before = path.read_bytes()
+        before = core.board_rev(path)
         cases = [
             (["subtask", "1", "done", "absent"], 404, "not_found"),
             (["fly", "1", "done"], 409, "state"),
@@ -1217,11 +1143,11 @@ class Contracts(unittest.TestCase):
             self.assertEqual((proc.returncode, error["ok"], error["status"], error["code"], error["rev"]),
                              (1, False, status, code, card["rev"]), command)
             self.assertTrue(error["error"] and not error["error"].startswith("error:"), error)
-            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(core.board_rev(path), before)
         human = wb(["subtask", "1", "done", "absent"], root)
         self.assertEqual(human.returncode, 1)
         self.assertTrue(human.stderr.startswith("error [not_found]: "), human.stderr)
-        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(core.board_rev(path), before)
 
     def test_c29_note_timeline_grammar_and_projections(self):
         root = self.init("timeline", "notes-timeline")
@@ -1233,11 +1159,14 @@ class Contracts(unittest.TestCase):
         result = last_json(added)
         item = result["item"]
         self.assertEqual((result["rev"], result["id"]), (card["rev"] + 1, card["id"]))
-        self.assertEqual(set(item), {"id", "at", "by", "summary", "body"})
+        self.assertEqual(set(item), {"id", "at", "by"})  # Results name what they wrote, without the text.
         self.assertRegex(item["id"], r"^[0-9a-f]{32}$")
         self.assertRegex(item["at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-        self.assertEqual((item["by"], item["summary"], item["body"]),
-                         ("tester", "Chose the lock strategy", "Evidence: `abc123`\n\n- tests pass"))
+        stored = last_json(wb(["note.get", item["id"][:6], "--json"], root))
+        self.assertEqual((stored["num"], stored["item"]["by"], stored["item"]["summary"], stored["item"]["body"]),
+                         (1, "tester", "Chose the lock strategy", "Evidence: `abc123`\n\n- tests pass"))
+        human = wb(["note.get", item["id"], "--card", "1"], root)
+        self.assertTrue(human.stdout.startswith(f"#1 note {item['id']} by tester at "), detail(human))
 
         piped = wb(["note", "1", "--summary", "Piped body", "--stdin"], root,
                    input="## Findings\nonly-in-body-xyzzy\n\n")
@@ -1246,11 +1175,11 @@ class Contracts(unittest.TestCase):
         entry = last_json(wb(["context", "1", "--json"], root))["card"]["log"][-1]
         self.assertEqual((entry["summary"], entry["body"]), ("Piped body", "## Findings\nonly-in-body-xyzzy"))
 
-        before = path.read_bytes()
+        before = core.board_rev(path)
         missing = wb(["note", "1", "--body", "no summary", "--json"], root)
         self.assertEqual(missing.returncode, 2, detail(missing))
         self.assertIn("--summary", missing.stderr)
-        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(core.board_rev(path), before)
 
         self.assertEqual(wb(["start", "1"], root).returncode, 0)
         other = wb(["note", "1", "--summary", "Reviewer remark", "--actor", "Ada", "--json"], root)
@@ -1273,80 +1202,18 @@ class Contracts(unittest.TestCase):
         self.assertEqual(trimmed["card"]["log"], log[-10:])
         self.assertEqual(trimmed["card"]["notes"], full["card"]["notes"])
 
-        shown = last_json(wb(["show", "1", "--json"], root))["card"]["log"]
-        self.assertEqual([item["id"] for item in shown], [item["id"] for item in log[-5:]])
-        self.assertEqual(shown[-1]["body"], "L" * 300 + "… (+100 ch, --full)")
+        shown = last_json(wb(["show", "1", "--json"], root))  # show is context's shorthand.
+        self.assertEqual(shown, trimmed)
         self.assertEqual(last_json(wb(["show", "1", "--full", "--json"], root))["card"]["log"], log)
 
-    def test_c30_legacy_notes_read_as_timeline_and_migrate_on_write(self):
-        root = project("legacy-notes")
-        path = core.create_board("legacy-notes", root)
-        legacy = ("Context before stamps\n[2026-09-01] Fixed the parser. Added tests\n  - covered edge\n"
-                  "[2026-09-02 ada] Checked edge cases; nothing else\n## Acceptance criteria\n- ships")
-        path.write_text(json.dumps({"schemaVersion": 2, "name": "legacy-notes", "rev": 3, "nextNum": 2,
-                                    "columns": core.DEFAULT_COLUMNS,
-                                    "cards": [{"id": "legacy", "num": 1, "title": "Legacy", "column": "task",
-                                               "notes": legacy}]}), encoding="utf-8")
-        before = path.read_bytes()
-        shown = last_json(wb(["show", "1", "--json"], root))["card"]
-        self.assertEqual(shown["notes"], "Context before stamps\n\n## Acceptance criteria\n- ships")
-        self.assertEqual([(e["at"], e["by"], e["summary"], e["body"]) for e in shown["log"]], [
-            ("2026-09-01", None, "Fixed the parser.", "Added tests\n  - covered edge"),
-            ("2026-09-02", "ada", "Checked edge cases", "nothing else")])
-        context = last_json(wb(["context", "1", "--json"], root))
-        self.assertEqual((context["schemaVersion"], context["card"]["log"]), (3, shown["log"]))
-        self.assertEqual(path.read_bytes(), before, "reads must not rewrite a legacy board")
-
-        wrote = wb(["update", "1", "--title", "Legacy migrated", "--json"], root)
-        self.assertEqual(wrote.returncode, 0, detail(wrote))
-        saved = read_board(path)
-        self.assertEqual((saved["schemaVersion"], saved["rev"]), (3, 4))
-        self.assertEqual((saved["cards"][0]["notes"], saved["cards"][0]["log"]), (shown["notes"], shown["log"]))
-        backups = core.list_backups(path)
-        self.assertEqual([rev for rev, _ in backups], [4, 1])
-        self.assertEqual(read_board(backups[0][1]), saved)
-
-    def test_c31_context_and_show_keep_newest_comments(self):
-        root = self.init("discussion", "comment-window")
-        path = core.board_file("discussion")
-        self.assertEqual(wb(["add", "--title", "Busy thread"], root).returncode, 0)
-        with core.board_transaction(path) as doc:
-            for n in range(12):
-                core.comment_action(doc["cards"][0], {"type": "add", "text": f"Comment {n}"}, "tester")
-            core.save(path, doc)
-        full = last_json(wb(["context", "1", "--full", "--json"], root))
-        comments = full["card"]["comments"]
-        self.assertEqual([c["text"] for c in comments], [f"Comment {n}" for n in range(12)])
-        self.assertNotIn("omitted", full)
-        trimmed = last_json(wb(["context", "1", "--json"], root))
-        self.assertEqual(trimmed["card"]["comments"], comments[-10:])
-        self.assertEqual(trimmed["omitted"], {"doneSubtasks": 0, "history": len(full["card"]["history"]),
-                                              "comments": 2})
-        shown = last_json(wb(["show", "1", "--json"], root))["card"]["comments"]
-        self.assertEqual(shown, comments[-5:])
-        self.assertEqual(last_json(wb(["show", "1", "--full", "--json"], root))["card"]["comments"], comments)
-
-    def test_c32_reused_parses_never_leak_mutations_or_hide_rewrites(self):
+    def test_c32_loads_never_leak_mutations_and_see_every_commit(self):
         root = self.init("resident", "resident-board")
         path = core.board_file("resident")
         self.assertEqual(wb(["add", "--title", "Original"], root).returncode, 0)
-        settled = path.stat().st_mtime_ns - 10 * 10**9
-        os.utime(path, ns=(settled, settled))
-        core.load(path)  # The second load of an unchanged file keeps the copy later loads reuse.
         core.load(path)["cards"][0]["title"] = "Mutated by one caller"
         self.assertEqual(core.load(path)["cards"][0]["title"], "Original")
         self.assertEqual(wb(["update", "1", "--title", "Committed"], root).returncode, 0)
         self.assertEqual(core.load(path)["cards"][0]["title"], "Committed")
-        # An in-place rewrite that keeps the file's identity, size and mtime is still seen while the
-        # file is fresh (a future mtime stays fresh however slow this machine is).
-        fresh = time.time_ns() + 60 * 10**9
-        os.utime(path, ns=(fresh, fresh))
-        self.assertEqual(core.load(path)["cards"][0]["title"], "Committed")
-        rewritten = path.read_bytes().replace(b'"Committed"', b'"Rewritten"')
-        with open(path, "r+b") as stream:
-            stream.write(rewritten)
-        os.utime(path, ns=(fresh, fresh))
-        self.assertEqual(core.load(path)["cards"][0]["title"], "Rewritten")
 
 
 class AddFrom(unittest.TestCase):
@@ -1367,13 +1234,13 @@ class AddFrom(unittest.TestCase):
         return last_json(result)
 
     def reject(self, args, code, actor="Main"):
-        before = self.path.read_bytes()
+        before = core.board_rev(self.path)
         result = self.call([*args, "--json"], actor)
         self.assertNotEqual(result.returncode, 0, detail(result))
         error = last_json(result)
         self.assertEqual(error["code"], code, detail(result))
-        self.assertEqual(error["rev"], json.loads(before)["rev"])
-        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(error["rev"], before)
+        self.assertEqual(core.board_rev(self.path), before)
 
     def add(self, *titles, ref):
         return [item["id"] for item in self.json(["subtask", ref, "add", *titles, "--delegated"])["items"]]
@@ -1398,11 +1265,10 @@ class AddFrom(unittest.TestCase):
         producer, consumer = self.add("Producer", "Consumer", ref=source)
         self.json(["subtask", source, "done", checklist])
         self.action("configure", producer, "--scope", "src/producer.py", ref=source)
-        self.action("configure", consumer, "--on", producer, "--scope", "src/consumer.py", ref=source)
+        self.action("configure", consumer, "--scope", "src/consumer.py", ref=source)
         self.action("claim", producer, actor="Ada", ref=source)
         self.action("done", producer, "--result", "Producer verified", actor="Ada", ref=source)
         self.action("accept", producer, ref=source)
-        self.json(["comment", source, "add", "Discussion stays with the source"])
         self.json(["note", source, "--summary", "Finding stays with the source"])
         original = self.context(source)["card"]
 
@@ -1412,7 +1278,7 @@ class AddFrom(unittest.TestCase):
         card = self.context(added["id"])["card"]
         self.assertEqual((card["title"], card["column"], card["priority"], card["tags"], card["notes"]),
                          ("Reusable integration", "backlog", "critical", ["reusable", "copy"], original["notes"]))
-        for key, empty in (("origin", ""), ("comments", []), ("log", []), ("attachments", []),
+        for key, empty in (("origin", ""), ("log", []), ("attachments", []),
                            ("dependsOn", []), ("activeOwner", None), ("outcome", None)):
             self.assertEqual(card[key], empty, key)
         self.assertEqual([row["ev"] for row in card["history"]], ["created"])
@@ -1423,16 +1289,14 @@ class AddFrom(unittest.TestCase):
         self.assertNotIn("delegation", rows[0])
         copied_producer, copied_consumer = rows[2]["delegation"], rows[3]["delegation"]
         self.assertEqual((copied_producer["state"], copied_producer["owner"], copied_producer["result"],
-                          copied_producer["scope"], copied_producer["review"]["required"],
-                          copied_producer["review"]["state"]),
-                         ("available", None, "", ["src/producer.py"], True, "pending"))
-        self.assertEqual((copied_consumer["dependsOn"], copied_consumer["scope"]), (["s-3"], ["src/consumer.py"]))
+                          copied_producer["scope"], copied_producer["review"]["state"]),
+                         ("available", None, "", ["src/producer.py"], "pending"))
+        self.assertEqual(copied_consumer["scope"], ["src/consumer.py"])
         self.assertNotEqual(producer, "s-3")
         renamed = self.json(["add", "--from", source, "--title", "Renamed copy"])
         self.assertEqual(self.context(renamed["id"])["card"]["title"], "Renamed copy")
         self.json(["start", added["id"]])
         self.action("claim", "s-3", actor="Ada", ref=added["id"])
-        self.reject(["subtask", added["id"], "claim", "s-4"], "deps", "Bert")
 
 
 if __name__ == "__main__":

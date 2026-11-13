@@ -8,7 +8,7 @@ import urllib.parse
 from unittest import mock
 
 from tests import test_server
-from tests.support import make_env, run, scratch
+from tests.support import make_env, scratch
 from tests.test_server import RunningServer, board, create, http_req, life, mutate
 
 
@@ -41,7 +41,7 @@ class DelegationHTTP(unittest.TestCase):
         self.assertEqual(status, 200, result)
         return result["items"]
 
-    def test_review_scope_dependencies_block_and_inbox(self):
+    def test_review_scope_and_inbox(self):
         ctx = self.new_board()
         card_id, ids = self.parent(ctx)
         before = board(ctx)
@@ -50,7 +50,7 @@ class DelegationHTTP(unittest.TestCase):
         self.assertEqual((status, removed["code"]), (422, "invalid"), removed)
         self.assertEqual(board(ctx), before)
         self.assignment(ctx, card_id, "configure", ids=[ids[0]], scope=["src"])
-        self.assignment(ctx, card_id, "configure", ids=[ids[1]], scope=["src/tests"], dependsOn=[ids[0]])
+        self.assignment(ctx, card_id, "configure", ids=[ids[1]], scope=["src/tests"])
         status, denied, _ = life(ctx, card_id, "subtask", {"op": "configure", "ids": [ids[0]], "scope": ["other"]}, actor="Worker")
         self.assertEqual(status, 409, denied)
         self.assignment(ctx, card_id, "claim", ids=[ids[0]], actor="Worker")
@@ -58,11 +58,6 @@ class DelegationHTTP(unittest.TestCase):
         self.assertEqual(status, 200, conflicts)
         self.assertEqual(conflicts["conflicts"][0]["subtaskId"], ids[0])
         self.assertTrue(conflicts["conflicts"][0]["claimedAt"])
-        status, denied, _ = life(ctx, card_id, "subtask", {"op": "claim", "ids": [ids[1]]}, actor="Verifier")
-        self.assertEqual((status, denied["code"]), (409, "deps"))
-        self.assignment(ctx, card_id, "block", ids=[ids[0]], actor="Worker", reason="Waiting on spec", until="Spec approved")
-        self.assertEqual(self.inbox(ctx)[0]["kind"], "blocker")
-        self.assignment(ctx, card_id, "resume", ids=[ids[0]], actor="Worker")
         self.assignment(ctx, card_id, "done", ids=[ids[0]], actor="Worker", result="Implementation verified")
         row = self.inbox(ctx)[0]
         self.assertEqual((row["kind"], row["result"]), ("review", "Implementation verified"))
@@ -73,37 +68,12 @@ class DelegationHTTP(unittest.TestCase):
         self.assertEqual(self.inbox(ctx), [])
         self.assignment(ctx, card_id, "claim", ids=[ids[1]], actor="Verifier")
         self.assignment(ctx, card_id, "done", ids=[ids[1]], actor="Verifier", result="Verification passed")
-        row, = self.inbox(ctx)  # Every result reaches the parent owner, and Done waits on accepting it.
-        self.assertEqual((row["kind"], row["subtaskId"], row["review"]["required"]), ("review", ids[1], True))
-        self.assertEqual(life(ctx, card_id, "complete", {"writeup": "Unaccepted"}, actor="Main")[0], 409)
-        self.assignment(ctx, card_id, "accept", ids=[ids[1]])
+        row, = self.inbox(ctx)  # Every result reaches the parent owner; the card's done accepts it too.
+        self.assertEqual((row["kind"], row["subtaskId"]), ("review", ids[1]))
+        status, done, _ = life(ctx, card_id, "complete", {"writeup": "Results accepted by done"}, actor="Main")
+        self.assertEqual(status, 200, done)
+        self.assertEqual([st["delegation"]["review"]["state"] for st in done["card"]["subtasks"]], ["accepted"] * 2)
         self.assertEqual(self.inbox(ctx), [])
-        self.assertEqual(life(ctx, card_id, "complete", {"writeup": "Both results accepted"}, actor="Main")[0], 200)
-
-    def test_findings_acknowledge_many_in_one_write(self):
-        ctx = self.new_board()
-        card_id, _ = self.parent(ctx)
-        for summary in ("First finding", "Second finding"):
-            result = run(["note", card_id, "--board", ctx["name"], "--summary", summary, "--actor", "Worker"],
-                         cwd=self.base, env=self.env)
-            self.assertEqual(result.returncode, 0, result.stderr)
-        note_ids = [row["note"]["id"] for row in self.inbox(ctx) if row["kind"] == "finding"]
-        self.assertEqual(len(note_ids), 2)
-        path = f"/api/card/{card_id}/inbox"
-        before = board(ctx)
-        status, denied, _ = mutate(ctx, path, {"noteIds": note_ids}, actor="Worker")
-        self.assertEqual(status, 409, denied)
-        status, acked, _ = mutate(ctx, path, {"noteIds": note_ids}, actor="Main", rev=before["rev"])
-        self.assertEqual(status, 200, acked)
-        self.assertEqual(acked["rev"], before["rev"] + 1)
-        self.assertEqual(acked["card"]["history"], before["cards"][0]["history"])
-        self.assertEqual(self.inbox(ctx), [])
-        status, again, _ = mutate(ctx, path, {"noteIds": note_ids[:1]}, actor="Main")
-        self.assertEqual(status, 200, again)
-        self.assertEqual(self.inbox(ctx), [])
-        status, conflict, _ = mutate(ctx, path, {"noteIds": note_ids}, actor="Main", rev=before["rev"])
-        self.assertEqual(status, 409, conflict)
-        self.assertIn("rev", conflict)
 
     def test_checklist_boolean_fields_are_not_truthiness_coerced(self):
         ctx = self.new_board()

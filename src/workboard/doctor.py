@@ -2,9 +2,10 @@
 # Copyright 2026 Paliverse
 """`workboard doctor`: installation health plus read-only board data integrity.
 
-Data checks never create files, locks, or directories. They validate the board
-document, recovery snapshots, attachment blobs, and the board registry within
-fixed file/byte/time budgets. Blockers exit 1; warnings are advice.
+Data checks never create files, locks, or directories, and never migrate a board.
+They validate the board store (board.db rows, or a legacy board.json read as
+JSON), attachment blobs, and the board registry within fixed file/byte/time
+budgets. Blockers exit 1; warnings are advice.
 """
 from __future__ import annotations
 
@@ -85,7 +86,7 @@ def _invalid_constant(value):
     raise ValueError(f"invalid JSON number: {value}")
 
 
-def _json_read(path, budget):
+def _read_bytes(path, budget):
     _safe_path(path)
     size = Path(path).stat().st_size
     if size > MAX_JSON_BYTES:
@@ -95,45 +96,38 @@ def _json_read(path, budget):
         data = stream.read(MAX_JSON_BYTES + 1)
     if len(data) > MAX_JSON_BYTES:
         raise ValueError("JSON grew beyond inspection limit")
-    return json.loads(data.decode("utf-8-sig"), object_pairs_hook=_pairs, parse_constant=_invalid_constant)
+    return data
 
 
-def _files(root, budget, depth=0):
-    _safe_path(root)
-    if depth > 64:
-        raise ValueError(f"directory nesting exceeds inspection limit: {root}")
-    with os.scandir(root) as entries:
-        for entry in entries:
-            budget.take()
-            path = Path(entry.path)
-            _safe_path(path)
-            if entry.is_dir(follow_symlinks=False):
-                yield from _files(path, budget, depth + 1)
-            else:
-                yield path
+def _loads(data):
+    if isinstance(data, bytes):
+        data = data.decode("utf-8-sig")
+    return json.loads(data, object_pairs_hook=_pairs, parse_constant=_invalid_constant)
 
 
-def _normalization_changes(raw, normalized, path="$", depth=0, skip=frozenset()):
-    """Raw values normalization would change; `skip` names card fields whose changes are expected."""
+def _json_read(path, budget):
+    return _loads(_read_bytes(path, budget))
+
+
+def _normalization_changes(raw, normalized, path="$", depth=0):
+    """Raw values normalization would change."""
     if depth > 64:
         raise ValueError("document nesting exceeds inspection limit")
     if isinstance(raw, dict) and isinstance(normalized, dict):
         card = re.fullmatch(r"\$\.cards\[\d+\]", path)
         for key, value in raw.items():
-            target = {"linkedCards": "links", "lifecycleCycles": "cycles"}.get(key, key) if card else key
-            if card and key in skip:
-                continue
+            target = "cycles" if card and key == "lifecycleCycles" else key
             if target not in normalized:
                 yield f"{path}.{key}: field would be removed"
             elif key == "schemaVersion" and path == "$" and value in wb.SUPPORTED_SCHEMA_VERSIONS:
                 continue
             else:
-                yield from _normalization_changes(value, normalized[target], f"{path}.{key}", depth + 1, skip)
+                yield from _normalization_changes(value, normalized[target], f"{path}.{key}", depth + 1)
     elif isinstance(raw, list) and isinstance(normalized, list):
         if len(raw) != len(normalized):
             yield f"{path}: list length changes from {len(raw)} to {len(normalized)}"
         for index, (before, after) in enumerate(zip(raw, normalized)):
-            yield from _normalization_changes(before, after, f"{path}[{index}]", depth + 1, skip)
+            yield from _normalization_changes(before, after, f"{path}[{index}]", depth + 1)
     elif raw is not None and (type(raw) is not type(normalized) or raw != normalized):
         yield f"{path}: existing value changes during normalization"
 
@@ -197,61 +191,61 @@ def _attachment_metadata_size(metadata):
     return size
 
 
-def _validate_document(raw, path, board, report, budget, blob_cache, *, archive=False, recovery=False):
-    if archive and isinstance(raw, list):
-        raw = {"cards": raw}
+# What normalization changes by design: removed card fields (links, inbox acknowledgements; comments fold
+# into the log), and in delegated subtasks the dropped blocker and prerequisites, the blocked state, and
+# the review every result now needs.
+_DROPPED = frozenset({"links", "linkedCards", "comments", "inboxAcknowledged"})
+_BY_DESIGN = re.compile(r"\$\.cards\[\d+\]\.subtasks\[\d+\]\.delegation\.(review\.required|blocker|dependsOn|state)\b")
+
+
+def _expected(card):
+    """A raw card as normalization keeps it by design; nested checklists also load flat in pre-order."""
+    kept = {key: value for key, value in card.items() if key not in _DROPPED}
+    if card.get("subtasks"):
+        kept["subtasks"] = wb.flatten_subtasks(card["subtasks"])
+    if card.get("comments"):
+        kept.pop("log", None)  # Comments merge into it.
+    return kept
+
+
+def _validate_document(raw, path, board, report, budget, blob_cache):
     if not isinstance(raw, dict):
-        raise ValueError("document must be a JSON object (legacy archive arrays are also accepted)")
-    version = raw.get("schemaVersion", 1)
-    if not archive or "schemaVersion" in raw:
-        version = wb.validate_schema(raw)
-        if version < 3 and not recovery:  # Snapshots keep their schema; only the board upgrades.
-            _finding(report, "legacy-schema", f"Supported legacy schema v{version} upgrades to v3 on the next "
-                     "write; legacy card notes move into the notes timeline", path, warning=True)
+        raise ValueError("document must be a JSON object")
+    version = wb.validate_schema(raw)
     log_invalid = False
     cards = raw.get("cards")
     card_ids, numbers = _identities(cards, "cards", nums=True)
-    if not archive:
-        columns, _ = _identities(raw.get("columns"), "columns")
-        if columns != wb.CORE_COLUMN_ID_SET:
-            raise ValueError("board must contain exactly the five core columns")
-    if not archive or "rev" in raw:
-        if type(raw.get("rev")) is not int or raw["rev"] < 0:
-            raise ValueError("revision must be a nonnegative integer")
-    if not archive or "nextNum" in raw:
-        next_num = raw.get("nextNum")
-        if type(next_num) is not int or next_num <= max(numbers, default=0):
-            raise ValueError("nextNum must be an integer greater than every card number")
+    columns, _ = _identities(raw.get("columns"), "columns")
+    if columns != wb.CORE_COLUMN_ID_SET:
+        raise ValueError("board must contain exactly the five core columns")
+    if type(raw.get("rev")) is not int or raw["rev"] < 0:
+        raise ValueError("revision must be a nonnegative integer")
+    next_num = raw.get("nextNum")
+    if type(next_num) is not int or next_num <= max(numbers, default=0):
+        raise ValueError("nextNum must be an integer greater than every card number")
     for card in cards:
         label = f"{path}#{card['id']}"
         if not isinstance(card.get("title", ""), str) or card.get("column") not in wb.CORE_COLUMN_ID_SET:
             raise ValueError(f"{label}: invalid title or column")
-        for canonical, alias in (("links", "linkedCards"), ("cycles", "lifecycleCycles")):
-            if alias in card:
-                if canonical in card and card[canonical] != card[alias]:
-                    raise ValueError(f"{label}: conflicting {canonical}/{alias} aliases")
-                _finding(report, "legacy-alias", f"Unambiguous {alias} will become {canonical}", label, warning=True)
-        for key in ("tags", "links", "linkedCards", "dependsOn", "history", "cycles", "lifecycleCycles",
-                    "comments", "attachments", "subtasks", "verification", "reviews"):
+        if "lifecycleCycles" in card:
+            if "cycles" in card and card["cycles"] != card["lifecycleCycles"]:
+                raise ValueError(f"{label}: conflicting cycles/lifecycleCycles aliases")
+            _finding(report, "legacy-alias", "Unambiguous lifecycleCycles will become cycles", label, warning=True)
+        for key in ("tags", "dependsOn", "history", "cycles", "lifecycleCycles", "attachments", "subtasks",
+                    "verification", "reviews"):
             if key in card and card[key] is not None and not isinstance(card[key], list):
                 raise ValueError(f"{label}: {key} must be an array")
-        for key in ("tags", "links", "linkedCards", "dependsOn"):
+        for key in ("tags", "dependsOn"):
             if any(not isinstance(value, str) for value in (card.get(key) or [])):
                 raise ValueError(f"{label}: {key} must contain strings")
         _subtasks(card.get("subtasks") or [])
-        comments = card.get("comments") or []
-        _identities(comments, "comments")
-        if any(not isinstance(comment.get("text"), str) or not isinstance(comment.get("by"), str) for comment in comments):
-            raise ValueError(f"{label}: comment text and author must be strings")
         attachments = card.get("attachments") or []
         _identities(attachments, "attachments")
         for metadata in attachments:
             try:
                 size = _attachment_metadata_size(metadata)
-                blob = wb.attachment_path(board, metadata["id"])
-                key = (os.path.normcase(str(blob.resolve(strict=False))), metadata["id"],
-                       metadata.get("sha256"), size)
-                # Recovery manifests may reuse IDs across boards, never their storage identity.
+                # Boards may reuse attachment IDs, never their storage: `board` is the canonical board path.
+                key = (os.path.normcase(str(board)), metadata["id"], metadata.get("sha256"), size)
                 if key not in blob_cache:
                     budget.take(size)
                     try:
@@ -265,90 +259,150 @@ def _validate_document(raw, path, board, report, budget, blob_cache, *, archive=
                 _finding(report, "attachment-integrity", exc, label)
                 if isinstance(exc, _LimitError):
                     raise
-        if version >= 3:
-            try:
-                wb.normalize_log(card.get("log"))
-            except wb.WorkflowError as exc:
-                log_invalid = True
-                _finding(report, "log-invalid", exc, label)
-        if not archive:
-            missing = sorted(set(card.get("dependsOn") or []) - card_ids)
-            if missing:
-                _finding(report, "missing-dependency", f"Unresolved dependencies: {', '.join(missing)}", label, warning=True)
-    summary = {"schemaVersion": raw.get("schemaVersion", 1), "rev": raw.get("rev"), "cards": len(cards)}
+        try:
+            wb.normalize_log(card.get("log"))
+        except wb.WorkflowError as exc:
+            log_invalid = True
+            _finding(report, "log-invalid", exc, label)
+        missing = sorted(set(card.get("dependsOn") or []) - card_ids)
+        if missing:
+            _finding(report, "missing-dependency", f"Unresolved dependencies: {', '.join(missing)}", label, warning=True)
+    summary = {"schemaVersion": version, "rev": raw["rev"], "cards": len(cards)}
     if log_invalid:
         return summary  # Normalization would reject the same entries; log-invalid already names them.
     try:
-        if archive:
-            normalized = {**raw, "cards": [wb.normalize_card(card) for card in cards]}
-        else:
-            # The core normalizer owns delegated scope, dependency, review, and
-            # blocker invariants.  Doctor reports its refusal without reproducing
-            # lifecycle rules here.
-            normalized = wb.normalize_doc(copy.deepcopy(raw))
+        # The core normalizer owns delegated scope and review invariants; doctor reports its refusal
+        # without reproducing lifecycle rules here.
+        normalized = wb.normalize_doc(copy.deepcopy(raw))
     except wb.WorkflowError as exc:
         if version == wb.SCHEMA_VERSION:
             _finding(report, "delegation-invalid", exc, path)
             return summary
         raise
-    # normalize_doc migrates pre-v3 notes into the timeline, rewriting `notes` and `log` by design.
-    skip = frozenset({"notes", "log"}) if not archive and version < 3 else frozenset()
-    # Nested checklists load flat in pre-order, and every delegated result needs review: both by design.
-    expected = {**raw, "cards": [{**card, "subtasks": wb.flatten_subtasks(card["subtasks"])}
-                                 if card.get("subtasks") else card for card in cards]}
-    for change in _normalization_changes(expected, normalized, skip=skip):
+    for change in _normalization_changes({**raw, "cards": [_expected(card) for card in cards]}, normalized):
         budget.take()
-        if re.match(r"\$\.cards\[\d+\]\.subtasks\[\d+\]\.delegation\.review\.required:", change):
+        if _BY_DESIGN.match(change):
             continue
-        # A timeline entry normalization would still rewrite (untrimmed summary/body) breaks the v3 log rules.
+        # A timeline entry normalization would still rewrite (untrimmed summary/body) breaks the log rules.
         code = "log-invalid" if re.match(r"\$\.cards\[\d+\]\.log\b", change) else "normalization-loss"
         _finding(report, code, change, path)
     return summary
 
 
+def _inspect_store(store, board, report, budget, blob_cache):
+    """board.db without writing: PRAGMA quick_check, then the document its rows make, checked as board.json
+    was, and each row's indexed columns against its card body."""
+    import sqlite3
+    _safe_path(store)
+    budget.take(store.stat().st_size)
+    # A -wal file means a writer is open or crashed: read it as is, since a normal connection's close would
+    # checkpoint it into the db. Without one, a normal connection removes the files it creates.
+    wal = store.with_name(store.name + "-wal").exists()
+    try:
+        con = sqlite3.connect(store.absolute().as_uri() + ("?mode=ro" if wal else ""), uri=True,
+                              isolation_level=None)
+        try:
+            con.execute("PRAGMA query_only=ON")
+            con.execute("BEGIN")  # One snapshot for every read below.
+            problems = [line for (line,) in con.execute("PRAGMA quick_check")]
+            if problems != ["ok"]:
+                raise sqlite3.DatabaseError("; ".join(problems[:5]).replace("\n", " "))
+            meta = con.execute("SELECT k, v FROM meta ORDER BY rowid").fetchall()
+            rows = con.execute("SELECT * FROM cards ORDER BY pos").fetchall()
+        finally:
+            con.close()
+    except sqlite3.DatabaseError as exc:
+        _finding(report, "store-corrupt", f"the board store is damaged ({exc}); copy the board folder aside "
+                 "before any repair", store)
+        return {}
+    raw = {key: _loads(value) for key, value in meta}
+    raw["cards"] = []
+    for row in rows:
+        try:
+            raw["cards"].append(_loads(row[-1]))
+        except ValueError as exc:
+            raise ValueError(f"card row {row[0]!r}: {exc}") from exc
+    summary = _validate_document(raw, store, board, report, budget, blob_cache)
+    for row, card in zip(rows, raw["cards"]):
+        try:
+            derived = wb._row(card, row[5], row[-1])
+        except (KeyError, TypeError):
+            continue  # A body missing a field normalize_card adds is already a normalization-loss.
+        if derived != row:
+            _finding(report, "row-mismatch", "the row's num/column/doneAt/changedRev/dependsOn columns disagree "
+                     "with its card body, so scoped reads can miss or misfile the card", f"{store}#{row[0]}")
+    return summary
+
+
 def _inspect_data(value, report, budget, blob_cache):
-    result = {"requestedPath": os.fspath(value), "ok": False, "recovery": []}
+    result = {"requestedPath": os.fspath(value), "ok": False}
     start = len(report["blockers"])
     try:
         lexical, board = _board_path(value)
         result.update(lexicalPath=str(lexical), path=str(board))
-        raw = _json_read(lexical, budget)
-        result.update(_validate_document(raw, lexical, board, report, budget, blob_cache))
-        for name in (wb.BACKUP_DIR, wb.ARCHIVE_DIR, "attachments"):
+        data = _read_bytes(lexical, budget)
+        db, tmp = lexical.with_name(wb.DB_NAME), lexical.with_name(wb.DB_NAME + ".tmp")
+        stub = wb._is_stub(data)
+        legacy = not stub and not db.exists()
+        store = db if db.exists() else tmp if stub and tmp.exists() else None
+        if legacy:  # Every core read migrates a legacy board, so doctor checks the JSON itself.
+            result.update(_validate_document(_loads(data), lexical, board, report, budget, blob_cache))
+            _finding(report, "legacy-storage", "pre-0.4 single-file board: the next WorkBoard command migrates "
+                     f"it into {wb.DB_NAME}, keeping these bytes in {wb.BACKUP_DIR}", lexical, warning=True)
+        elif not stub:
+            _finding(report, "split-brain", wb._split_brain(lexical), lexical)
+        elif store is None:
+            _finding(report, "store-missing", f"board.json points at {wb.DB_NAME}, which is missing; restore the "
+                     f"board folder from {wb.deleted_dir()} or a {wb.BACKUP_DIR} copy", db)
+        if store is not None:
+            result.update(_inspect_store(store, board, report, budget, blob_cache))
+        if tmp.exists():
+            _finding(report, "store-leftover", "the migration stopped after its commit point; the next WorkBoard "
+                     "command finishes it" if store == tmp else "an interrupted migration left it; the next "
+                     "migration replaces it" if legacy else "left over from a finished migration; WorkBoard "
+                     "never reads it, safe to delete", tmp, warning=True)
+        # Migration writes .backups and takes the board lock; a migrated board uses neither.
+        for name in (wb.BACKUP_DIR, "attachments") if legacy else ("attachments",):
             directory = lexical.parent / name
             _safe_path(directory)
             if directory.exists() and not directory.is_dir():
                 raise ValueError(f"managed storage is not a directory: {directory}")
         lock = lexical.parent / wb.LOCK_NAME
-        if lock.exists() and not lock.is_file():
+        if legacy and lock.exists() and not lock.is_file():
             raise ValueError(f"board lock is not a regular file: {lock}")
-        for path in _files(lexical.parent, budget):
-            relative = path.relative_to(lexical.parent)
-            if path == lexical:
-                continue
-            recovery = relative.parts[0] in (wb.BACKUP_DIR, wb.ARCHIVE_DIR)
-            if not recovery or path.suffix.lower() != ".json":
-                continue
-            entry = {"path": str(path), "ok": False}
-            before = len(report["blockers"])
-            try:
-                archive = relative.parts[0] == wb.ARCHIVE_DIR
-                recovered = _json_read(path, budget)
-                entry.update(_validate_document(recovered, path, board, report, budget, blob_cache,
-                                                archive=archive, recovery=True))
-                match = re.fullmatch(r"board-(\d+)\.json", path.name)
-                if relative.parts[0] == wb.BACKUP_DIR and match and int(match[1]) != recovered.get("rev"):
-                    raise ValueError("backup filename revision disagrees with its document")
-                entry["ok"] = before == len(report["blockers"])
-            except (OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
-                _finding(report, "recovery-invalid", exc, path)
-                if isinstance(exc, _LimitError):
-                    raise
-            result["recovery"].append(entry)
     except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
         _finding(report, "board-invalid", exc, value)
     result["ok"] = len(report["blockers"]) == start
     return result
+
+
+_SYNCED = re.compile(r"onedrive( - .+)?|dropbox|google ?drive|my drive|icloud ?drive|com~apple~clouddocs"
+                     r"|cloudstorage", re.IGNORECASE)
+_NETWORK_FS = frozenset({"nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "afs", "ceph", "glusterfs",
+                         "fuse.sshfs", "fuse.rclone", "davfs"})
+
+
+def _check_home(report) -> None:
+    """SQLite's write-ahead log needs a local disk: warn when WorkBoard's home is on a network drive or in
+    a synced folder (macOS mounts are not checked)."""
+    home, where = wb.home(), None
+    if os.name == "nt":
+        import ctypes
+        if ctypes.windll.kernel32.GetDriveTypeW(os.path.splitdrive(str(home))[0] + "\\") == 4:  # DRIVE_REMOTE
+            where = "a network drive"
+    elif os.path.exists("/proc/mounts"):  # Linux: the filesystem of the deepest mount holding home.
+        with open("/proc/mounts", encoding="utf-8", errors="replace") as stream:
+            mounts = [fields[1:3] for fields in map(str.split, stream) if len(fields) > 2]
+        held = [mount for mount in mounts if (str(home) + "/").startswith(mount[0].rstrip("/") + "/")]
+        kind = max(held, key=lambda mount: len(mount[0]), default=(None, None))[1]
+        if kind in _NETWORK_FS:
+            where = f"a network filesystem ({kind})"
+    if where is None and any(_SYNCED.fullmatch(part) for part in home.parts):
+        where = "a synced folder"
+    if where:
+        _finding(report, "home-not-local", f"WorkBoard's home is on {where}; SQLite's write-ahead log needs a "
+                 "local disk, so boards there can be corrupted or lose writes: set WORKBOARD_HOME to a local "
+                 "folder", home, warning=True)
 
 
 def _registry(path, report, budget):
@@ -389,6 +443,7 @@ def _check_data(report, board, all_registered):
             _finding(report, "board-invalid", exc, board)
     if current is not None:
         inspect(current)
+    _check_home(report)
     report["registry"], registry = _registry(wb.registry_path(), report, budget)
     entries = report["registry"]["entries"] = []
     for name, value in (registry or {}).get("boards", {}).items():
@@ -410,9 +465,15 @@ def _check_data(report, board, all_registered):
             canonical = _safe_path(path)
             if not path.is_file():
                 entry["error"] = "registered board is missing"
-                _finding(report, "registered-board-missing",
-                         f"board '{name}' is registered but its board.json is gone", path,
-                         category="registry", warning=True)
+                if path.with_name(wb.DB_NAME).exists():
+                    _finding(report, "stub-missing", f"{wb.DB_NAME} holds board '{name}' but its board.json is "
+                             "gone, so WorkBoard cannot open it: recreate board.json as " + json.dumps(
+                                 {"schemaVersion": wb.STORE_SCHEMA, "storage": wb.DB_NAME, "name": name}),
+                             path, category="registry")
+                else:
+                    _finding(report, "registered-board-missing",
+                             f"board '{name}' is registered but its board.json is gone", path,
+                             category="registry", warning=True)
                 continue
             entry.update(ok=True, path=str(canonical))
             directories.setdefault(os.path.normcase(str(canonical)), canonical.parent)
@@ -517,13 +578,11 @@ def _check_installation(report) -> None:
         _finding(report, "service-stale", "the service starts a different command; run: workboard service install",
                  service["location"], category="install", warning=True)
     server = service.get("server")
-    if server and service["schemaMatch"] is False:
+    if server and server.get("version") != __version__:  # A 0.3.x server cannot read board.db stores.
         _finding(report, "server-schema-mismatch",
-                 f"{install.STALE_SERVER} (server v{server.get('version')})", server.get("port"), category="install")
-    elif server and server.get("version") != __version__:
-        _finding(report, "server-version-mismatch",
-                 f"the running server is v{server.get('version')} but this CLI is v{__version__}; "
-                 "run: workboard service restart", server.get("port"), category="install", warning=True)
+                 f"the running server is v{server.get('version')} but this CLI is v{__version__}, and a server "
+                 "of another version may not read these boards; run: workboard service restart",
+                 server.get("port"), category="install")
 
 
 def diagnose(board=None, *, all_registered=False) -> dict:

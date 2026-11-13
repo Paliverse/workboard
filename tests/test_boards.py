@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -249,7 +250,6 @@ class CentralStore(unittest.TestCase):
         self.assertRegex(recovery.name, r"^doomed-\d{8}T\d{6}Z$")
         self.assertFalse(path.parent.exists())
         self.assertEqual(core.load(recovery / "board.json")["rev"], rev)
-        self.assertTrue(list((recovery / core.BACKUP_DIR).iterdir()))
         self.assertEqual(core.attachment_path(recovery / "board.json", blob["id"]).read_bytes(), b"kept")
         self.assertEqual(core.registry_load()["boards"], {})
 
@@ -260,6 +260,28 @@ class CentralStore(unittest.TestCase):
             core.delete_registered_board("doomed", str(again), 1)
         self.assertEqual(core.delete_registered_board("doomed", str(again), None),
                          {"recoveryPath": None, "board": str(again)})
+        self.assertEqual(core.registry_load()["boards"], {})
+
+    def test_delete_waits_for_a_reader_and_moves_the_whole_store(self):
+        # SQLite's last connection deletes board.db-wal/-shm as it closes, mid-move; Windows can't move an open db.
+        path = core.create_board("busy", self.folder("busy"))
+        rev = core.load(path)["rev"]
+        opened, release = threading.Event(), threading.Event()
+
+        def reader():
+            with core.snapshot(path):
+                opened.set()
+                release.wait(5)
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        self.assertTrue(opened.wait(5))
+        threading.Timer(0.5, release.set).start()
+        result = core.delete_registered_board("busy", str(path), rev)
+        thread.join()
+        recovery = Path(result["recoveryPath"])
+        self.assertFalse(path.parent.exists())
+        self.assertEqual(core.load(recovery / "board.json")["rev"], rev)
         self.assertEqual(core.registry_load()["boards"], {})
 
     def test_a_failed_delete_keeps_the_board_registered_and_in_place(self):
@@ -296,10 +318,8 @@ class CentralStore(unittest.TestCase):
         self.assertEqual(list(core.boards_dir().iterdir()), [])
         self.assertEqual(core.registry_load()["boards"], {})
 
-        legacy = self.base / "legacy.json"
-        legacy.write_text(json.dumps({"schemaVersion": 2, "name": "Old title", "rev": 7,
-                                      "cards": [{"id": "keep", "num": 1, "title": "Kept"}]}), encoding="utf-8")
-        path = core.create_board("fragile", folder, core.load(legacy))
+        legacy = {"schemaVersion": 3, "name": "Old title", "rev": 7, "cards": [{"id": "keep", "num": 1, "title": "Kept"}]}
+        path = core.create_board("fragile", folder, core.normalize_doc(legacy))
         saved = core.load(path)
         self.assertEqual((path.parent.name, saved["rev"], saved["name"], saved["cards"][0]["id"]),
                          ("fragile", 8, "Old title", "keep"))

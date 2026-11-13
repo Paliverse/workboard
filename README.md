@@ -27,7 +27,7 @@ Agents work the board from the CLI, you work it in the browser, and every projec
 
 - **People and agents on the same board.** Agents use the `workboard` CLI, which prints one concise line per action or JSON with `--json`. `workboard call` takes JSON requests on stdin for shell-safe text and multiple actions per process; `workboard wait` blocks until a card or subtask changes. You use the browser. Both follow the same lifecycle rules: ownership, dependencies, an optional In Progress limit that only you set (in the browser) and required write-ups. A card owner can delegate complementary subtasks without giving up responsibility for the parent.
 - **One board per project, outside the repository.** Every board lives in `~/.workboard/boards/` and is linked to its project folder. Agents find it from the working directory, and git worktrees of a repository share its board.
-- **Crash-safe concurrent writes.** Every write takes a cross-process lock, is fsynced, atomically replaces the file and keeps rolling backups. A stale writer gets a visible 409 conflict. Nothing is silently overwritten or retried automatically.
+- **Crash-safe concurrent writes.** Every write is one SQLite transaction on the board's `board.db` that changes only the cards it touches and keeps their previous versions for `workboard recover`. A stale writer gets a visible 409 conflict. Nothing is silently overwritten or retried automatically.
 - **Local and dependency-free.** Written in pure Python with only the standard library; the release binaries don't need Python. The server listens on `127.0.0.1` only.
 
 ## Install
@@ -79,7 +79,7 @@ workboard digest   # a short summary of the board
 
 On Windows, `~` is `%USERPROFILE%`. Restart running agent sessions so they load the skill. Give each agent its own label with `--actor NAME` or `WORKBOARD_ACTOR`. Agents only need the CLI; they never need the server. See [docs/agents.md](docs/agents.md).
 
-A card's owner can hand complementary pieces of it to other agents as delegated subtasks and stay responsible for the whole. `workboard handoff` prepares each worker's brief; workers claim their subtask, publish findings and complete it with evidence; the owner reviews results in `workboard inbox`, then accepts them or requests changes. See [Delegated subtasks](docs/cli.md#delegated-subtasks).
+A card's owner can hand complementary pieces of it to other agents as delegated subtasks and stay responsible for the whole. `workboard handoff` prepares each worker's brief; workers claim their subtask, post notes on it and complete it with evidence; the owner reviews results in `workboard inbox`, then accepts them or requests changes, and the card's `done` accepts any results still waiting. See [Delegated subtasks](docs/cli.md#delegated-subtasks).
 
 Codex's default sandbox only lets commands write inside the project, and boards live in `~/.workboard`. `setup` therefore adds `~/.workboard` to the writable folders in Codex's `config.toml` (skip it with `--no-codex`). See [docs/install.md](docs/install.md#codex).
 
@@ -87,20 +87,20 @@ Codex's default sandbox only lets commands write inside the project, and boards 
 
 - Views: Board, Ready now, Inbox, Rework, Canceled, Insights, Git (local and read-only) and Calendar, each with live counts.
 - Drag cards between and within columns. Drag a column sideways to reorder it, or onto another column to stack it vertically. Moves and layout changes can be undone with Ctrl+Z.
-- Cards open in a side panel for title, priority, tags, dependencies, links, subtasks, notes, write-up, files, activity and comments. The card's owner can make subtasks claimable, configure them, and accept results or request changes; workers claim, block, resume and release their delegated subtasks. Lifecycle actions go through the same server-side checks as the CLI.
-- The Inbox lists results waiting for your review, blockers, new findings and running assignments for the current actor, with Accept result, Request changes… and Acknowledge (Acknowledge all for several findings).
+- Cards open in a side panel for title, priority, tags, dependencies, subtasks, notes, write-up, files and activity. The card's owner can make subtasks claimable, configure them, and accept results or request changes; workers claim and complete their delegated subtasks. Lifecycle actions go through the same server-side checks as the CLI.
+- The Inbox lists results waiting for your review and running assignments for the current actor, with Accept result and Request changes….
 - Card notes are a collapsible timeline, newest first and grouped by day. Each entry shows a one-line summary and expands to its markdown body. Pinned notes above it hold durable context such as acceptance criteria, and Add note appends an entry from the browser.
 - Live updates arrive over Server-Sent Events. Only changed cards are patched, and a field you are editing is never overwritten.
 - Search with Ctrl/Cmd+K or `/`, filter by status, priority, owner, outcome, rework or tag, and choose a System, Light or Dark theme. `C` creates a card, `[` toggles the sidebar and Esc closes the top layer.
-- A board switcher moves between registered boards in the same tab, and the board menu exports the board as a ZIP.
+- A board switcher moves between registered boards in the same tab.
 
 ## How it works
 
 - **One server for all boards.** A single per-user server at `http://127.0.0.1:7891/` serves every registered board at `/b/<board>/`. The root page lists your boards. `workboard setup` installs it as a background service; `workboard serve` runs it in the foreground.
 - **A registry.** `~/.workboard/boards.json` records each board's name, its folder under `~/.workboard/boards/` and its linked project folder. `workboard init` creates and links a board, `workboard link` links it again after the project moves, and `workboard boards` lists them.
-- **One store for every board.** Each board is a folder `~/.workboard/boards/<dir>/` holding `board.json` (the source of truth), `.backups/` (the 10 newest snapshots), `archive/` (swept Done cards) and `attachments/` (uploaded files). Nothing is written into your projects, and backing up `~/.workboard` backs up every board. A board deleted from the browser moves to `~/.workboard/deleted/`.
+- **One store for every board.** Each board is a folder `~/.workboard/boards/<dir>/` holding `board.db` (a SQLite database with one row per card) and `attachments/` (uploaded files). Nothing is written into your projects, and backing up `~/.workboard` while no WorkBoard process runs backs up every board. A board deleted from the browser moves to `~/.workboard/deleted/`.
 - **Found from the project.** Board commands use the board linked to the current folder or its nearest linked parent. In a git worktree they use the board of the main checkout, wherever the worktree is. `--board NAME` picks any other board.
-- **The CLI doesn't need the server.** Board commands lock and write the file directly. They never start a server or open a browser.
+- **The CLI doesn't need the server.** Board commands read and write the board's store directly. They never start a server or open a browser.
 - **Revision guards.** CLI mutations on a card you don't hold pass `--expected-rev`, which conflicts only when *that card* changed. The browser conflicts when the board changed. Either way you get a 409 and nothing is overwritten.
 
 Details: [docs/architecture.md](docs/architecture.md).
@@ -113,8 +113,9 @@ Environment variables:
 |---|---|---|
 | `WORKBOARD_HOME` | `~/.workboard` | Boards, registry, settings, server state, logs and the Windows service runtime |
 | `WORKBOARD_PORT` | `7891` | Server port on `127.0.0.1` |
-| `WORKBOARD_ACTOR` | `agent` | Actor label recorded on CLI writes. The browser records `user`. |
+| `WORKBOARD_ACTOR` | unset | Actor label recorded on CLI writes. The browser records `user`. |
 | `WORKBOARD_DEFAULT_BOARD` | unset | Board name or project folder to use when `--board` is not given, instead of looking up from the current directory |
+| `WORKBOARD_USAGE_LOG` | unset | `0` turns off the local usage log (`~/.workboard/logs/usage-*.jsonl`); see [Usage log](docs/architecture.md#usage-log) |
 
 Settings that should persist go in the optional `~/.workboard/config.json`. Both keys are optional:
 
@@ -123,7 +124,7 @@ Settings that should persist go in the optional `~/.workboard/config.json`. Both
 ```
 
 - Port: `serve --port`, else `WORKBOARD_PORT`, else `port`, else `7891`.
-- CLI actor: `--actor`, else `WORKBOARD_ACTOR`, else `actor`, else `agent`. The browser keeps its own `user` label.
+- CLI actor: `--actor`, else `WORKBOARD_ACTOR`, else `actor`. Without one, writes fail with `invalid` and reads act as `agent`. The browser keeps its own `user` label.
 
 WorkBoard never writes `config.json`. Changes apply to the next command; restart the service (`workboard service restart`) after changing `port`. An unknown key or an invalid value fails with an `invalid` error that names the file.
 
@@ -134,7 +135,7 @@ workboard version --check   # compare with the latest release
 workboard upgrade           # upgrade through the channel you installed with
 ```
 
-`workboard upgrade` stops the running server, upgrades the way you installed (`npm install -g --prefer-online @paliverse/workboard@latest`, or the install script again), refreshes installed skills and restarts the service. `workboard upgrade --dry-run` prints the plan without running it. 0.2.0 switches a board to a format 0.1.x can't read only when that board first uses delegated subtasks; see [Upgrading to 0.2.0](docs/install.md#upgrading-to-020).
+`workboard upgrade` stops the running server, upgrades the way you installed (`npm install -g --prefer-online @paliverse/workboard@latest`, or the install script again), refreshes installed skills and restarts the service. `workboard upgrade --dry-run` prints the plan without running it. 0.4.0 moves each board into `board.db` on its first use, which earlier versions can't read; see [Upgrading to 0.4.0](docs/install.md#upgrading-to-040).
 
 ## Uninstall
 
@@ -153,7 +154,7 @@ Then remove the program: `npm uninstall -g @paliverse/workboard`, or delete the 
 - [Agents](docs/agents.md): how agents find the board, harness skill paths, actors, `call` requests and scripting; the protocol itself is the bundled skill
 - [CLI reference](docs/cli.md): every command and flag
 - [HTTP API](docs/http-api.md): server and per-board endpoints
-- [Architecture](docs/architecture.md): modules, the board store and lookup, locking and the server
+- [Architecture](docs/architecture.md): modules, the board store and its migration, lookup, the server and the usage log
 - [Releasing](docs/releasing.md): the maintainer release process
 
 ## Contributing

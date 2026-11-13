@@ -12,7 +12,7 @@ npm install -g @paliverse/workboard
 
 This needs Node.js 18 or newer. The `@paliverse/workboard` package installs the `workboard` and `wb` commands. They launch a prebuilt binary from a platform package (`@paliverse/workboard-win32-x64`, `@paliverse/workboard-darwin-arm64`, `@paliverse/workboard-linux-x64`, …), which npm selects automatically as an optional dependency. Node.js is only used to launch the binary.
 
-On Windows, npm installs the commands as `workboard.cmd` and `wb.cmd` shims, which pass every argument through `cmd.exe`: it cuts text at line breaks and mangles quotes, `%`, `^` and `&`, and Rust and Node programs refuse to start a `.cmd` with such arguments. So the package also copies a small launcher to `workboard.exe` and `wb.exe` in the same folder (npm's global prefix, usually `%APPDATA%\npm`). Lookups that follow `PATHEXT`, such as `cmd.exe`, Bash and Python's `subprocess`, pick the `.exe` first; it runs the platform package's `workboard.exe` with the arguments untouched. npm copies it after install, and every run through the `.cmd` shim copies it again if it is missing or outdated, so `--ignore-scripts` installs get it too. Only npm's global layout gets the launcher; other package managers keep their own shims. If `where workboard` lists `workboard.cmd` before any `workboard.exe`, scripts should spawn the real `workboard.exe` that `workboard version --json` reports as `executable`; see [Windows scripts](agents.md#machine-readable-output).
+On Windows, npm installs the commands as `workboard.cmd` and `wb.cmd` shims, which pass every argument through `cmd.exe`: it cuts text at line breaks and mangles quotes, `%`, `^` and `&`, and Rust and Node programs refuse to start a `.cmd` with such arguments. So the package also copies a small launcher to `workboard.exe` and `wb.exe` in the same folder (npm's global prefix, usually `%APPDATA%\npm`). Lookups that follow `PATHEXT`, such as `cmd.exe` and Python's `subprocess`, pick the `.exe` first; it runs the platform package's `workboard.exe` with the arguments untouched. Bash (Git Bash, MSYS, omp's bash) runs npm's extensionless `workboard` and `wb` sh shims instead, so the package rewrites them to run the binary directly rather than through Node.js; npm's Node.js line stays in them as the fallback. The package's postinstall does both, and every run through npm's own shims does them again if the launchers are missing or npm restored its original sh shims, so `--ignore-scripts` installs get them too. Only npm's global layout gets the launcher; other package managers keep their own shims. If `where workboard` lists `workboard.cmd` before any `workboard.exe`, scripts should spawn the real `workboard.exe` that `workboard version --json` reports as `executable`; see [Windows scripts](agents.md#machine-readable-output).
 
 ### Install script
 
@@ -136,7 +136,7 @@ The service runs `workboard serve --service` at login. It serves every registere
 
 ```sh
 workboard service install    # register and start (safe to repeat)
-workboard service status     # registration, running server, version and schema match
+workboard service status     # registration, running server, version match
 workboard service restart    # stop and start again
 workboard service remove     # stop and unregister
 ```
@@ -176,13 +176,25 @@ The `script` channel is detected by the `install-receipt.json` next to the execu
 
 After updating by hand, run `workboard skills install --refresh` and `workboard service restart`.
 
-`workboard service restart` checks the server it started. If that server is another version, or can't read schema 4 boards, the registered service points at another installation: the command exits 1 with `state`, names the running server's version and executable, and asks you to run `workboard service install`, then `workboard service restart`. `upgrade` restarts through the new version's `service restart`, so the same check guards it. If a later step fails after `upgrade` stopped the server, the error says so; `workboard service restart` brings it back.
+`workboard service restart` checks the server it started. If that server is another version, the registered service points at another installation: the command exits 1 with `state`, names the running server's version and executable, and asks you to run `workboard service install`, then `workboard service restart`. `upgrade` restarts through the new version's `service restart`, so the same check guards it. If a later step fails after `upgrade` stopped the server, the error says so; `workboard service restart` brings it back.
 
-`workboard service status` and `workboard doctor` (`server-schema-mismatch`) flag a running server that can't read boards that use delegated subtasks.
+`workboard service status` and `workboard doctor` (`server-schema-mismatch`) flag a running server whose version differs from the CLI's, since it may not read your boards.
+
+### Upgrading to 0.4.0
+
+0.4.0 keeps each board in a SQLite file, `board.db`, instead of one large `board.json` (see [architecture.md](architecture.md#persistence)).
+
+- **Boards migrate on first use.** The first 0.4.0 command or server request that opens a board moves it into `board.db` and replaces `board.json` with a small stub that points at it. There is nothing to run. Cards that `sweep` had moved to `archive/` become cards on the board again; cards that `columns-core --apply` removed along with their column stay out.
+- **The original stays.** The `board.json` a board had before the migration is kept as `~/.workboard/boards/<dir>/.backups/board-<rev>.json`, where `<rev>` is its last revision. WorkBoard never changes or deletes it, and the older snapshots in `.backups/` stay as they were.
+- **Restart the server.** `workboard upgrade` does it. After a manual update (npm, the install script or a new archive), run `workboard service restart`. A 0.3.x server that keeps running can't read migrated boards: its pages and API fail with `unsupported board schemaVersion 5` until the restart. Update every installation that writes your boards, and restart running agent sessions so they pick up the refreshed skill.
+- **Older versions refuse migrated boards.** 0.3.x and earlier CLIs and servers reject the stub with `unsupported board schemaVersion 5` instead of reading the board as empty, and they never write it.
+- **There is no downgrade, except restoring the pre-migration file.** To go back for one board, reinstall the version you used before and stop its server and your agents. In the board's folder, move `board.db` (and `board.db-wal` and `board.db-shm`, if present) out of the folder, then copy `.backups/board-<rev>.json` over `board.json`. Every change made since the migration is lost. With both a full `board.json` and a `board.db` in the folder, 0.4.0 refuses to open the board instead of choosing one.
+- **Removed commands.** `export` and `import` are gone: to back up or move boards, copy `~/.workboard` (see [Backups](#backups)). `sweep`, `next`, `ack`, `workpad`, `subtask block`, `resume` and `release`, subtask prerequisites, card links and comments are gone too; existing comments become timeline notes. The [CHANGELOG](../CHANGELOG.md) lists every change.
+- **Windows binary installs:** `upgrade` continues in a temporary copy, so your shell never sees its exit code. Run `workboard service status` or `workboard doctor` afterwards.
 
 ### Upgrading to 0.2.0
 
-0.2.0 adds schema 4 for delegated subtasks. A board stays schema 3, which 0.1.x reads and writes, until its first delegated subtask or inbox acknowledgement (`ack`). That write moves the board to schema 4, and from then on 0.1.x CLIs and servers can neither read nor write it. Boards that never use delegation keep working with 0.1.x, and a schema 4 board never goes back to 3.
+0.2.0 adds schema 4 for delegated subtasks. A board stays schema 3, which 0.1.x reads and writes, until its first delegated subtask or inbox acknowledgement (`ack`). That write moves the board to schema 4, and from then on 0.1.x CLIs and servers can neither read nor write it. Boards that never use delegation keep working with 0.1.x, and a schema 4 board never goes back to 3. From 0.4.0 on, every board moves to `board.db` on first use instead; see [Upgrading to 0.4.0](#upgrading-to-040).
 
 - **Restart the server before the first delegated write.** `workboard upgrade` does it. After a manual update (npm, the install script or a new archive), run `workboard service restart`. Before delegating on a board, update every installation that writes it, and restart running agent sessions.
 - **Windows binary installs:** `upgrade` continues in a temporary copy, so your shell never sees its exit code. Run `workboard service status` or `workboard doctor` afterwards.
@@ -190,7 +202,7 @@ After updating by hand, run `workboard skills install --refresh` and `workboard 
 
 ## Backups
 
-Every board lives in `~/.workboard/boards/`, outside your repositories, so committing a project doesn't save its board. Include `~/.workboard` in your backups: `boards/` and `boards.json` hold every board and its project link. Each board also keeps its 10 newest revisions in `.backups/` for `workboard recover`; that protects against a bad write, not against losing the disk. Boards deleted from the board chooser stay in `~/.workboard/deleted/` until you delete them.
+Every board lives in `~/.workboard/boards/`, outside your repositories, so committing a project doesn't save its board. Include `~/.workboard` in your backups: `boards/` and `boards.json` hold every board and its project link. Copy it while no agent, command or browser tab is writing, and keep each `board.db` with its `board.db-wal`: a copy taken during a write can miss the newest changes, and `workboard doctor` checks a copied store. Each board's `board.db` also keeps the previous version of every card a revision changed, for up to the last 2,000 revisions and about 64 MB, which `workboard recover` restores; that protects against a bad write, not against losing the disk. Boards deleted from the board chooser stay in `~/.workboard/deleted/` until you delete them.
 
 ## Uninstall
 
@@ -234,12 +246,15 @@ workboard doctor --json   # full report: {"ok", "blockers", "warnings", ...}
 | `doctor` says `workboard` on `PATH` is a different installation | You have two installations. Uninstall one, or reorder `PATH`. |
 | `port 7891 is in use by another program` | Stop that program, or choose another port with `workboard serve --port N`, the `WORKBOARD_PORT` environment variable or `port` in `~/.workboard/config.json` (the background service reads the file). |
 | Browser shows an old version after an upgrade | `workboard service restart`. `doctor` and `service status` report a version mismatch. |
+| The browser or API fails with `unsupported board schemaVersion 5` | A 0.3.x server is still running and can't read boards 0.4.0 migrated. Run `workboard service restart`; if it names another executable, run `workboard service install`, then `workboard service restart`. Any 0.3.x CLI left on `PATH` fails the same way (`doctor` warns `path-other-install`). |
 | The server doesn't start at login | Run `workboard service status`, read `~/.workboard/logs/server.log`, then `workboard service install` again. Run `workboard serve` in a terminal to see errors directly. |
 | An agent doesn't use the board | `workboard skills status`, then restart the agent session. Check that the agent runs inside the project, a subfolder or a worktree of it, or passes `--board NAME`. |
 | Codex can't write the board (permission denied or read-only file system) | Run `workboard setup`, or add the snippet from [Codex](#codex), then restart the Codex session. `workboard doctor` warns with `codex-sandbox` while the grant is missing. |
 | `no board for <dir>` | Run the command inside a project that has a board, pass `--board NAME`, or create one with `workboard init`. If the project moved, run `workboard link NAME` in its new location; `workboard boards` lists the names. |
 | `doctor` warns `project-missing` | The linked project folder moved or was deleted. Run `workboard link NAME` in its new location. |
-| `error [lock]` | Another writer held the board for more than 5 s. Find the stuck process; don't delete the board's `.board.lock` while writers are running. |
+| `error [lock]` | Other writers kept the board's store busy for 30 s, or the registry lock (`init`, `link`, board deletion) for 5 s. Nothing was written; run the command again. |
+| `doctor` warns `home-not-local` | `WORKBOARD_HOME` is on a network drive, a network filesystem or in a synced folder such as OneDrive or Dropbox. SQLite's write-ahead log needs a local disk, so boards there can be corrupted or lose writes. Stop your agents and the server (`workboard service remove`), move `~/.workboard` to a local folder, set `WORKBOARD_HOME` to it, then run `workboard setup`. |
+| `… holds a full board document next to board.db` | Someone restored `board.json` by hand while `board.db` still exists, and WorkBoard never merges the two. Move `board.json` aside to keep `board.db`, or move `board.db` (with `board.db-wal` and `board.db-shm`) aside to migrate `board.json` again. |
 | `error [scope]` | A write would cross a symbolic link or junction, for example when `~/.workboard` is a link. Set `WORKBOARD_HOME` to the real folder instead. |
 | `error [invalid]` naming `config.json` | Fix or delete `~/.workboard/config.json`. It may only hold `port` (1–65535) and `actor`. See the [README](../README.md#configuration). |
 | `doctor` warns about legacy files | They are left over from the pre-release per-board viewer and are no longer used. Delete them after stopping any old viewer process. |

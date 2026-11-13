@@ -29,7 +29,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-import zipfile
 from importlib import resources
 from pathlib import Path
 from unittest import mock
@@ -87,13 +86,7 @@ def life(ctx, card_id, action, details=None, **kwargs):
 
 
 def current(ctx, card_id):
-    status, data, _ = http_req(ctx["url"] + f"/api/card/{card_id}")
-    assert status == 200, (status, data)
-    return data["card"]
-
-
-def full_post(ctx, doc, **kwargs):
-    return mutate(ctx, "/board.json", doc, method="POST", **kwargs)
+    return next(card for card in board(ctx)["cards"] if card["id"] == card_id)
 
 
 def free_port() -> int:
@@ -244,18 +237,15 @@ class MultiBoardApiTest(unittest.TestCase):
 
     def test_two_boards_are_served_with_isolated_state(self):
         a, b = self.new_board(), self.new_board()
+        before_b = core.load(b["path"])
         card = create(a, "Only on A")
-        before_b = b["path"].read_bytes()
         doc_a, doc_b = board(a), board(b)
         self.assertEqual((doc_a["name"], doc_b["name"]), (a["name"], b["name"]))
         self.assertEqual([c["id"] for c in doc_a["cards"]], [card["id"]])
         self.assertEqual(doc_b["cards"], [])
         self.assertEqual(http_req(a["url"] + "/rev")[1], doc_a["rev"])
         self.assertEqual(http_req(b["url"] + "/rev")[1], doc_b["rev"])
-        self.assertEqual(http_req(a["url"] + f"/api/card/{card['id']}")[0], 200)
-        self.assertEqual(http_req(b["url"] + f"/api/card/{card['id']}")[0], 404)
-        self.assertEqual(http_req(b["url"] + "/api/bootstrap")[1], {"state": doc_b})
-        self.assertEqual(b["path"].read_bytes(), before_b)
+        self.assertEqual(core.load(b["path"]), before_b)
 
     def test_sse_notifies_only_the_changed_board(self):
         a, b = self.new_board(), self.new_board()
@@ -284,8 +274,7 @@ class MultiBoardApiTest(unittest.TestCase):
         self.assertEqual(http_req(self.origin + "/b/no-such-board/board.json", "POST", {"baseRev": 0})[0], 404)
         missing = self.new_board()
         missing["path"].unlink()
-        for route in ("/board.json", "/api/bootstrap", "/rev", "/api/ready", "/api/stats", "/api/git",
-                      "/api/cards?column=task"):
+        for route in ("/board.json", "/board.json?since=0", "/rev", "/api/ready", "/api/stats", "/api/git"):
             status, body, _ = http_req(missing["url"] + route)
             self.assertEqual((status, body.get("error")), (410, "board_missing"), route)
             self.assertEqual(Path(body["board"]), missing["path"].resolve())
@@ -366,7 +355,7 @@ class MultiBoardApiTest(unittest.TestCase):
         self.assertEqual(status, 200, uploaded)
         attachment_url = target["url"] + f"/api/card/{card['id']}/attachments/{uploaded['attachment']['id']}"
         identity = self.listing()[target["name"]]["board"]
-        original = target["path"].read_bytes()
+        original = core.load(target["path"])
         url = self.origin + "/api/boards/delete"
         payload = {"name": target["name"], "board": identity, "baseRev": uploaded["rev"]}
         self.assertEqual(http_req(url, "POST", payload, {"Content-Type": "text/plain"})[0], 415)
@@ -375,14 +364,13 @@ class MultiBoardApiTest(unittest.TestCase):
         self.assertEqual(http_req(url, "POST", {**payload, "board": str(keep["path"])})[0], 409)
         self.assertEqual(http_req(url, "POST", {**payload, "baseRev": uploaded["rev"] - 1})[0], 409)
         self.assertEqual(http_req(url, "POST", {key: payload[key] for key in ("name", "board")})[0], 400)
-        self.assertEqual(target["path"].read_bytes(), original)
+        self.assertEqual(core.load(target["path"]), original)
         status, data, _ = http_req(url, "POST", payload)
         self.assertEqual(status, 200, data)
         self.assertEqual((data["ok"], data["board"]), (True, identity))
         recovered = Path(data["recoveryPath"])
         self.assertEqual(recovered.parent, core.deleted_dir())
-        self.assertEqual((recovered / "board.json").read_bytes(), original)
-        self.assertTrue((recovered / ".backups").is_dir())
+        self.assertEqual(core.load(recovered / "board.json"), original)
         self.assertEqual((recovered / "attachments" / uploaded["attachment"]["id"]).read_bytes(),
                          b"recovery attachment bytes")
         self.assertFalse(target["path"].parent.exists())
@@ -407,7 +395,7 @@ class MultiBoardApiTest(unittest.TestCase):
 
     # ----- per-board endpoints (preview test_webui.py) -----
 
-    def test_edit_order_and_beacon(self):
+    def test_edit_order_and_structure(self):
         ctx = self.new_board()
         first, second = create(ctx, "First"), create(ctx, "Second")
         status, edited, _ = mutate(ctx, f"/api/card/{second['id']}", {
@@ -419,36 +407,17 @@ class MultiBoardApiTest(unittest.TestCase):
         assert edited["card"]["createdAt"] == second["createdAt"]
         assert [(st["id"], st["done"]) for st in edited["card"]["subtasks"]] == [("s1", False), ("s2", True)]
         assert [c["id"] for c in board(ctx)["cards"]][-2:] == [second["id"], first["id"]]
-        doc = board(ctx)
-        doc["columns"][0], doc["columns"][1] = doc["columns"][1], doc["columns"][0]
-        doc["columns"][1]["stackUnder"] = doc["columns"][0]["id"]
-        status, saved, _ = full_post(ctx, doc)
-        assert status == 200 and saved["document"]["columns"][1]["stackUnder"] == doc["columns"][0]["id"]
         columns = board(ctx)["columns"]
         columns[2]["stackUnder"] = columns[1]["id"]
         status, stacked, _ = mutate(ctx, "/api/structure", {"operation": {
             "type": "update-columns", "columns": columns, "columnMoves": {}}})
-        assert status == 200 and stacked["document"]["columns"][2]["stackUnder"] == columns[0]["id"]
+        assert status == 200 and board(ctx)["columns"][2]["stackUnder"] == columns[1]["id"], stacked
         status, titled, _ = mutate(ctx, "/api/structure", {"operation": {
             "type": "update-document", "changes": {"title": "Preview test board"}}})
-        assert status == 200 and titled["document"]["title"] == "Preview test board"
-        doc = board(ctx)
-        doc["rev"] += 1
-        status, saved, _ = http_req(ctx["url"] + "/board.json", "POST", doc,
-                                    {"Content-Type": "text/plain;charset=UTF-8", "Origin": ctx["origin"]})
-        assert status == 200 and saved["document"]["rev"] == doc["rev"], saved
-        assert full_post(ctx, doc, rev=doc["rev"] - 1)[0] == 409
-        status, sorted_doc, _ = mutate(ctx, "/api/structure", {
-            "operation": {"type": "sort-cards", "mode": "created-desc"}})
+        assert status == 200 and board(ctx)["title"] == "Preview test board"
+        status, _, _ = mutate(ctx, "/api/structure", {"operation": {"type": "sort-cards", "mode": "created-desc"}})
         expected = sorted(board(ctx)["cards"], key=lambda c: (c["createdAt"], c["num"]), reverse=True)
-        assert status == 200
-        assert [c["id"] for c in sorted_doc["document"]["cards"]] == [c["id"] for c in expected]
-        assert board(ctx)["cards"] == sorted_doc["document"]["cards"]
-        status, page, _ = http_req(ctx["url"] + "/api/cards?column=task&offset=1&limit=1")
-        assert status == 200 and page["cards"] == expected[1:2] and page["total"] == len(expected)
-        bad_columns = board(ctx)
-        bad_columns["columns"].append({"id": "sixth", "name": "Sixth"})
-        assert full_post(ctx, bad_columns)[0] == 422
+        assert status == 200 and board(ctx)["cards"] == expected
         claimed = create(ctx, "Add directly to active column", column="inprogress")
         assert claimed["activeOwner"] == "Ada" and claimed["claimedAt"]
         assert life(ctx, claimed["id"], "move", {"to": "task"})[0] == 200
@@ -488,22 +457,15 @@ class MultiBoardApiTest(unittest.TestCase):
         assert mutate(ctx, "/api/structure", {"operation": {"type": "create-card", "card": {
             "id": str(uuid.uuid4()), "title": "Cannot bypass WIP by creation", "column": "inprogress"}}})[0] == 409
         assert life(ctx, wid, "start", actor=other)[0] == 409
-        assert life(ctx, wid, "cancel", {"reason": "not mine"}, actor=other)[0] == 409
         assert mutate(ctx, "/api/structure", {"operation": {"type": "delete-card", "cardId": wid}},
                       actor=other)[0] == 409
-        snapshot_move = board(ctx)
-        next(c for c in snapshot_move["cards"] if c["id"] == wid)["column"] = "task"
-        assert full_post(ctx, snapshot_move, actor=other)[0] == 409
         assert mutate(ctx, f"/api/card/{wid}", {"card": {"notes": "Collaborative notes"}}, actor=other)[0] == 200
-        assert life(ctx, wid, "workpad", actor=other)[0] == 200
-        notes = current(ctx, wid)["notes"]
-        assert "Collaborative notes" in notes and "## Acceptance criteria" in notes and "## Verification" in notes
-        assert life(ctx, wid, "workpad", actor=other)[1]["card"]["notes"] == notes
+        assert current(ctx, wid)["notes"] == "Collaborative notes"
         # Field edits, reordering and board edits never check card ownership.
         status, edited, _ = mutate(ctx, f"/api/card/{wid}", {
             "card": {"title": "Retitled by a reviewer", "priority": "critical", "tags": ["review"]},
             "position": {"after": capacity["id"]}, "document": {"title": "Shared board"}}, actor=other)
-        assert status == 200 and edited["positioned"] and edited["document"]["title"] == "Shared board"
+        assert status == 200 and edited["positioned"] and board(ctx)["title"] == "Shared board"
         assert (edited["card"]["title"], edited["card"]["priority"], edited["card"]["tags"],
                 edited["card"]["activeOwner"]) == ("Retitled by a reviewer", "critical", ["review"], owner)
         assert life(ctx, wid, "takeover", actor=other)[0] == 422
@@ -523,7 +485,7 @@ class MultiBoardApiTest(unittest.TestCase):
         assert life(ctx, child["id"], "dependencies", {"ids": [wid]})[0] == 200
         assert life(ctx, child["id"], "start")[0] == 409
         assert life(ctx, wid, "cancel", {"reason": "again"})[0] == 409
-        assert life(ctx, wid, "rework", {"reason": "Requirement returned"})[0] == 200
+        assert life(ctx, wid, "reopen", {"reason": "Requirement returned", "as": "task"})[0] == 200
         reworked = current(ctx, wid)
         assert reworked["column"] == "task" and reworked["outcome"] is None and reworked["doneAt"] is None
         assert reworked["reworkReason"] == "Requirement returned" and reworked["cycles"][-1]["outcome"] == "canceled"
@@ -535,60 +497,29 @@ class MultiBoardApiTest(unittest.TestCase):
         assert current(ctx, wid)["reworkReason"] is None
         assert life(ctx, child["id"], "start")[0] == 200
 
-    def test_raw_protection_and_followup(self):
+    def test_raw_protection_and_recycled_identity(self):
         ctx = self.new_board()
-        done = create(ctx, "Completed source")
-        assert life(ctx, done["id"], "start")[0] == 200
-        assert life(ctx, done["id"], "complete", {"writeup": "Shipped"})[0] == 200
         target = create(ctx, "Protected collaboration")
         tid = target["id"]
-        stale_snapshot = board(ctx)
-        status, added, _ = mutate(ctx, f"/api/card/{tid}/comments", {
-            "operation": {"type": "add", "text": "Must survive undo"}})
-        assert status == 200
-        revision = board(ctx)["rev"]
-        assert full_post(ctx, stale_snapshot, rev=revision)[0] == 422
-        assert full_post(ctx, stale_snapshot, rev=revision - 1)[0] == 409
-        assert current(ctx, tid)["comments"] == [added["comment"]]
         for forged in ({"outcome": "nonsense"}, {"activeOwner": "Mallory"},
                        {"lifecycleCycles": [{"writeup": "forged"}]}, {"history": []},
                        {"num": target["num"] + 99}, {"createdAt": "1900-01-01"}, {"updatedAt": "1900-01-01"}):
             assert mutate(ctx, f"/api/card/{tid}", {"card": forged})[0] == 422, forged
-        stripped = board(ctx)
-        for raw in stripped["cards"]:
-            for key in ("comments", "attachments", "history", "updatedAt"):
-                raw.pop(key, None)
-        status, data, _ = full_post(ctx, stripped)
-        assert status == 200 and current(ctx, tid)["comments"] == [added["comment"]], data
-        dropped = board(ctx)
-        dropped["cards"] = [c for c in dropped["cards"] if c["id"] != tid]
-        assert full_post(ctx, dropped)[0] == 422
         for operation in (
             {"type": "create-card", "card": {"id": str(uuid.uuid4()), "title": "forged", "outcome": "canceled"}},
             {"type": "create-card", "card": {"id": str(uuid.uuid4()), "title": "premature completion",
                                              "column": "done"}},
-            {"type": "delete-card", "cardId": tid, "card": {"comments": []}},
-            {"type": "create-follow-up", "sourceCardId": done["id"],
-             "sourceCard": {"id": done["id"], "outcome": "canceled"},
-             "card": {"id": str(uuid.uuid4()), "title": "forged source"}},
+            {"type": "delete-card", "cardId": tid, "card": {"history": []}},
         ):
             assert mutate(ctx, "/api/structure", {"operation": operation})[0] == 422, operation
-        source_before = current(ctx, done["id"])
-        follow_id = str(uuid.uuid4())
-        status, follow, _ = mutate(ctx, "/api/structure", {"operation": {
-            "type": "create-follow-up", "sourceCardId": source_before["id"],
-            "card": {"id": follow_id, "title": "Real follow-up", "column": "task"}}})
-        assert status == 200 and source_before["id"] in follow["card"]["links"], follow
-        source_after = current(ctx, source_before["id"])
-        assert follow_id in source_after["links"]
-        assert (source_after["outcome"], source_after["writeup"], source_after["doneAt"]) == (
-            source_before["outcome"], source_before["writeup"], source_before["doneAt"])
         dependent = create(ctx, "Unresolved after deletion")
         assert life(ctx, dependent["id"], "dependencies", {"ids": [tid]})[0] == 200
         assert mutate(ctx, "/api/structure", {"operation": {"type": "delete-card", "cardId": tid}})[0] == 200
         assert life(ctx, dependent["id"], "start")[0] == 409
-        assert mutate(ctx, "/api/structure", {"operation": {
-            "type": "create-card", "card": {"id": tid, "title": "Recycled identity"}}})[0] == 409
+        # A client-chosen ID must not reuse a card's, nor one that a remaining card still names.
+        for reused in (tid, dependent["id"]):
+            assert mutate(ctx, "/api/structure", {"operation": {
+                "type": "create-card", "card": {"id": reused, "title": "Recycled identity"}}})[0] == 409, reused
 
     def test_done_writeup_cannot_be_blanked_by_an_edit(self):
         ctx = self.new_board()
@@ -623,7 +554,7 @@ class MultiBoardApiTest(unittest.TestCase):
                 events.append(stream.next_event(timeout=max(0.1, deadline - time.monotonic())))
         finally:
             stream.close()
-        saved = json.loads(ctx["path"].read_text(encoding="utf-8"))
+        saved = core.load(ctx["path"])
         entry = next(card for card in saved["cards"] if card["id"] == cid)["log"][-1]
         self.assertEqual((saved["rev"], entry["summary"], entry["body"], entry["by"]),
                          (before + 1, "Parser shipped", "- `abc1234`\n- 12 tests", "Ada"))
@@ -634,53 +565,41 @@ class MultiBoardApiTest(unittest.TestCase):
         status, moved, _ = life(ctx, cid, "note", {"summary": "two\nlines"})
         self.assertEqual((status, moved["summaryMoved"], moved["item"]["summary"], moved["item"]["body"]),
                          (200, True, "two", "two\nlines"))
-        on_disk = ctx["path"].read_bytes()
+        on_disk = core.load(ctx["path"])
         status, error, _ = mutate(ctx, f"/api/card/{cid}", {"card": {"log": [{**entry, "summary": "Rewritten"}]}})
         self.assertEqual(status, 422, error)
         self.assertIn("'log' is server-owned", error["error"])
-        self.assertEqual(ctx["path"].read_bytes(), on_disk)
+        self.assertEqual(core.load(ctx["path"]), on_disk)
 
-    def test_legacy_board_is_served_as_a_timeline_without_writing(self):
+    def test_delta_feed_and_answers_without_the_document(self):
         ctx = self.new_board()
-        create(ctx, "Legacy notes")
-        raw = json.loads(ctx["path"].read_text(encoding="utf-8"))
-        raw["schemaVersion"] = 2
-        raw["cards"][0].pop("log", None)
-        raw["cards"][0]["notes"] = ("Pinned context\n\n"
-                                    "[2026-09-01] Shipped the parser. Tests pass.\n[2026-09-02 ada] Fixed nits")
-        ctx["path"].write_bytes(json.dumps(raw, indent=2).encode("utf-8"))
-        before = ctx["path"].read_bytes()
+        kept, edited, gone = (create(ctx, title) for title in ("Kept", "Edited", "Gone"))
+        since = board(ctx)["rev"]
+        answers = [life(ctx, edited["id"], "note", {"summary": "Changed after the snapshot"}),
+                   mutate(ctx, f"/api/card/{edited['id']}", {"card": {"title": "Edited again"}}),
+                   mutate(ctx, "/api/structure", {"operation": {"type": "delete-card", "cardId": gone["id"]}}),
+                   mutate(ctx, "/api/structure", {"operation": {
+                       "type": "update-document", "changes": {"title": "Delta"}}})]
+        for rev, (status, data, _) in enumerate(answers, since + 1):
+            self.assertEqual((status, data["rev"]), (200, rev), data)
+            self.assertNotIn("document", data)
+        self.assertEqual(answers[0][1]["card"]["id"], edited["id"])
+        added = create(ctx, "Added")
         doc = board(ctx)
-        served = doc["cards"][0]
-        self.assertEqual((doc["schemaVersion"], served["notes"]), (3, "Pinned context"))
-        self.assertEqual([(item["at"], item["by"], item["summary"], item["body"]) for item in served["log"]],
-                         [("2026-09-01", None, "Shipped the parser.", "Tests pass."),
-                          ("2026-09-02", "ada", "Fixed nits", "")])
-        self.assertEqual(board(ctx)["cards"][0]["log"], served["log"], "migrated IDs are deterministic")
-        self.assertEqual(ctx["path"].read_bytes(), before)
+        status, delta, _ = http_req(ctx["url"] + f"/board.json?since={since}")
+        self.assertEqual(status, 200, delta)
+        self.assertEqual(delta.pop("order"), [card["id"] for card in doc["cards"]])
+        self.assertEqual([card["id"] for card in delta.pop("cards")], [edited["id"], added["id"]])
+        self.assertEqual(delta, {key: value for key, value in doc.items() if key != "cards"})
+        self.assertNotIn(kept["id"], [card["id"] for card in http_req(ctx["url"] + f"/board.json?since={since}")[1]["cards"]])
+        self.assertEqual(http_req(ctx["url"] + f"/board.json?since={doc['rev']}")[1]["cards"], [])
+        for query in ("since=-1", "since=x", f"since={since}&since={since}", "since=1&full=1"):
+            self.assertEqual(http_req(ctx["url"] + f"/board.json?{query}")[0], 400, query)
 
-    def test_comments_and_attachments(self):
+    def test_attachments(self):
         ctx = self.new_board()
         card, other = create(ctx, "File roundtrip"), create(ctx, "Not file owner")
         cid = card["id"]
-        path = f"/api/card/{cid}/comments"
-        assert mutate(ctx, path, {"operation": {"type": "add", "text": " "}})[0] == 422
-        assert mutate(ctx, path, {"operation": {"type": "add", "text": "x" * 16001}})[0] == 422
-        status, added, _ = mutate(ctx, path, {"operation": {"type": "add", "text": "First comment"}})
-        assert status == 200
-        comment = added["comment"]
-        status, edited, _ = mutate(ctx, path, {"operation": {
-            "type": "edit", "id": comment["id"], "text": "Collaboratively edited"}}, actor="Bob")
-        assert status == 409
-        status, edited, _ = mutate(ctx, path, {"operation": {
-            "type": "edit", "id": comment["id"], "text": "Author correction"}})
-        assert status == 200 and edited["comment"]["text"] == "Author correction"
-        assert all(edited["comment"][key] == comment[key] for key in ("id", "by", "at"))
-        assert edited["comment"]["updatedAt"]
-        assert mutate(ctx, path, {"operation": {"type": "delete", "id": "absent"}})[0] == 404
-        assert mutate(ctx, path, {"operation": {"type": "delete", "id": comment["id"]}}, actor="Bob")[0] == 409
-        assert mutate(ctx, path, {"operation": {"type": "delete", "id": comment["id"]}})[0] == 200
-        assert current(ctx, cid)["comments"] == []
         content = b"\x00\xffActual binary bytes\r\n<script>not inline</script>"
         name = '../report "caf\u00e9".html'
         upload = ctx["url"] + f"/api/card/{cid}/attachments?name=" + urllib.parse.quote(name, safe="")
@@ -695,6 +614,7 @@ class MultiBoardApiTest(unittest.TestCase):
         url = ctx["url"] + f"/api/card/{cid}/attachments/{attachment['id']}"
         status, downloaded, response_headers = http_req(url)
         assert status == 200 and downloaded == content
+        assert http_req(url, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403
         assert response_headers["Content-Type"] == "application/octet-stream"
         assert response_headers["X-Content-Type-Options"] == "nosniff"
         assert response_headers["Content-Disposition"].startswith("attachment;")
@@ -739,41 +659,14 @@ class MultiBoardApiTest(unittest.TestCase):
         limit_url = ctx["url"] + f"/api/card/{cid}/attachments/{limit_upload['attachment']['id']}"
         assert http_req(limit_url)[1] == limit_content
 
-    def test_export_is_a_same_site_read(self):
-        ctx = self.new_board()
-        card = create(ctx, "Portable")
-        rev = board(ctx)["rev"]
-        status, uploaded, _ = http_req(ctx["url"] + f"/api/card/{card['id']}/attachments?name=evidence.txt", "POST",
-                                       b"evidence", {"Content-Type": "text/plain", "X-Board-Base-Rev": str(rev)})
-        self.assertEqual(status, 200, uploaded)
-        rev = uploaded["rev"]
-        export = ctx["url"] + "/api/export"
-        attachment = ctx["url"] + f"/api/card/{card['id']}/attachments/{uploaded['attachment']['id']}"
-        for url in (export, export + f"?baseRev={rev}"):
-            status, raw, headers = http_req(url, headers={"Sec-Fetch-Site": "same-origin"})
-            self.assertEqual(status, 200, raw)
-            self.assertEqual(headers["Content-Type"], "application/zip")
-            self.assertTrue(zipfile.is_zipfile(io.BytesIO(raw)))
-        self.assertEqual(board(ctx)["rev"], rev)
-        self.assertEqual(http_req(export + f"?baseRev={rev - 1}")[0], 409)
-        self.assertEqual(http_req(export + "?baseRev=latest")[0], 400)
-        self.assertEqual(http_req(attachment)[1], b"evidence")
-        for url in (export, attachment):
-            status, denied, _ = http_req(url, headers={"Sec-Fetch-Site": "cross-site"})
-            self.assertEqual(status, 403, denied)
-        status, _, _ = http_req(self.origin + "/api/boards/import", "POST", raw, {"Content-Type": "application/zip"})
-        self.assertEqual(status, 404)
-
     def test_write_origin_and_actor(self):
         ctx = self.new_board()
         target = create(ctx, "Origin protected")
         cid = target["id"]
         before = board(ctx)
         operations = [
-            ("/board.json", "POST", before),
             (f"/api/card/{cid}", "PATCH", {"card": {"title": "forged"}}),
             (f"/api/card/{cid}/lifecycle", "PATCH", {"action": "start"}),
-            (f"/api/card/{cid}/comments", "PATCH", {"operation": {"type": "add", "text": "forged"}}),
             ("/api/structure", "PATCH", {"operation": {"type": "delete-card", "cardId": cid}}),
             (f"/api/card/{cid}/attachments/{uuid.uuid4().hex}", "DELETE", {}),
         ]
@@ -784,7 +677,7 @@ class MultiBoardApiTest(unittest.TestCase):
             "Origin": "http://evil.example", "X-Board-Base-Rev": str(before["rev"]),
             "Content-Type": "application/octet-stream"})[0] == 403
         assert board(ctx) == before
-        for path in ("/board.json", f"/api/card/{cid}", "/api/ready", "/api/stats", "/api/git",
+        for path in ("/board.json", "/rev", "/api/ready", "/api/stats", "/api/git",
                      f"/api/card/{cid}/attachments/{uuid.uuid4().hex}"):
             assert http_req(ctx["url"] + path, headers={"Host": "evil.example"})[0] == 403
         assert mutate(ctx, f"/api/card/{cid}", {"card": {"title": "bad host"}},
@@ -794,6 +687,36 @@ class MultiBoardApiTest(unittest.TestCase):
         assert life(ctx, cid, "start", actor="x" * 81)[0] == 422
         assert mutate(ctx, f"/api/card/{cid}", {"card": {"title": "Valid collaborator"}},
                       actor="Bob")[1]["savedBy"] == "Bob"
+
+    def test_usage_log_records_board_requests(self):
+        ctx = self.new_board()
+        create(ctx, "Usage secret title")
+        missing = f"missing-{uuid.uuid4().hex[:8]}"
+        for url, status in ((ctx["url"] + "/", 200), (ctx["url"] + "/rev", 200), (self.origin + "/health", 200),
+                            (ctx["url"] + "/api/stats", 200),
+                            (f"{self.origin}/b/{missing}/board.json", 404)):
+            self.assertEqual(http_req(url)[0], status, url)
+        deadline = time.monotonic() + 10
+        while True:  # The server writes a record after it sends the response.
+            http = [json.loads(line) for path in (self.server.home / "logs").glob("usage-*.jsonl")
+                    for line in path.read_text(encoding="utf-8").split("\n")[:-1]]
+            http = [record for record in http if record["entry"] == "http"]
+            ours = {record["op"]: record for record in http if record.get("board") == ctx["name"]}
+            unknown = [record for record in http if record.get("boardArg") == missing]
+            if ("GET /api/stats" in ours and unknown) or time.monotonic() > deadline:
+                break
+            time.sleep(0.05)
+        structure = ours["PATCH /api/structure"]
+        self.assertEqual((structure["actor"], structure["status"], structure["ok"]), ("Ada", 200, True))
+        self.assertTrue(structure["ua"].startswith("Python-urllib/"), structure)
+        self.assertGreater(structure["out"], 0)
+        self.assertFalse({"session", "cwd"} & set(structure), "the server's environment is not the caller's")
+        self.assertEqual(ours["GET /api/stats"]["status"], 200)
+        self.assertEqual({key: unknown[0].get(key) for key in ("op", "status", "ok", "code", "err")},
+                         {"op": "GET /board.json", "status": 404, "ok": False, "code": "not_found",
+                          "err": "unknown_board"})
+        self.assertFalse({record["op"] for record in http} & {"GET /", "GET /rev", "GET /health"})
+        self.assertNotIn("Usage secret title", json.dumps(http))
 
     def test_readonly_git_is_per_board(self):
         ctx, other = self.new_board(), self.new_board()
@@ -903,11 +826,10 @@ class MultiBoardApiTest(unittest.TestCase):
         assert bounded["untracked"] == 206 and bounded["conflicted"] == 1
         assert board(ctx) == before
 
-    def test_agent_http_context_and_extension_roundtrips(self):
+    def test_extensions_survive_browser_edits_and_cli_attachments(self):
         ctx = self.new_board()
         path = ctx["path"]
-        card = create(ctx, "Extensions survive every writer")
-        cid = card["id"]
+        cid = create(ctx, "Extensions survive every writer")["id"]
         with core.board_transaction(path) as doc:
             target = core.resolve_ref(doc, cid)
             doc["vendorDocument"] = {"retain": True}
@@ -916,24 +838,7 @@ class MultiBoardApiTest(unittest.TestCase):
             target["subtasks"] = [{"id": "extension-step", "text": "Before", "done": False,
                                    "vendorSubtask": {"retain": True}, "children": []}]
             core.save(path, doc, by="Ada")
-        # An older browser omits extensions; arbitrary client additions remain uneditable.
-        snapshot = board(ctx)
-        snapshot.pop("vendorDocument")
-        snapshot["columns"][0].pop("vendorColumn")
-        raw = next(item for item in snapshot["cards"] if item["id"] == cid)
-        raw.pop("vendorCard")
-        raw["subtasks"][0].pop("vendorSubtask")
-        raw["subtasks"][0]["text"] = "Edited through an older browser"
-        raw["forgedExtension"] = {"untrusted": True}
-        status, saved, _ = full_post(ctx, snapshot)
-        assert status == 200, saved
-        document = saved["document"]
-        assert document["vendorDocument"] == {"retain": True}
-        assert document["columns"][0]["vendorColumn"] == {"retain": True}
-        target = next(item for item in document["cards"] if item["id"] == cid)
-        assert target["vendorCard"] == {"retain": True} and "forgedExtension" not in target
-        assert target["subtasks"][0]["vendorSubtask"] == {"retain": True}
-        assert target["subtasks"][0]["text"] == "Edited through an older browser"
+        # A browser edit cannot forge an extension, and keeps the ones it leaves out.
         status, patched, _ = mutate(ctx, f"/api/card/{cid}", {
             "card": {"title": "Card scoped", "vendorCard": "forged",
                      "subtasks": [{"id": "extension-step", "text": "Patched", "done": True, "children": []}]}})
@@ -941,9 +846,9 @@ class MultiBoardApiTest(unittest.TestCase):
         assert patched["card"]["subtasks"][0]["vendorSubtask"] == {"retain": True}
         columns = [{key: value for key, value in column.items() if key != "vendorColumn"}
                    for column in board(ctx)["columns"]]
-        status, structured, _ = mutate(ctx, "/api/structure", {"operation": {
-            "type": "update-columns", "columns": columns}})
-        assert status == 200 and structured["document"]["columns"][0]["vendorColumn"] == {"retain": True}
+        assert mutate(ctx, "/api/structure", {"operation": {"type": "update-columns", "columns": columns}})[0] == 200
+        doc = board(ctx)
+        assert doc["vendorDocument"] == {"retain": True} and doc["columns"][0]["vendorColumn"] == {"retain": True}
         source = ctx["proj"] / "shared-source.bin"
         content = b"CLI upload, HTTP download\x00\xff"
         source.write_bytes(content)
@@ -954,23 +859,8 @@ class MultiBoardApiTest(unittest.TestCase):
         metadata = last_json(uploaded)["item"]
         download = ctx["url"] + f"/api/card/{cid}/attachments/{metadata['id']}"
         assert http_req(download)[1] == content
-        stale, conflict, _ = mutate(ctx, f"/api/card/{cid}/comments",
-                                    {"operation": {"type": "add", "text": "Stale"}}, rev=revision)
+        stale, conflict, _ = life(ctx, cid, "note", {"summary": "Stale"}, rev=revision)
         assert stale == 409 and conflict["rev"] == revision + 1
-        for text in [f"Earlier {n}" for n in range(10)] + ["Browser discussion"]:
-            assert mutate(ctx, f"/api/card/{cid}/comments", {"operation": {"type": "add", "text": text}})[0] == 200
-        context = run(["--board", ctx["proj"], "context", cid, "--json"], cwd=self.base, env=self.env)
-        assert context.returncode == 0, (context.stdout, context.stderr)
-        payload = last_json(context)
-        assert [c["text"] for c in payload["card"]["comments"]] == [f"Earlier {n}" for n in range(1, 10)] + [
-            "Browser discussion"]
-        assert payload["omitted"]["comments"] == 1
-        assert payload["card"]["attachments"] == [metadata]
-        status, http_context, _ = http_req(ctx["url"] + f"/api/card/{cid}/context")
-        assert status == 200, {"status": status, "http": http_context}
-        cli_board, http_board = Path(payload["board"]), Path(http_context["board"])
-        assert cli_board.is_absolute() and http_board.is_absolute() and cli_board.resolve() == http_board.resolve()
-        assert http_context == {**payload, "board": http_context["board"]}
         assert mutate(ctx, f"/api/card/{cid}/attachments/{metadata['id']}", {}, method="DELETE", actor=metadata['by'])[0] == 200
         assert core.attachment_path(path, metadata["id"]).read_bytes() == content
         assert http_req(download)[0] == 404
@@ -994,44 +884,18 @@ class MultiBoardApiTest(unittest.TestCase):
         self.assertEqual(producer, successful_actor)
         consumer = "Chen" if producer == "Bob" else "Bob"
         self.assertEqual(life(ctx, cid, "subtask", {"op": "claim", "ids": [two]}, actor=consumer)[0], 200)
-        before = ctx["path"].read_bytes()
+        before = core.load(ctx["path"])
         for actor, details in ((consumer, {"op": "done", "ids": [one], "result": "Not my work"}),
                                (producer, {"op": "takeover", "ids": [two]})):
             self.assertGreaterEqual(life(ctx, cid, "subtask", details, actor=actor)[0], 400)
-            self.assertEqual(ctx["path"].read_bytes(), before)
+            self.assertEqual(core.load(ctx["path"]), before)
         self.assertEqual(life(ctx, cid, "complete", {"writeup": "Still unfinished"})[0], 409)
-        self.assertEqual(life(ctx, cid, "subtask", {
-            "op": "release", "ids": [one], "reason": "handoff with notes"}, actor=producer, rev=rev)[0], 409)
-        published = mutate(ctx, f"/api/card/{cid}/comments", {"operation": {
-            "type": "add", "text": f"Kind: finding; Subtask: {one}; Scope: consumer; Evidence: contract; Limitations: pending"}}, actor=producer)
-        self.assertEqual(published[0], 200)
-        self.assertIn("Evidence: contract", current(ctx, cid)["comments"][-1]["text"])
-        with core.board_transaction(ctx["path"]) as doc:
-            target = core.resolve_ref(doc, cid)
-            target["log"] = [{"id": uuid.uuid4().hex, "at": core.now_iso(), "by": producer,
-                              "summary": f"Shared finding {i}", "body": "Evidence"}
-                             for i in range(12)]
-            core.save(ctx["path"], doc, by=producer)
-        before_read = ctx["path"].read_bytes()
-        for query in (f"subtask={two}", f"assignedTo={consumer}&full=1"):
-            status, focused, _ = http_req(ctx["url"] + f"/api/card/{cid}/context?{query}")
-            self.assertEqual(status, 200, focused)
-            self.assertEqual([st["id"] for st in focused["card"]["subtasks"]], [two])
-            self.assertIn(f"Subtask: {one}", focused["card"]["comments"][-1]["text"])
-            self.assertEqual(len(focused["card"]["log"]), 12 if "full=1" in query else 10)
-        for query in ("subtask=", "assignedTo=", f"subtask={one}&assignedTo={consumer}",
-                      f"subtask={one}&subtask={two}", "full=true"):
-            self.assertEqual(http_req(ctx["url"] + f"/api/card/{cid}/context?{query}")[0], 422)
-        self.assertEqual(http_req(ctx["url"] + f"/api/card/{cid}/context?subtask=missing")[0], 404)
-        self.assertEqual(ctx["path"].read_bytes(), before_read)
         for actor, sid in ((producer, one), (consumer, two)):
             status, completed, _ = life(ctx, cid, "subtask", {
                 "op": "done", "ids": [sid], "result": f"{sid}: contribution verified"}, actor=actor)
             self.assertEqual(status, 200, completed)
             self.assertEqual(completed["item"]["delegation"]["owner"], actor)
             self.assertEqual(completed["card"]["column"], "inprogress")
-        self.assertEqual(life(ctx, cid, "complete", {"writeup": "Worker cannot integrate"}, actor=consumer)[0], 409)
-        self.assertEqual(life(ctx, cid, "complete", {"writeup": "Results await acceptance"})[0], 409)
         self.assertEqual(life(ctx, cid, "subtask", {"op": "accept", "ids": [one, two]})[0], 200)
         self.assertEqual(life(ctx, cid, "complete", {"writeup": "Main integrated both contributions"})[0], 200)
 
@@ -1041,7 +905,7 @@ class MultiBoardApiTest(unittest.TestCase):
         delegated = life(ctx, cid, "subtask", {"op": "add", "texts": ["Worker assignment"], "delegated": True})[1]["item"]
         legacy = life(ctx, cid, "subtask", {"op": "add", "texts": ["Checklist"]})[1]["item"]
         self.assertEqual(life(ctx, cid, "subtask", {"op": "claim", "ids": [delegated["id"]]}, actor="Bob")[0], 200)
-        before = ctx["path"].read_bytes()
+        before = core.load(ctx["path"])
         trees = []
         tree = current(ctx, cid)["subtasks"]
         tree[0]["done"] = True
@@ -1059,37 +923,27 @@ class MultiBoardApiTest(unittest.TestCase):
         for tree in trees:
             status = mutate(ctx, f"/api/card/{cid}", {"card": {"subtasks": tree}})[0]
             self.assertIn(status, (409, 422))
-            snapshot = board(ctx)
-            snapshot["cards"][0]["subtasks"] = tree
-            self.assertIn(full_post(ctx, snapshot)[0], (409, 422))
-            self.assertEqual(ctx["path"].read_bytes(), before)
+            self.assertEqual(core.load(ctx["path"]), before)
         claimed = current(ctx, cid)["subtasks"][0]
         forged = {"id": str(uuid.uuid4()), "title": "Forged claim", "subtasks": [claimed]}
         self.assertIn(mutate(ctx, "/api/structure", {"operation": {"type": "create-card", "card": forged}})[0], (409, 422))
         self.assertEqual(mutate(ctx, "/api/structure", {"operation": {"type": "delete-card", "cardId": cid}})[0], 409)
-        self.assertEqual(ctx["path"].read_bytes(), before)
+        self.assertEqual(core.load(ctx["path"]), before)
         # Field and board edits never check ownership, and leave the worker's claim intact.
         for field in ("title", "notes", "origin", "writeup"):
             status, edited, _ = mutate(ctx, f"/api/card/{cid}", {"card": {field: f"Bob's {field}"}}, actor="Bob")
             self.assertEqual(status, 200, edited)
-        snapshot = board(ctx)
-        snapshot["title"] = "Shared board"
-        snapshot["cards"][0]["notes"] = "Snapshot edit by Bob"
-        self.assertEqual(full_post(ctx, snapshot, actor="Bob")[0], 200)
-        # Old clients may omit delegation fields in an otherwise unchanged snapshot.
+        # Old clients may omit delegation fields in an otherwise unchanged edit.
         tree = current(ctx, cid)["subtasks"]
         tree[0].pop("delegation")
         status, saved, _ = mutate(ctx, f"/api/card/{cid}", {"card": {"subtasks": tree, "title": "Owner edit"}})
         self.assertEqual(status, 200, saved)
         self.assertEqual((saved["card"]["subtasks"][0]["delegation"]["owner"], saved["card"]["notes"],
-                          saved["card"]["activeOwner"], saved["document"]["title"]),
-                         ("Bob", "Snapshot edit by Bob", "Ada", "Shared board"))
+                          saved["card"]["activeOwner"]), ("Bob", "Bob's notes", "Ada"))
 
-    def test_comment_and_attachment_moderation(self):
+    def test_attachment_moderation(self):
         ctx = self.new_board()
         cid = create(ctx, "Moderated", column="inprogress")["id"]  # Ada owns it.
-        path = f"/api/card/{cid}/comments"
-        comment = mutate(ctx, path, {"operation": {"type": "add", "text": "Bob's note"}}, actor="Bob")[1]["comment"]
         files = []
         for name in ("bob.txt", "imported.txt"):
             status, uploaded, _ = http_req(ctx["url"] + f"/api/card/{cid}/attachments?name={name}", "POST", b"evidence", {
@@ -1098,27 +952,15 @@ class MultiBoardApiTest(unittest.TestCase):
             files.append(f"/api/card/{cid}/attachments/{uploaded['attachment']['id']}")
         with core.board_transaction(ctx["path"]) as doc:  # Entries from older boards may carry no author.
             card = core.resolve_ref(doc, cid)
-            card["comments"].append({"id": uuid.uuid4().hex, "at": core.now_iso(), "text": "Authorless"})
             card["attachments"][1].pop("by")
             core.save(ctx["path"], doc, by="Ada")
-        authorless = current(ctx, cid)["comments"][1]["id"]
-        before = ctx["path"].read_bytes()
-        self.assertEqual(mutate(ctx, path, {"operation": {"type": "edit", "id": comment["id"], "text": "Carl"}},
-                                actor="Carl")[0], 409)
-        self.assertEqual(mutate(ctx, path, {"operation": {"type": "delete", "id": comment["id"]}}, actor="Carl")[0], 409)
+        before = core.load(ctx["path"])
         self.assertEqual(mutate(ctx, files[0], {}, method="DELETE", actor="Carl")[0], 409)
-        self.assertEqual(ctx["path"].read_bytes(), before)
-        for operation in ({"type": "edit", "id": authorless, "text": "Anyone may fix this"},
-                          {"type": "delete", "id": authorless}):
-            self.assertEqual(mutate(ctx, path, {"operation": operation}, actor="Carl")[0], 200)
+        self.assertEqual(core.load(ctx["path"]), before)
         self.assertEqual(mutate(ctx, files[1], {}, method="DELETE", actor="Carl")[0], 200)
         # The card's active owner moderates everyone's entries.
-        status, edited, _ = mutate(ctx, path, {"operation": {"type": "edit", "id": comment["id"], "text": "Moderated"}})
-        self.assertEqual((status, edited["comment"]["by"], edited["comment"]["updatedBy"]), (200, "Bob", "Ada"))
         self.assertEqual(mutate(ctx, files[0], {}, method="DELETE")[0], 200)
-        self.assertEqual(mutate(ctx, path, {"operation": {"type": "delete", "id": comment["id"]}})[0], 200)
-        card = current(ctx, cid)
-        self.assertEqual((card["comments"], card["attachments"]), ([], []))
+        self.assertEqual(current(ctx, cid)["attachments"], [])
 
     def test_health_and_corrupt_documents(self):
         ctx = self.new_board()
@@ -1136,12 +978,12 @@ class MultiBoardApiTest(unittest.TestCase):
             assert health["registryError"] is None and isinstance(health["sseClients"], int)
             assert set(core.CAPABILITIES) <= set(health["capabilities"])
             raw = json.loads(healthy)
-            raw["schemaVersion"] = core.SCHEMA_VERSION + 1
+            raw["schemaVersion"] = core.STORE_SCHEMA + 1  # A future store: no longer this version's stub.
             path.write_text(json.dumps(raw), encoding="utf-8")
             before = path.read_bytes()
             assert http_req(ctx["url"] + "/board.json")[0] == 409
             response = http_req(ctx["url"] + "/api/structure", "PATCH", {
-                "baseRev": raw["rev"], "operation": {"type": "sort-cards", "mode": "title"}})
+                "baseRev": 0, "operation": {"type": "sort-cards", "mode": "created-desc"}})
             assert response[0] == 409 and path.read_bytes() == before
             entry = self.listing()[ctx["name"]]
             assert entry["exists"] is True and entry["rev"] is None and entry["error"]
@@ -1325,9 +1167,9 @@ class BrowserStampTest(unittest.TestCase):
         base = self.enterContext(scratch("wb-server-c26-"))
         self.enterContext(mock.patch.dict(os.environ, make_env(base / "home"), clear=True))
         path = core.create_board("stamps", base / "browser-stamps", core.normalize_doc({
-            "name": "Browser stamps", "cards": [{"num": 1, "id": "x", "title": "X"},
-                                                {"num": 2, "id": "y", "title": "Y"}]}))
-        before = path.read_bytes()
+            "schemaVersion": core.SCHEMA_VERSION, "name": "Browser stamps",
+            "cards": [{"num": 1, "id": "x", "title": "X"}, {"num": 2, "id": "y", "title": "Y"}]}))
+        before = core.load(path)
         httpd = server.Server(("127.0.0.1", 0))
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
@@ -1346,35 +1188,31 @@ class BrowserStampTest(unittest.TestCase):
                 "Content-Type": "application/json", **(headers or {})})
             return status, body
 
-        rev = json.loads(before)["rev"]
+        rev = before["rev"]
         status, _ = request("/api/card/x", {"baseRev": rev, "card": {"changedRev": 0, "title": "forged"}})
-        assert status == 422 and path.read_bytes() == before
-        snapshot = json.loads(before)
-        snapshot["cards"][0]["changedRev"] = rev + 100
-        status, _ = request("/board.json", {**snapshot, "baseRev": rev}, method="POST")
-        assert status == 422 and path.read_bytes() == before
+        assert status == 422 and core.load(path) == before
         status, _ = request("/api/structure", {"baseRev": rev, "operation": {
             "type": "create-card", "card": {"id": "forged", "title": "Forged", "changedRev": rev + 100}}})
-        assert status == 422 and path.read_bytes() == before
+        assert status == 422 and core.load(path) == before
         status, saved = request("/api/card/x", {"baseRev": rev, "card": {"title": "Older browser"}})
         assert status == 200 and saved["card"]["changedRev"] == saved["rev"] == rev + 1
         reviewed = saved["rev"]
         status, other = request("/api/card/y", {"baseRev": reviewed, "card": {"title": "Y changed"}})
         assert status == 200
-        before = path.read_bytes()
+        before = core.load(path)
         status, conflict = request("/api/card/x", {"baseRev": reviewed, "card": {"title": "Stale browser"}})
-        assert status == 409 and conflict["rev"] == other["rev"] and path.read_bytes() == before
+        assert status == 409 and conflict["rev"] == other["rev"] and core.load(path) == before
         status, _ = request("/api/card/x/attachments?name=stale.txt", b"stale", method="POST",
                             headers={"Content-Type": "text/plain", "X-Board-Base-Rev": str(reviewed)})
-        assert status == 409 and path.read_bytes() == before
+        assert status == 409 and core.load(path) == before
         latest, _, metadata = core.attachment_add(path, "x", "safe.txt", b"safe", "tester",
                                                   expected_rev=reviewed)
         status, _ = request("/api/card/y", {"baseRev": latest["rev"], "card": {"title": "Y again"}})
         assert status == 200
-        before = path.read_bytes()
+        before = core.load(path)
         status, _ = request(f"/api/card/x/attachments/{metadata['id']}",
                             {"baseRev": latest["rev"]}, method="DELETE")
-        assert status == 409 and path.read_bytes() == before
+        assert status == 409 and core.load(path) == before
 
 
 if __name__ == "__main__":

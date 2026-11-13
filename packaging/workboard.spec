@@ -18,7 +18,8 @@ PACKAGE_DATA = ("web/board.html", "skills/workboard/SKILL.md")
 a = Analysis(
     [str(Path(SPECPATH) / "entry.py")],
     pathex=[str(SRC)],
-    hiddenimports=collect_submodules("workboard"),
+    # sqlite3 (the board store) by name too, so _sqlite3 and its DLL ship however core imports it.
+    hiddenimports=collect_submodules("workboard") + ["sqlite3"],
     datas=[(str(SRC / "workboard" / rel), str(Path("workboard", rel).parent)) for rel in PACKAGE_DATA],
 )
 pyz = PYZ(a.pure)

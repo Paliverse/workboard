@@ -58,6 +58,8 @@ static class Launcher
 
     static int Main()
     {
+        // Launch time for the usage log's boot stage (FILETIME ticks); CreateProcessW's NULL environment passes it on.
+        Environment.SetEnvironmentVariable("WORKBOARD_T0", DateTime.UtcNow.ToFileTimeUtc().ToString());
         string self = System.Reflection.Assembly.GetEntryAssembly().Location;
         string prefix = Path.GetDirectoryName(self);
         string arch = (Environment.GetEnvironmentVariable("PROCESSOR_ARCHITEW6432")

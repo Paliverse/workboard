@@ -6,9 +6,9 @@ Stdlib only, bound to 127.0.0.1. Root routes: ``/health``, ``/`` (board chooser)
 ``/api/boards``, ``POST /api/boards/delete`` and ``POST /api/shutdown``. Each
 registered board lives under ``/b/<name>/`` with the board UI and its per-board
 API; the board is resolved from the registry on every request, so boards
-registered after start-up are served immediately. Change detection is a 500ms
-stat-poll of each board that has at least one SSE subscriber; boards nobody
-watches are never polled.
+registered after start-up are served immediately. Change detection polls each
+board's revision (core.board_rev) every 500 ms, only for boards with at least
+one SSE subscriber; boards nobody watches are never polled.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote
 
 from . import __version__
-from . import core as wb
+from . import core as wb, usage
 
 LOG_ROTATE_BYTES = 5 * 1024 * 1024
 MAX_BODY_BYTES = 32 * 1024 * 1024
@@ -37,12 +37,19 @@ MAX_BODY_BYTES = 32 * 1024 * 1024
 _BOARD_ROUTE = re.compile(r"/b/([^/]+)(/.*)?\Z")
 _CARD_API = re.compile(r"/api/card/([^/]+)\Z")
 _LIFECYCLE_API = re.compile(r"/api/card/([^/]+)/lifecycle\Z")
-_COMMENTS_API = re.compile(r"/api/card/([^/]+)/comments\Z")
-_CONTEXT_API = re.compile(r"/api/card/([^/]+)/context\Z")
-_INBOX_API = re.compile(r"/api/card/([^/]+)/inbox\Z")
 _SCOPE_API = re.compile(r"/api/card/([^/]+)/scopes\Z")
 _ATTACHMENTS_API = re.compile(r"/api/card/([^/]+)/attachments\Z")
 _ATTACHMENT_API = re.compile(r"/api/card/([^/]+)/attachments/([^/]+)\Z")
+_USAGE_IDS = re.compile(r"(?<=/card/)[^/]+|(?<=/attachments/)[^/]+")
+
+
+def _usage_op(method: str, path: str) -> str | None:
+    """`METHOD /route` for the usage log, IDs as :id; None for pages, /health, /rev and /events."""
+    match = _BOARD_ROUTE.match(path)
+    route = (match.group(2) or "/") if match else path
+    if route == "/" or route in (("/rev", "/events") if match else ("/health",)):
+        return None
+    return f"{method} {_USAGE_IDS.sub(':id', route)}"[:64]
 
 
 # ===== ports, URLs and lifecycle helpers =====
@@ -173,32 +180,64 @@ def open_board(args) -> None:
 # ===== per-board helpers =====
 
 def _require_board_present(board: Path) -> None:
-    # On Windows another thread's save (ReplaceFileW) briefly hides board.json;
-    # only a lasting absence means the board is missing.
-    deadline = time.monotonic() + (1.0 if os.name == "nt" else 0.0)
-    while not board.is_file():
-        if time.monotonic() >= deadline:
-            raise FileNotFoundError(board)
-        time.sleep(0.01)
+    if not board.is_file():
+        raise FileNotFoundError(board)
 
 
-def _doc(board: Path) -> dict:
-    _require_board_present(board)
-    return wb.load(board)
+def _store_rev(con) -> int:
+    rev = json.loads(con.execute("SELECT v FROM meta WHERE k = 'rev'").fetchone()[0])
+    usage.note(rev=rev)
+    return rev
 
 
-def _sig(board: Path) -> tuple:
+def _board_json(board: Path, since: int | None = None) -> bytes:
+    """board.json spliced from the stored rows, no card parsed: the whole board, or with `since` the board's
+    fields, the cards changed after that revision, and `order` (every card ID in board order)."""
+    with wb.snapshot(board) as con:
+        con.text_factory = bytes  # Rows stay UTF-8 bytes end to end: no decode, join of str, or encode.
+        _store_rev(con)
+        fields = [json.dumps(key.decode()).encode() + b":" + value
+                  for key, value in con.execute("SELECT k, v FROM meta ORDER BY rowid")]
+        if since is None:
+            bodies = con.execute("SELECT body FROM cards ORDER BY pos").fetchall()
+        else:
+            # +pos: find the changed rows through cards_changed and sort those few, not walk the whole board.
+            bodies = con.execute("SELECT body FROM cards WHERE changed_rev > ? ORDER BY +pos", (since,)).fetchall()
+            ids = [cid.decode() for (cid,) in con.execute("SELECT id FROM cards ORDER BY pos")]
+            fields.append(b'"order":' + json.dumps(ids).encode())
+    fields.append(b'"cards":[' + b",".join(body for (body,) in bodies) + b"]")
+    return b"{" + b",".join(fields) + b"}"
+
+
+def _names_card(board: Path, card_id) -> bool:
+    """Whether some card names card_id as a whole JSON string (its id, dependsOn…). Only then can
+    validate_new_identity refuse a client-chosen ID, and only a whole-board doc lets it check."""
+    if not isinstance(card_id, str):
+        return False
+    with wb.snapshot(board) as con:
+        hit = con.execute("SELECT 1 FROM cards WHERE instr(body, ?) LIMIT 1",
+                          (json.dumps(card_id, ensure_ascii=False),)).fetchone()
+    return hit is not None
+
+
+def _card_counts(board: Path, doc: dict) -> dict:
+    with wb.snapshot(board) as con:
+        stored = dict(con.execute("SELECT col, count(*) FROM cards GROUP BY col").fetchall())
+    counts = {column["id"]: stored.pop(column["id"], 0) for column in doc["columns"]} | stored
+    return {"cardCounts": counts, "totalCards": sum(counts.values())}
+
+
+def _rev(board: Path) -> int | None:
+    """The watcher's signature: the board's revision, None while it is missing or unreadable."""
     try:
-        st = board.stat()
-        return (st.st_size, st.st_mtime_ns)
-    except OSError:
-        return ()
+        return wb.board_rev(board)
+    except (wb.LockTimeout, OSError, ValueError, TypeError):
+        return None
 
 
 # ===== browser mutation endpoints =====
-# Contract mirrors the preview's per-board server so board.html's fetch layer is
-# unchanged: load -> baseRev check -> mutate -> wb.save (lock + atomic swap +
-# backup). Multi-tab sync rides the per-board watcher broadcasts.
+# Each runs in one board_transaction (exact baseRev check, mutate, wb.save) that loads only the cards it needs,
+# and answers with the changed card and rev; tabs fetch the rest as a delta (GET board.json?since=REV).
 
 
 class BodyError(Exception):
@@ -228,9 +267,9 @@ def _require_same_site(handler) -> None:
         raise BodyError(403, "cross-site downloads are not allowed")
 
 
-def _require_json(handler, *, beacon=False) -> None:
+def _require_json(handler) -> None:
     content_type = handler.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-    if content_type != "application/json" and not (beacon and content_type == "text/plain"):
+    if content_type != "application/json":
         raise BodyError(415, "Content-Type must be application/json")
 
 
@@ -284,22 +323,15 @@ def _base_rev(payload: dict, handler) -> int:
             return rev
         except ValueError:
             raise BodyError(400, "invalid X-Board-Base-Rev")
-    rev = payload.get("baseRev", payload.get("rev"))
+    rev = payload.get("baseRev")
     if isinstance(rev, bool) or not isinstance(rev, int) or rev < 0:
         raise BodyError(400, "invalid baseRev")
-    return rev - 1 if "baseRev" not in payload and "rev" in payload else rev
+    return rev
 
 
 def _saved_meta(doc: dict) -> dict:
     return {"rev": doc["rev"], "savedAt": doc.get("savedAt"),
             "savedBy": doc.get("savedBy")}
-
-
-def _counts(doc: dict) -> tuple:
-    counts = {c["id"]: 0 for c in doc["columns"]}
-    for card in doc["cards"]:
-        counts[card["column"]] = counts.get(card["column"], 0) + 1
-    return counts, len(doc["cards"])
 
 
 def _apply_position(doc: dict, card: dict, position: dict | None) -> bool:
@@ -377,7 +409,7 @@ def _guard_delete(card: dict, by: str) -> None:
 
 _CARD_EDITABLE = frozenset({
     "code", "title", "column", "priority", "tags", "origin", "notes", "writeup",
-    "subtasks", "links", "lastTouchedSubtask", "meta", "agentRuns",
+    "subtasks", "lastTouchedSubtask", "meta", "agentRuns",
 })
 # delegation passes through only so guard_subtask_replacement can refuse any change to it.
 _SUBTASK_EDITABLE = frozenset({"id", "text", "done", "createdAt", "doneAt", "delegation"})
@@ -386,8 +418,6 @@ _SUBTASK_EDITABLE = frozenset({"id", "text", "done", "createdAt", "doneAt", "del
 def _editable_card(raw: dict, current: dict | None = None) -> dict:
     wb._validate_aliases(raw)
     edits = {key: value for key, value in raw.items() if key in _CARD_EDITABLE}
-    if "links" not in raw and "linkedCards" in raw:
-        edits["links"] = raw["linkedCards"]
     if "subtasks" in edits:
         if not isinstance(edits["subtasks"], list):
             raise BodyError(422, "subtasks must be an array")
@@ -425,7 +455,7 @@ def _update_card(doc: dict, current: dict, raw: dict, by: str) -> dict:
     return current
 
 
-def _op_create_card(doc: dict, op: dict, by: str) -> tuple:
+def _op_create_card(doc: dict, op: dict, by: str) -> dict:
     raw = op.get("card")
     if not isinstance(raw, dict):
         raise BodyError(422, "created card must be an object")
@@ -440,9 +470,9 @@ def _op_create_card(doc: dict, op: dict, by: str) -> tuple:
     card = wb.create_card(doc, by, title=fields["title"], column=raw.get("column", "task"),
                           priority=fields["priority"], tags=fields["tags"], origin=fields["origin"],
                           notes=fields["notes"])
-    card.update({key: fields[key] for key in ("code", "writeup", "subtasks", "links", "lastTouchedSubtask",
+    card.update({key: fields[key] for key in ("code", "writeup", "subtasks", "lastTouchedSubtask",
                                               "meta", "agentRuns") if key in fields}, id=fields["id"])
-    return card, None
+    return card
 
 
 def _op_sort_cards(doc: dict, op: dict) -> None:
@@ -517,17 +547,22 @@ def _op_lifecycle(doc: dict, card: dict, action: str, details: dict, by: str):
     return wb.workflow_action(doc, card, action, details, by)
 
 
-def _mutate(handler, payload: dict, base_rev: int, apply_fn):
-    """Shared mutation shell: rev check under the board lock, apply, save."""
+def _mutate(handler, payload: dict, base_rev: int, apply_fn, scope: str = "card", refs=()):
+    """Shared mutation shell: exact board-revision check, apply, save; the doc holds the board's fields and the
+    cards `scope` loads for `refs` (see core.load)."""
     by = wb.validate_actor(payload.get("actor", "user"))
-    _require_board_present(handler.board)
-    with wb.board_transaction(handler.board, base_rev) as doc:
+    usage.note(actor=by)
+    with wb.board_transaction(handler.board, base_rev, scope=scope, refs=refs) as doc:
         result = apply_fn(doc)
-        rev = wb.save(handler.board, doc, by=by)
-    return doc, rev, result
+        wb.save(handler.board, doc, by=by)
+    return doc, result
 
 
 def _send_error(handler, error) -> None:
+    usage.note(code=error.code if isinstance(error, wb.WorkflowError) else
+               "not_found" if isinstance(error, (wb.RefError, FileNotFoundError))
+               or getattr(error, "status", None) == 404 else
+               "io" if isinstance(error, OSError) else "invalid")
     if isinstance(error, wb.RevisionConflict):
         return handler._json({"ok": False, "status": 409, "conflict": True,
                               "error": str(error) or "board revision changed", "rev": error.rev}, 409)
@@ -542,44 +577,7 @@ def _send_error(handler, error) -> None:
     return handler._json({"error": f"board unavailable: {error}"}, 500)
 
 
-def _handle_board_post(handler) -> None:
-    try:
-        _require_json(handler, beacon=True)
-        payload = _read_body_handler(handler)
-        base_rev = _base_rev(payload, handler)
-        by = wb.validate_actor(payload.get("actor", "user"))
-        if not isinstance(payload.get("cards"), list) or "columns" not in payload:
-            raise BodyError(400, "payload must include cards and columns")
-        wb.validate_schema(payload)
-
-        def apply_fn(doc):
-            current = {card["id"]: card for card in doc["cards"]}
-            incoming = {}
-            for raw in payload["cards"]:
-                if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
-                    raise BodyError(422, "every card needs a valid id")
-                if raw["id"] in incoming:
-                    raise BodyError(422, "duplicate card id")
-                incoming[raw["id"]] = raw
-                _guard_protected(raw, current.get(raw["id"]))
-            if current.keys() - incoming.keys():
-                raise BodyError(422, "snapshot cannot delete cards; use delete-card explicitly")
-            _op_update_columns(doc, {"columns": payload["columns"]})
-            ordered = []
-            for card_id, raw in incoming.items():
-                if card_id in current:
-                    card = _update_card(doc, current[card_id], raw, by)
-                else:
-                    card, _ = _op_create_card(doc, {"card": raw}, by)
-                ordered.append(card)
-            doc["cards"] = ordered
-            _apply_document_changes(doc, payload)
-
-        doc, rev, _ = _mutate(handler, payload, base_rev, apply_fn)
-    except (BodyError, wb.WorkflowError, SystemExit, wb.LockTimeout,
-            OSError, ValueError, KeyError, TypeError) as e:
-        return _send_error(handler, e)
-    handler._json({"ok": True, **_saved_meta(doc), "document": doc}, 200)
+_FAILURES = (BodyError, wb.WorkflowError, wb.RefError, wb.LockTimeout, OSError, ValueError, KeyError, TypeError)
 
 
 def _handle_card_patch(handler, reference: str) -> None:
@@ -605,12 +603,18 @@ def _handle_card_patch(handler, reference: str) -> None:
                 _apply_document_changes(doc, document)
             return card, positioned
 
-        doc, rev, (card, positioned) = _mutate(handler, payload, base_rev, apply_fn)
-    except (BodyError, wb.WorkflowError, SystemExit, wb.LockTimeout,
-            OSError, ValueError, KeyError, TypeError) as e:
+        # Moving a card, or placing it among its column's cards, needs every open card (WIP limit, neighbours).
+        scope = "open" if position or "column" in card_payload else "card"
+        doc, (card, positioned) = _mutate(handler, payload, base_rev, apply_fn, scope, (unquote(reference),))
+    except _FAILURES as e:
         return _send_error(handler, e)
-    handler._json({"ok": True, **_saved_meta(doc), "card": card, "document": doc,
+    handler._json({"ok": True, **_saved_meta(doc), "card": card,
                    "positioned": positioned, "event": "card-updated"}, 200)
+
+
+# These read only the card, its dependencies and dependents. A dependency edit walks the whole dependency graph
+# for cycles; anything else may move the card into In Progress, whose WIP limit counts every open card.
+_CARD_SCOPED_ACTIONS = frozenset({"note", "subtask", "submit", "complete", "block", "cancel", "takeover"})
 
 
 def _handle_lifecycle_patch(handler, reference: str) -> None:
@@ -629,9 +633,9 @@ def _handle_lifecycle_patch(handler, reference: str) -> None:
             items = _op_lifecycle(doc, card, action, details, by)
             return card, items
 
-        doc, rev, (card, items) = _mutate(handler, payload, base_rev, apply_fn)
-    except (BodyError, wb.WorkflowError, SystemExit, wb.LockTimeout,
-            OSError, ValueError, KeyError, TypeError) as e:
+        scope = "card" if action in _CARD_SCOPED_ACTIONS else "all" if action == "dependencies" else "open"
+        doc, (card, items) = _mutate(handler, payload, base_rev, apply_fn, scope, (unquote(reference),))
+    except _FAILURES as e:
         return _send_error(handler, e)
     if action == "note":  # A long or multi-line summary moved to the body: tell the caller.
         extra = {"item": card["log"][-1], "summaryMoved": card["log"][-1]["summary"] != details["summary"].strip()}
@@ -640,7 +644,7 @@ def _handle_lifecycle_patch(handler, reference: str) -> None:
     else:
         extra = {}
     handler._json({"ok": True, **_saved_meta(doc), "card": card,
-                   "document": doc, "event": "card-updated", "action": action, **extra}, 200)
+                   "event": "card-updated", "action": action, **extra}, 200)
 
 
 def _handle_structure_patch(handler) -> None:
@@ -655,25 +659,9 @@ def _handle_structure_patch(handler) -> None:
 
         def apply_fn(doc):
             op_type = operation["type"]
-            card = source_card = None
+            card = None
             if op_type == "create-card":
-                card, _ = _op_create_card(doc, operation, by)
-            elif op_type == "create-follow-up":
-                if "sourceCard" in operation:
-                    raise BodyError(422, "use sourceCardId, not a source card snapshot")
-                source_id = operation.get("sourceCardId")
-                if not isinstance(source_id, str) or not source_id:
-                    raise BodyError(422, "create-follow-up needs sourceCardId")
-                source_card = _find_card(doc, source_id)
-                if source_card["column"] != "done":
-                    raise BodyError(422, "follow-up source must be Done")
-                card, _ = _op_create_card(doc, operation, by)
-                if source_card["id"] not in card["links"]:
-                    card["links"].append(source_card["id"])
-                if card["id"] not in source_card["links"]:
-                    source_card["links"].append(card["id"])
-                wb.hist(source_card, "follow-up", by=by, note=f"Created #{card['num']}")
-                wb.touch(source_card)
+                card = _op_create_card(doc, operation, by)
             elif op_type == "delete-card":
                 card_id = operation.get("cardId")
                 if not isinstance(card_id, str):
@@ -695,39 +683,21 @@ def _handle_structure_patch(handler) -> None:
                 _apply_document_changes(doc, operation.get("changes") or {})
             else:
                 raise BodyError(422, f"unsupported structure operation '{op_type}'")
-            return op_type, card, source_card
+            return card
 
-        doc, rev, (op_type, card, source_card) = _mutate(handler, payload, base_rev, apply_fn)
-    except (BodyError, wb.WorkflowError, SystemExit, wb.LockTimeout,
-            OSError, ValueError, KeyError, TypeError) as e:
+        raw = operation.get("card") if operation["type"] == "create-card" else None
+        if operation["type"] == "sort-cards" or _names_card(handler.board, (raw or {}).get("id")):
+            scope = "all"  # Every card moves, or a client-chosen ID that some card already names.
+        elif isinstance(raw, dict) and raw.get("column") == "inprogress":
+            scope = "open"  # Created In Progress: the WIP limit counts every open card.
+        else:
+            scope = "card"
+        refs = (operation["cardId"],) if isinstance(operation.get("cardId"), str) else ()
+        doc, card = _mutate(handler, payload, base_rev, apply_fn, scope, refs)
+        counts = _card_counts(handler.board, doc)
+    except _FAILURES as e:
         return _send_error(handler, e)
-    counts, total = _counts(doc)
-    handler._json({"ok": True, **_saved_meta(doc), "operation": operation,
-                   "card": card, "sourceCard": source_card, "document": doc,
-                   "cardCounts": counts, "totalCards": total}, 200)
-
-
-def _handle_comments_patch(handler, reference: str) -> None:
-    try:
-        _require_json(handler)
-        payload = _read_body_handler(handler)
-        base_rev = _base_rev(payload, handler)
-        by = wb.validate_actor(payload.get("actor", "user"))
-        operation = payload.get("operation")
-        if not isinstance(operation, dict):
-            raise BodyError(422, "comment operation must be an object")
-
-        def apply_fn(doc):
-            card = _find_card(doc, reference)
-            comment = wb.comment_action(card, operation, by)
-            return card, comment
-
-        doc, rev, (card, comment) = _mutate(handler, payload, base_rev, apply_fn)
-    except (BodyError, wb.WorkflowError, SystemExit, wb.LockTimeout,
-            OSError, ValueError, KeyError, TypeError) as e:
-        return _send_error(handler, e)
-    handler._json({"ok": True, **_saved_meta(doc), "document": doc, "card": card,
-                   "comment": comment, "event": "card-updated"})
+    handler._json({"ok": True, **_saved_meta(doc), "operation": operation, "card": card, **counts}, 200)
 
 
 def _handle_attachment_upload(handler, reference: str, query: str) -> None:
@@ -735,6 +705,7 @@ def _handle_attachment_upload(handler, reference: str, query: str) -> None:
         length = _content_length(handler, wb.MAX_ATTACHMENT_BYTES)
         base_rev = _base_rev({}, handler)
         by = wb.validate_actor(unquote(handler.headers.get("X-WorkBoard-Actor", "user")))
+        usage.note(actor=by)
         names = parse_qs(query, keep_blank_values=True).get("name", [])
         if len(names) != 1 or not names[0]:
             raise BodyError(422, "one nonempty attachment name is required")
@@ -743,23 +714,21 @@ def _handle_attachment_upload(handler, reference: str, query: str) -> None:
         doc, card, metadata = wb.attachment_add(
             handler.board, unquote(reference), names[0], data, by,
             mime=handler.headers.get("Content-Type"), expected_rev=base_rev, card_scoped=False)
-    except (BodyError, wb.WorkflowError, wb.RefError, SystemExit, wb.LockTimeout,
-            OSError, ValueError, KeyError, TypeError) as e:
+    except _FAILURES as e:
         return _send_error(handler, e)
-    handler._json({"ok": True, **_saved_meta(doc), "document": doc, "card": card,
+    handler._json({"ok": True, **_saved_meta(doc), "card": card,
                    "attachment": metadata, "event": "card-updated"})
 
 
 def _handle_attachment_get(handler, reference: str, attachment_id: str) -> None:
     try:
         _require_same_site(handler)
-        _require_board_present(handler.board)
         doc, card, item, body = wb.attachment_read(
             handler.board, unquote(reference), unquote(attachment_id))
         name = item["name"]
         fallback = re.sub(r'[^A-Za-z0-9._ -]', "_", name).strip(" .") or "download"
         disposition = f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
-    except (BodyError, wb.WorkflowError, wb.RefError, SystemExit, OSError, ValueError, KeyError, TypeError) as e:
+    except _FAILURES as e:
         return _send_error(handler, e)
     handler._send(200, body, "application/octet-stream", {
         "Content-Disposition": disposition,
@@ -774,24 +743,26 @@ def _handle_attachment_delete(handler, reference: str, attachment_id: str) -> No
         payload = _read_body_handler(handler)
         base_rev = _base_rev(payload, handler)
         by = wb.validate_actor(payload.get("actor", "user"))
-        _require_board_present(handler.board)
+        usage.note(actor=by)
         doc, card, item = wb.attachment_detach(
             handler.board, unquote(reference), unquote(attachment_id), by, expected_rev=base_rev,
             card_scoped=False)
-    except (BodyError, wb.WorkflowError, wb.RefError, SystemExit, wb.LockTimeout,
-            OSError, ValueError, KeyError, TypeError) as e:
+    except _FAILURES as e:
         return _send_error(handler, e)
-    handler._json({"ok": True, **_saved_meta(doc), "document": doc, "card": card,
-                   "event": "card-updated"})
+    handler._json({"ok": True, **_saved_meta(doc), "card": card, "event": "card-updated"})
 
 
 def _handle_projection(handler, kind: str) -> None:
     try:
-        doc = _doc(handler.board)
-        data = {"cards": wb.ready_cards(doc)} if kind == "ready" else {"stats": wb.board_stats(doc)}
-    except (wb.WorkflowError, SystemExit, OSError, ValueError, KeyError, TypeError) as e:
+        if kind == "ready":  # Task cards and every open card's dependencies are in the open scope.
+            doc = wb.load(handler.board, scope="open")
+            rev, data = doc["rev"], {"cards": wb.ready_cards(doc)}
+        else:
+            with wb.snapshot(handler.board) as con:
+                rev, data = _store_rev(con), {"stats": wb.store_stats(con)}
+    except _FAILURES as e:
         return _send_error(handler, e)
-    handler._json({"rev": doc["rev"], **data})
+    handler._json({"rev": rev, **data})
 
 
 def _query_once(query: str, allowed: set[str]) -> dict:
@@ -804,59 +775,10 @@ def _query_once(query: str, allowed: set[str]) -> dict:
 def _handle_inbox_get(handler, query: str) -> None:
     try:
         params = _query_once(query, {"actor"})
-        doc = _doc(handler.board)
+        doc = wb.load(handler.board, scope="open")
         items = wb.inbox(doc, params.get("actor", "user"))
         return handler._json({"rev": doc["rev"], "items": items})
-    except (BodyError, wb.WorkflowError, wb.LockTimeout, SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
-        return _send_error(handler, exc)
-
-
-def _handle_inbox_patch(handler, reference: str) -> None:
-    try:
-        _require_json(handler)
-        payload = _read_body_handler(handler)
-        base_rev = _base_rev(payload, handler)
-        by = wb.validate_actor(payload.get("actor", "user"))
-
-        def apply_fn(doc):
-            card = _find_card(doc, reference)
-            wb.ack_inbox_notes(doc, card, payload.get("noteIds"), by)
-            return card
-
-        doc, _, card = _mutate(handler, payload, base_rev, apply_fn)
-        return handler._json({"ok": True, **_saved_meta(doc), "card": card, "document": doc})
-    except (BodyError, wb.WorkflowError, wb.LockTimeout, SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
-        return _send_error(handler, exc)
-
-
-def _handle_bundle_export(handler, query: str) -> None:
-    import shutil
-    import tempfile
-    started = False
-    try:
-        _require_same_site(handler)
-        value = _query_once(query, {"baseRev"}).get("baseRev")
-        if value is not None and not re.fullmatch(r"[0-9]+", value):
-            raise BodyError(400, "baseRev must be a board revision")
-        with tempfile.TemporaryDirectory(prefix="workboard-http-export-") as folder:
-            target = Path(folder) / "board.zip"
-            wb.export_bundle(handler.board, target, expected_rev=None if value is None else int(value))
-            # Stream the completed archive: a large export must not become a large
-            # in-memory response. The temporary directory is private and always removed.
-            handler.send_response(200)
-            handler.send_header("Content-Type", "application/zip")
-            handler.send_header("Content-Length", str(target.stat().st_size))
-            handler.send_header("Content-Disposition", "attachment; filename=workboard.zip")
-            handler.send_header("X-Content-Type-Options", "nosniff")
-            handler.send_header("Cache-Control", "no-store")
-            handler.end_headers()
-            started = True
-            with target.open("rb") as stream:
-                shutil.copyfileobj(stream, handler.wfile, 128 * 1024)
-    except (BodyError, wb.WorkflowError, wb.LockTimeout, SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
-        if started:
-            handler.close_connection = True
-            return
+    except _FAILURES as exc:
         return _send_error(handler, exc)
 
 
@@ -967,65 +889,33 @@ def _git_state(root: Path) -> dict:
     return result
 
 
-def _handle_card_get(handler, reference: str) -> None:
-    reference = unquote(reference)
-    try:
-        doc = _doc(handler.board)
-        card = wb.resolve_ref(doc, reference)
-    except FileNotFoundError:
-        return _send_board_missing(handler)
-    except SystemExit as e:
-        return handler._json({"error": str(e)}, 500)
-    except (wb.LockTimeout, OSError, ValueError, KeyError, TypeError) as e:
-        return handler._json({"error": f"board unavailable: {e}"}, 500)
-    except wb.RefError:
-        return handler._json({"error": f"no card matching '{reference}'"}, 404)
-    handler._json({"card": card, "rev": doc.get("rev")}, 200)
-
-
-def _handle_cards_page(handler, query: str) -> None:
-    qs = parse_qs(query)
-    column = (qs.get("column") or [""])[0]
-    try:
-        offset = max(0, int((qs.get("offset") or ["0"])[0]))
-        limit = min(250, max(1, int((qs.get("limit") or ["50"])[0])))
-    except ValueError:
-        return handler._json({"error": "invalid offset/limit"}, 400)
-    try:
-        doc = _doc(handler.board)
-    except FileNotFoundError:
-        return _send_board_missing(handler)
-    except SystemExit as e:
-        return handler._json({"error": str(e)}, 500)
-    except (wb.LockTimeout, OSError, ValueError, KeyError, TypeError) as e:
-        return handler._json({"error": f"board unavailable: {e}"}, 500)
-    in_col = [c for c in doc["cards"] if c["column"] == column]
-    handler._json({"column": column, "cards": in_col[offset:offset + limit],
-                   "total": len(in_col), "rev": doc.get("rev")}, 200)
-
-
 def _handle_board_get(handler, path: str, query: str) -> None:
     if path == "/api/inbox":
         return _handle_inbox_get(handler, query)
-    if path == "/api/export":
-        return _handle_bundle_export(handler, query)
     match = _SCOPE_API.match(path)
     if match:
         try:
             params = _query_once(query, {"subtask"})
-            doc = _doc(handler.board)
+            doc = wb.load(handler.board, (unquote(match.group(1)),), "open")  # Every open card's claims.
             card = _find_card(doc, match.group(1))
             return handler._json({"rev": doc["rev"], "conflicts": wb.scope_conflicts(doc, card, params.get("subtask"))})
-        except (BodyError, wb.WorkflowError, OSError, ValueError, KeyError, TypeError) as exc:
+        except _FAILURES as exc:
             return _send_error(handler, exc)
-    if path in ("/board.json", "/api/bootstrap", "/rev"):
+    if path == "/board.json":
         try:
-            doc = _doc(handler.board)
-        except (SystemExit, OSError, ValueError, KeyError, TypeError) as e:
+            since = _query_once(query, {"since"}).get("since")
+            if since is not None and not re.fullmatch(r"[0-9]{1,18}", since):
+                raise BodyError(400, "since must be a board revision")
+            body = _board_json(handler.board, None if since is None else int(since))
+        except _FAILURES as e:
             return _send_error(handler, e)
-        if path == "/rev":
-            return handler._send(200, str(doc.get("rev", 0)).encode(), "text/plain; charset=utf-8")
-        return handler._json({"state": doc} if path == "/api/bootstrap" else doc)
+        return handler._send(200, body, "application/json; charset=utf-8")
+    if path == "/rev":
+        try:
+            rev = wb.board_rev(handler.board)
+        except _FAILURES as e:
+            return _send_error(handler, e)
+        return handler._send(200, str(rev).encode(), "text/plain; charset=utf-8")
     if path == "/events":
         return handler._sse()
     if path in ("/api/ready", "/api/stats"):
@@ -1034,49 +924,24 @@ def _handle_board_get(handler, path: str, query: str) -> None:
         try:
             _require_board_present(handler.board)
             project = wb.registry_load()["boards"][handler.name]["project"]
-        except (OSError, ValueError, KeyError) as e:
+        except _FAILURES as e:
             return _send_error(handler, e)
         return handler._json(_git_state(Path(project)))
-    if path == "/api/cards":
-        return _handle_cards_page(handler, query)
     match = _ATTACHMENT_API.match(path)
     if match:
         return _handle_attachment_get(handler, match.group(1), match.group(2))
-    match = _CONTEXT_API.match(path)
-    if match:
-        try:
-            _require_board_present(handler.board)
-            params = parse_qs(query, keep_blank_values=True)
-            if any(len(values) != 1 for values in params.values()):
-                raise wb.WorkflowError("context query parameters must occur once")
-            if params.get("full", ["0"])[0] not in ("0", "1"):
-                raise wb.WorkflowError("context full must be 0 or 1")
-            return handler._json(wb.card_context(
-                handler.board, unquote(match.group(1)), full=params.get("full") == ["1"],
-                subtask_id=params.get("subtask", [None])[0],
-                assigned_to=params.get("assignedTo", [None])[0]))
-        except (wb.WorkflowError, wb.RefError, OSError, ValueError, KeyError, TypeError) as exc:
-            return _send_error(handler, exc)
-    match = _CARD_API.match(path)
-    if match:
-        return _handle_card_get(handler, match.group(1))
     handler._json({"error": "not found"}, 404)
 
 
 def _handle_board_write(handler, method: str, path: str, query: str) -> None:
     if method == "POST":
-        if path == "/board.json":
-            return _handle_board_post(handler)
         match = _ATTACHMENTS_API.match(path)
         if match:
             return _handle_attachment_upload(handler, match.group(1), query)
     elif method == "PATCH":
         if path == "/api/structure":
             return _handle_structure_patch(handler)
-        for pattern, handle in ((_CARD_API, _handle_card_patch),
-                                (_LIFECYCLE_API, _handle_lifecycle_patch),
-                                (_INBOX_API, _handle_inbox_patch),
-                                (_COMMENTS_API, _handle_comments_patch)):
+        for pattern, handle in ((_CARD_API, _handle_card_patch), (_LIFECYCLE_API, _handle_lifecycle_patch)):
             match = pattern.match(path)
             if match:
                 return handle(handler, match.group(1))
@@ -1113,9 +978,9 @@ def _handle_boards_list(handler) -> None:
         try:
             if path.is_file():
                 entry["exists"] = True
-                doc = wb.load(path)
-                entry.update(rev=int(doc.get("rev") or 0), cards=len(doc["cards"]))
-        except (SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
+                with wb.snapshot(path) as con:
+                    entry.update(rev=_store_rev(con), cards=con.execute("SELECT count(*) FROM cards").fetchone()[0])
+        except (wb.LockTimeout, OSError, ValueError, KeyError, TypeError) as exc:
             entry["error"] = str(exc)
         boards.append(entry)
     handler._json({"boards": boards})
@@ -1168,6 +1033,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, code, body: bytes, ctype: str, extra: dict | None = None):
+        usage.note(status=code, ok=code < 400, out=len(body))
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -1184,6 +1050,8 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _json(self, obj, code=200):
+        if code >= 400:
+            usage.note(err=obj.get("error"))
         self._send(code, json.dumps(obj).encode("utf-8"),
                    "application/json; charset=utf-8")
 
@@ -1207,6 +1075,21 @@ class Handler(BaseHTTPRequestHandler):
         self._route("DELETE")
 
     def _route(self, method: str) -> None:
+        op = _usage_op(method, self.path.partition("?")[0])
+        if op is None:
+            return self._dispatch(method)
+        agent = self.headers.get("User-Agent", "")
+        usage.begin("http", op=op,
+                    ua="browser" if agent.startswith("Mozilla/") else agent.split(" ", 1)[0][:32] or None)
+        try:
+            self._dispatch(method)
+        except Exception as exc:
+            usage.note(ok=False, err=f"{type(exc).__name__}: {exc}")
+            raise
+        finally:
+            usage.end()
+
+    def _dispatch(self, method: str) -> None:
         try:
             _require_local(self)
         except BodyError as e:
@@ -1235,10 +1118,12 @@ class Handler(BaseHTTPRequestHandler):
             self.board = wb.board_file(self.name)
         except wb.WorkflowError as e:
             if e.code == "not_found":
+                usage.note(boardArg=self.name, code="not_found")
                 return self._json({"error": "unknown_board", "name": self.name}, 404)
             return _send_error(self, e)
         except OSError as e:
             return _send_error(self, e)
+        usage.note(board=self.name)
         if method == "GET":
             return _handle_board_get(self, rest, query)
         _handle_board_write(self, method, rest, query)
@@ -1282,7 +1167,7 @@ class Server(ThreadingHTTPServer):
         self.started_at = wb.now_iso()
         self.closed = threading.Event()
         self._lock = threading.Lock()
-        self._watched: dict[Path, dict] = {}  # board -> {"sig": stat signature, "clients": [queue]}
+        self._watched: dict[Path, dict] = {}  # board -> {"rev": board_rev or None, "clients": [queue]}
         super().__init__(address, Handler)
         threading.Thread(target=self._watch, daemon=True).start()
 
@@ -1298,10 +1183,11 @@ class Server(ThreadingHTTPServer):
 
     def subscribe(self, board: Path) -> queue.Queue:
         q = queue.Queue(maxsize=256)
+        rev = _rev(board)  # Outside the lock: a legacy board's first touch migrates it.
         with self._lock:
             entry = self._watched.get(board)
             if entry is None:  # The first subscriber sets the change baseline.
-                entry = self._watched[board] = {"sig": _sig(board), "clients": []}
+                entry = self._watched[board] = {"rev": rev, "clients": []}
             entry["clients"].append(q)
         return q
 
@@ -1329,21 +1215,20 @@ class Server(ThreadingHTTPServer):
                 pass
 
     def _watch(self) -> None:
+        # Polls only the revision: a change (the server's own writes too) is signalled, never loaded here.
         while not self.closed.wait(0.5):
             with self._lock:
-                watched = [(board, entry["sig"]) for board, entry in self._watched.items()]
+                watched = [(board, entry["rev"]) for board, entry in self._watched.items()]
             for board, last in watched:
-                current = _sig(board)
-                if current == last:
+                rev = _rev(board)
+                if rev == last:
                     continue
                 with self._lock:
                     entry = self._watched.get(board)
                     if entry is None:
                         continue
-                    entry["sig"] = current
-                try:
-                    rev = int(_doc(board).get("rev") or 0)
-                except (SystemExit, OSError, ValueError, KeyError, TypeError):
+                    entry["rev"] = rev
+                if rev is None:
                     self._broadcast(board, "board-missing", {"board": str(board)})
                 else:
                     self._broadcast(board, "rev-bumped", {"rev": rev})

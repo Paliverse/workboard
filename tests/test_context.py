@@ -41,8 +41,7 @@ class FocusedContext(unittest.TestCase):
                  "delegation": self.assignment("available")},
                 {"id": "legacy", "text": "Checklist only", "done": False},
             ]
-            card["comments"] = [{"id": "finding", "by": "Grace", "at": core.now_iso(),
-                                 "text": "Kind: finding; Subtask: sibling; Evidence: shared contract"}]
+            core.append_note(card, "Kind: finding; Subtask: sibling; Evidence: shared contract", "", "Grace")
             core.save(self.path, doc, by="Main")
 
     @staticmethod
@@ -65,14 +64,14 @@ class FocusedContext(unittest.TestCase):
         return [item["id"] for item, _ in core.iter_subtasks(payload["card"]["subtasks"])]
 
     def rejected(self, args, code, actor="Main"):
-        before = self.path.read_bytes()
+        before = core.board_rev(self.path)
         result = self.call([*args, "--json"], actor)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(last_json(result)["code"], code, result.stdout + result.stderr)
-        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(core.board_rev(self.path), before)
 
     def test_focus_keeps_card_requirements_and_only_the_selected_work(self):
-        before = self.path.read_bytes()
+        before = core.board_rev(self.path)
         self.path.with_name(core.LOCK_NAME).unlink(missing_ok=True)
         focused = self.json(["context", "1", "--subtask", "mine"], "Ada")
         self.assertEqual(self.ids(focused), ["mine"])
@@ -82,14 +81,14 @@ class FocusedContext(unittest.TestCase):
         self.assertEqual(focused["card"]["activeOwner"], "Main")
         self.assertEqual(focused["card"]["origin"], "Approved request")
         self.assertIn("producer and consumer", focused["card"]["notes"])
-        self.assertIn("Subtask: sibling", focused["card"]["comments"][0]["text"])
+        self.assertIn("Subtask: sibling", focused["card"]["log"][0]["summary"])
         mine = self.json(["context", "1", "--mine"], "Ada")
         explicit = self.json(["context", "1", "--assigned-to", "Ada"])
         self.assertEqual(mine, explicit)
         empty = self.json(["context", "1", "--mine"], "Nobody")
         self.assertEqual(empty["card"]["subtasks"], [])
         self.assertEqual(empty["focus"]["matchedSubtaskIds"], [])
-        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(core.board_rev(self.path), before)
         self.assertFalse(self.path.with_name(core.LOCK_NAME).exists())
 
     def test_history_only_with_full(self):
@@ -111,8 +110,6 @@ class FocusedContext(unittest.TestCase):
             card["log"] = [{"id": f"{i:032x}", "at": core.now_iso(), "by": "Grace",
                             "summary": f"Shared finding {i}", "body": "Evidence"}
                            for i in range(12)]
-            card["comments"] += [{"id": f"c{i}", "by": "Grace", "at": core.now_iso(), "text": f"Thread {i}"}
-                                 for i in range(11)]
             core.save(self.path, doc, by="Main")
         trimmed = self.json(["context", "1"])
         self.assertNotIn("done-0", self.ids(trimmed))
@@ -120,11 +117,9 @@ class FocusedContext(unittest.TestCase):
         focused = self.json(["context", "1", "--subtask", "done-0"])
         self.assertEqual(self.ids(focused), ["done-0"])
         self.assertEqual(focused["omitted"]["log"], 2)
-        self.assertEqual(focused["omitted"]["comments"], 2)
         self.assertIn("unrelatedSubtasks", focused["omitted"])
-        self.assertEqual([c["text"] for c in focused["card"]["comments"]], [f"Thread {i}" for i in range(1, 11)])
         full = self.json(["context", "1", "--subtask", "available", "--full"])
-        self.assertEqual((len(full["card"]["log"]), len(full["card"]["comments"])), (12, 12))
+        self.assertEqual(len(full["card"]["log"]), 12)
         self.assertNotIn("mine", self.ids(full))
         mine = self.json(["context", "1", "--mine"], "Ada")
         self.assertIn("done-0", self.ids(mine))
@@ -132,15 +127,15 @@ class FocusedContext(unittest.TestCase):
     def test_invalid_focus_is_read_only(self):
         self.rejected(["context", "1", "--subtask", "missing"], "not_found")
         self.rejected(["context", "1", "--assigned-to", " "], "invalid")
-        before = self.path.read_bytes()
+        before = core.board_rev(self.path)
         result = self.call(["context", "1", "--mine", "--subtask", "mine"])
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(core.board_rev(self.path), before)
 
     def test_handoff_uses_registered_board_and_worker_without_claiming(self):
         self.json(["subtask", "1", "configure", "available", "--scope", "consumer.py only",
                    "--scope", "tests/test_consumer.py"])
-        before = self.path.read_bytes()
+        before = core.board_rev(self.path)
         payload = self.json(["handoff", "1", "--subtask", "available", "--worker", "Worker B"])
         self.assertEqual(set(payload), {"ok", "rev", "num", "worker", "previousOwner", "writeScope",
                                         "scopeWarnings", "requests", "prompt"})
@@ -152,7 +147,7 @@ class FocusedContext(unittest.TestCase):
                     input=json.dumps(payload["requests"]["read"]) + "\n")
         self.assertEqual(fresh.returncode, 0, fresh.stdout + fresh.stderr)
         self.assertEqual(last_json(fresh)["focus"]["subtaskId"], "available")
-        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(core.board_rev(self.path), before)
         self.json(["handoff", "1", "--subtask", "mine", "--worker", "Ada"])
 
     def test_handoff_rejects_ambiguous_or_unavailable_work(self):
@@ -163,12 +158,8 @@ class FocusedContext(unittest.TestCase):
         self.rejected([*base, "--subtask", "legacy"], "state")
         self.rejected([*base, "--subtask", "mine"], "owned", actor="Chen")
         self.rejected([*base, "--subtask", " "], "invalid")
-        self.json(["subtask", "1", "configure", "available", "--on", "mine"])
-        self.rejected([*base, "--subtask", "available"], "deps")
         self.json(["subtask", "1", "done", "mine", "--result", "Verified narrow work"], "Ada")
         self.rejected([*base, "--subtask", "mine"], "state")
-        self.rejected([*base, "--subtask", "available"], "deps")  # The prerequisite's result awaits acceptance.
-        self.json(["subtask", "1", "accept", "mine"])
         self.json([*base, "--subtask", "available"])
         self.json(["fly", "1", "task"])
         self.rejected([*base, "--subtask", "available"], "state")
@@ -176,16 +167,16 @@ class FocusedContext(unittest.TestCase):
     def test_handoff_uses_the_saved_scope(self):
         sid = self.json(["subtask", "1", "add", "Saved boundary", "--delegated"])["item"]["id"]
         self.json(["subtask", "1", "configure", sid, "--scope", "src\\worker.py", "--scope", "tests\\"])
-        before = self.path.read_bytes()
+        before = core.board_rev(self.path)
         handoff = self.json(["handoff", "1", "--subtask", sid, "--worker", "Ada"])
         self.assertEqual((handoff["writeScope"], handoff["previousOwner"]), (["src/worker.py", "tests"], None))
-        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(core.board_rev(self.path), before)
 
     def test_handoff_without_a_scope_is_read_only(self):
-        before = self.path.read_bytes()
+        before = core.board_rev(self.path)
         handoff = self.json(["handoff", "1", "--subtask", "available", "--worker", "Ada"])
         self.assertEqual((handoff["writeScope"], handoff["previousOwner"]), ([], None))
-        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(core.board_rev(self.path), before)
 
     def test_handoff_requests_run_through_call_with_multiline_text(self):
         sid, worker = "-odd Δ & {result} id", "--worker Δ & $(never) {summary}"
@@ -196,12 +187,11 @@ class FocusedContext(unittest.TestCase):
         handoff = self.json(["handoff", "1", f"--subtask={sid}", f"--worker={worker}"])
         self.assertEqual((handoff["writeScope"], set(handoff["requests"])),
                          (["src"], {"read", "claim", "publish", "complete"}))
-        values = {"summary": "Finding Δ; $(never) & \"quoted\"", "body": "Evidence:\n- line 2 & ^%PATH%\n",
-                  "result": "Verified Δ.\nTests: 14/14 & 'quoted'"}
+        values = {"{summary}": "Finding Δ; $(never) & \"quoted\"", "{body}": "Evidence:\n- line 2 & ^%PATH%\n",
+                  "{result}": "Verified Δ.\nTests: 14/14 & 'quoted'"}
 
         def send(name):
-            request = {key: values[key] if key in values and value == "{" + key + "}" else value
-                       for key, value in handoff["requests"][name].items()}
+            request = {key: values.get(value, value) for key, value in handoff["requests"][name].items()}
             result = run(["--board=registered-name", f"--actor={worker}", "call"], cwd=self.project, env=self.env,
                          input=json.dumps(request) + "\n")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -210,10 +200,14 @@ class FocusedContext(unittest.TestCase):
         self.assertEqual(send("read")["focus"]["subtaskId"], sid)
         self.assertEqual(send("claim")["item"]["delegation"]["owner"], worker)
         published = send("publish")["item"]
-        self.assertEqual((published["summary"], published["body"], published["by"], published["subtaskId"]),
-                         (values["summary"], values["body"].rstrip(), worker, sid))
+        self.assertEqual((set(published), published["by"], published["subtaskId"]), ({"id", "at", "by", "subtaskId"},
+                                                                                     worker, sid))
         completed = send("complete")["item"]
-        self.assertEqual((completed["delegation"]["result"], completed["doneBy"]), (values["result"], worker))
+        self.assertEqual(completed["doneBy"], worker)
+        stored = send("read")["card"]
+        note = next(entry for entry in stored["log"] if entry["id"] == published["id"])
+        self.assertEqual((note["summary"], note["body"]), (values["{summary}"], values["{body}"].rstrip()))
+        self.assertEqual(stored["subtasks"][0]["delegation"]["result"], values["{result}"])
 
 
 if __name__ == "__main__":

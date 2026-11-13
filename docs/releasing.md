@@ -7,7 +7,7 @@ A release is one annotated tag, `vX.Y.Z`. Pushing the tag runs [`.github/workflo
 | Job | Runs on | Does |
 |---|---|---|
 | `verify` | `ubuntu-latest` | Fails unless the tag equals `v` + `workboard.__version__` and `CHANGELOG.md` has a `## [X.Y.Z]` section. Runs the full test suite. |
-| `binaries` | one native runner per target | Builds the PyInstaller app with `packaging/build.py binary` (on Windows it also compiles npm's launcher), then smoke-tests the archive with `packaging/build.py smoke`: CLI startup, one delegated subtask round trip through parent completion, `add --from`, `export`, `serve --port 0 --json`, `/health`, `/b/<board>/` and token shutdown, all in a scratch home. On Windows the smoke test also runs a two-line argument through the launcher in a fake npm prefix. |
+| `binaries` | one native runner per target | Builds the PyInstaller app with `packaging/build.py binary` (on Windows it also compiles npm's launcher), then smoke-tests the archive with `packaging/build.py smoke`: CLI startup, a write that must create the board's `board.db` and read back in the next process, one delegated subtask round trip through parent completion, `add --from`, `digest`, `serve --port 0 --json`, `/health`, `/b/<board>/`, its `board.json` and token shutdown, all in a scratch home. On Windows the smoke test runs in a fake npm prefix: a two-line argument through the launcher exe, then npm's rewritten sh shims with Node.js off `PATH` (`--version`, a two-line argument, stdin and a failing command's exit code). |
 | `github-release` | `ubuntu-latest` | Creates the GitHub Release with the six archives, `install.sh`, `install.ps1` and `SHA256SUMS`. The notes are that version's CHANGELOG section. |
 | `npm` | `ubuntu-latest` | Builds the seven npm packages from the archives. It publishes the six platform packages first, then `@paliverse/workboard` (environment `npm`), authenticating through npm trusted publishing (OIDC). npm attaches provenance automatically. |
 
@@ -83,13 +83,13 @@ python -m venv build/venv
 build/venv/bin/python -m pip install -r packaging/requirements-build.txt   # Windows: build\venv\Scripts\python.exe
 build/venv/bin/python packaging/build.py binary          # dist/workboard-<os>-<arch>.{zip,tar.gz}
 build/venv/bin/python packaging/build.py smoke dist/workboard-<os>-<arch>.zip
-WORKBOARD_TEST_COMMAND="$PWD/build/pyinstaller/dist/workboard/workboard" python -m unittest tests.test_cli tests.test_call tests.test_subtasks tests.test_context tests.test_bundles
+WORKBOARD_TEST_COMMAND="$PWD/build/pyinstaller/dist/workboard/workboard" python -m unittest tests.test_cli tests.test_call tests.test_subtasks tests.test_context
 ```
 
 `packaging/build.py` has five commands:
 
 - `binary`: runs PyInstaller with `packaging/workboard.spec` and archives the result. On Windows it also compiles `packaging/launcher.cs` into `_internal/workboard-launcher.exe` with the .NET Framework 4.x `csc.exe` that ships with Windows (`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\`, else `Framework\`).
-- `smoke PATH`: exercises an archive or an installed `workboard` executable end to end, in a scratch home. For a Windows archive it also runs a two-line `note --body` through the launcher in a fake npm prefix.
+- `smoke PATH`: exercises an archive or an installed `workboard` executable end to end, in a scratch home, and fails if the first writes leave no `board.db` (the SQLite store, which needs `_sqlite3` in the build). A Windows archive is unpacked into a fake npm prefix and set up by `bin/launcher.js`, as after `npm install -g`; it then runs a two-line `note --body` through the launcher exe and through npm's sh shims with Node.js off `PATH`. That part needs `node` and `sh` (Git for Windows) on `PATH`, and the smoke stops with an error without them.
 - `checksums [DIR]`: writes `SHA256SUMS`.
 - `notes --version X`: prints the CHANGELOG section of that version.
 - `npm --version X`: builds `build/npm/` from the archives in `dist/`.
@@ -112,10 +112,11 @@ HOME=$(mktemp -d) WORKBOARD_INSTALL_BASE_URL=http://127.0.0.1:8000 sh scripts/in
 | Path | Purpose |
 |---|---|
 | `pyproject.toml` | Contributor dev installs only (`pip install -e .`); it is not published. It declares the `workboard`, `wb` and `workboardw` console scripts, and the version comes from `src/workboard/__init__.py`. |
-| `packaging/workboard.spec`, `packaging/entry.py` | PyInstaller onedir build. It produces the console `workboard` executable, plus the windowed `workboardw` on Windows for the background service, and bundles the package data at package-relative paths. |
+| `packaging/workboard.spec`, `packaging/entry.py` | PyInstaller onedir build. It produces the console `workboard` executable, plus the windowed `workboardw` on Windows for the background service, and bundles the package data at package-relative paths. It names `sqlite3` as a hidden import, so `_sqlite3` and its library ship however `core` imports it. |
 | `packaging/build.py` | The release tool described above (stdlib only). |
-| `packaging/npm/` | Template for the main npm package and its `bin/workboard.js` launcher, which runs the platform binary. |
-| `packaging/launcher.cs` | npm's Windows launcher. The npm package's postinstall (`bin/launcher.js`), and every Windows run of `bin/workboard.js`, copy it to `workboard.exe` and `wb.exe` next to npm's global `.cmd` shims; it runs the platform package's `workboard.exe` with the raw command line, so arguments never pass through `cmd.exe`. |
+| `packaging/npm/` | Template for the main npm package: `bin/workboard.js`, which runs the platform binary, and `bin/launcher.js`, its Windows postinstall. |
+| `packaging/npm/bin/launcher.js` | On Windows global installs, copies the launcher exe to `workboard.exe` and `wb.exe` next to npm's shims, and rewrites npm's extensionless `workboard` and `wb` sh shims to run the platform binary directly; npm's `node bin/workboard.js` line stays below as the fallback. It runs as postinstall and again on every Windows run of `bin/workboard.js`, which covers `--ignore-scripts`. The check is cheap: when both sh shims are already the rewritten ones and both exes exist, it returns without comparing the exes byte for byte. It only rewrites a shim that runs this package's `bin/workboard.js`, never another package's `wb`. |
+| `packaging/launcher.cs` | npm's Windows launcher, copied to `workboard.exe` and `wb.exe` by `launcher.js`. It runs the platform package's `workboard.exe` with the raw command line, so arguments never pass through `cmd.exe`, and sets `WORKBOARD_T0` (the launch time) for the usage log's `boot` stage. The rewritten sh shims set it from bash's `$EPOCHREALTIME` the same way. |
 | `scripts/install.sh`, `scripts/install.ps1` | The one-line installers attached to every release. |
-| `.github/workflows/ci.yml` | Tests on Ubuntu, macOS and Windows with Python 3.11 to 3.14, and a PyInstaller build per OS that smoke-tests the archive and runs the CLI, delegated-subtask, focused-context and review/inbox suites against the binary. |
+| `.github/workflows/ci.yml` | Tests on Ubuntu, macOS and Windows with Python 3.11 to 3.14, and a PyInstaller build per OS that smoke-tests the archive and runs the CLI, `call`, delegated-subtask and focused-context suites against the binary. |
 | `.github/workflows/release.yml` | The release pipeline. Third-party actions are pinned to commit SHAs. |

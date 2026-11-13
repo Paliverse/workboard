@@ -510,14 +510,6 @@ html[data-theme="dark"] .toast .btn { background: rgb(0 0 0 / .1); }
 .file-row:hover { background: var(--fill-1); }
 .file-row .ic { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r-md); background: var(--fill-1); color: var(--fg-2); flex: none; }
 .file-row .meta { font-size: var(--t-xs); color: var(--fg-3); }
-.thread { display: flex; flex-direction: column; gap: 14px; }
-.msg { display: flex; gap: 10px; }
-.msg-body { flex: 1; min-width: 0; }
-.msg-head { display: flex; align-items: baseline; gap: 8px; font-size: var(--t-xs); color: var(--fg-3); }
-.msg-head b { color: var(--fg); font-weight: 600; font-size: var(--t-sm); }
-.msg-text { margin-top: 2px; font-size: var(--t-md); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
-.msg-tools { margin-left: auto; display: flex; opacity: 0; }
-.msg:hover .msg-tools { opacity: 1; }
 .activity { list-style: none; margin: 0; padding: 0; }
 .activity li { display: flex; gap: 10px; padding: 5px 0; font-size: var(--t-xs); color: var(--fg-2); }
 .activity li time { flex: none; width: 92px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
@@ -629,7 +621,6 @@ html[data-theme="dark"] .toast .btn { background: rgb(0 0 0 / .1); }
 .dep.ok > .i { color: var(--green); }
 .file-row .main { flex: 1; min-width: 0; }
 .file-row .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.msg:focus-within .msg-tools { opacity: 1; }
 .msg-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 4px; }
 
 /* Notes: pinned markdown, composer, timeline (opacity-only reveal) */
@@ -759,14 +750,11 @@ button.tl-row:hover { background: var(--fill-1); }
   <symbol id="i-reset" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v4.5h-4.5"/></symbol>
   <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3.5 12.3V4.5a1 1 0 0 1 1-1h7.8l8.2 8.2a1.4 1.4 0 0 1 0 2l-6.8 6.8a1.4 1.4 0 0 1-2 0z"/><circle cx="8" cy="8" r="1.3"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-10z"/><path d="M14 3.5v5h5"/></symbol>
-  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></symbol>
   <symbol id="i-done" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-4.9"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
   <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
   <symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></symbol>
-  <symbol id="i-bug" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="13" rx="5"/><path d="M12 11v9M4 12h3M17 12h3M4.5 18l2.7-1.5M19.5 18l-2.7-1.5M4.5 6l2.8 2M19.5 6l-2.8 2M9 7l-1-3M15 7l1-3"/></symbol>
-  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5 13.8 10l6.7 2-6.7 2L12 20.5 10.2 14l-6.7-2 6.7-2z"/></symbol>
   <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 12V6.5a1.5 1.5 0 0 1 3 0V11M11 10.5v-6a1.5 1.5 0 0 1 3 0V11M14 7.5a1.5 1.5 0 0 1 3 0V13M8 12a1.5 1.5 0 0 0-3 0v1.5a7.5 7.5 0 0 0 7.5 7.5h.5a6 6 0 0 0 6-6V10a1.5 1.5 0 0 0-3 0"/></symbol>
   <symbol id="i-branch" viewBox="0 0 24 24"><path d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9"/></symbol>
   <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3.5 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></symbol>
@@ -935,7 +923,6 @@ const WB = window.WB = {};
     if (!s) {
       const parts = [`#${card.num}`, card.title, card.code, card.origin, card.notes, card.writeup, ...(card.tags || [])];
       for (const t of card.subtasks || []) parts.push(t.text);
-      for (const m of card.comments || []) parts.push(m.text);
       for (const e of card.log || []) parts.push(e.summary, e.body);
       s = parts.filter(Boolean).join('\n').toLowerCase();
       searchCache.set(card, s);
@@ -1160,7 +1147,7 @@ const WB = window.WB = {};
         const res = raw
           ? await request(method, path, { body: raw, raw: true, headers: { ...headers, 'X-Board-Base-Rev': String(S.rev), 'X-WorkBoard-Actor': encodeURIComponent(S.actor) } })
           : await request(method, path, { body: { baseRev: S.rev, actor: S.actor, ...payloadFn() } });
-        if (res?.document) setDoc(res.document, { source: 'self' });
+        await refresh('self');  // The answer names the changed card; the delta brings every change and the new rev.
         return { ok: true, res };
       } catch (err) {
         scheduleRender({});  // Re-render from state: an optimistic move rolls back even when the revision is unchanged.
@@ -1186,8 +1173,6 @@ const WB = window.WB = {};
     patchCard: (id, fields, { position } = {}) => write('PATCH', `api/card/${enc(id)}`, () => ({ card: fields, ...(position ? { position } : {}) })),
     lifecycle: (id, action, details = {}) => write('PATCH', `api/card/${enc(id)}/lifecycle`, () => ({ action, details })),
     structure: operation => write('PATCH', 'api/structure', () => ({ operation })),
-    comment: (id, operation) => write('PATCH', `api/card/${enc(id)}/comments`, () => ({ operation })),
-    acknowledge: (id, noteIds) => write('PATCH', `api/card/${enc(id)}/inbox`, () => ({ noteIds })),
     upload: (id, file) => {
       if (file.size > 10 * 1024 * 1024) { toast(`${file.name} is larger than 10 MiB`, { error: true }); return Promise.resolve({ ok: false, status: 413 }); }
       const mime = /^[\w.+-]+\/[\w.+-]+$/.test(file.type) ? file.type : 'application/octet-stream';
@@ -1198,22 +1183,32 @@ const WB = window.WB = {};
   };
 
   // ── Live sync ──────────────────────────────────────────────────────
-  let refreshing = null, refreshAgain = false, unregistered = false;
-  async function refresh() {
-    if (!BOARD || unregistered) return;
-    if (refreshing) { refreshAgain = true; return refreshing; }
-    refreshing = (async () => {
-      try {
-        const doc = await request('GET', 'board.json');
-        if (!S.doc || doc.rev !== S.rev || S.missing) setDoc(doc, { source: 'remote' });
-      } catch (err) {
-        if (err.status === 410 || isUnregistered(err)) enterMissing(isUnregistered(err)); else setLive('down');
-      } finally {
-        refreshing = null;
-        if (refreshAgain) { refreshAgain = false; refresh(); }
+  // Boot loads the whole board once. Later pulls fetch board.json?since=REV: the board's fields, the cards
+  // changed after REV, and `order` (every card ID in board order); unchanged cards keep their objects.
+  async function pull(source) {
+    if (S.doc && !S.missing) {
+      const delta = await request('GET', `board.json?since=${S.rev}`);
+      if (delta.rev === S.rev) return;
+      const changed = new Map(delta.cards.map(c => [c.id, c]));
+      const cards = delta.order.map(id => changed.get(id) || byId.get(id));
+      if (delta.rev > S.rev && !cards.includes(undefined)) {
+        delete delta.order;
+        setDoc({ ...delta, cards }, { source });
+        return;
       }
-    })();
-    return refreshing;
+    }
+    // First load, a board that came back, or one whose revision went back (deleted and created again).
+    setDoc(await request('GET', 'board.json'), { source });
+  }
+  let pulling = null, queued = null, unregistered = false;
+  // One pull at a time; a call while one runs gets the next pull, which starts after it.
+  function refresh(source = 'remote') {
+    if (!BOARD || unregistered) return Promise.resolve();
+    if (pulling) return queued ||= pulling.then(() => { queued = null; return refresh(source); });
+    pulling = pull(source).catch(err => {
+      if (err.status === 410 || isUnregistered(err)) enterMissing(isUnregistered(err)); else setLive('down');
+    }).finally(() => { pulling = null; });
+    return pulling;
   }
   WB.refresh = refresh;
   let events = null;
@@ -1239,7 +1234,7 @@ const WB = window.WB = {};
   function cardSig(card) {
     const st = subtaskStats(card);
     return [card.title, card.num, card.priority, card.column, (card.tags || []).join('\u0001'), card.activeOwner, card.outcome,
-      card.reworkReason ? 1 : 0, card.blockedReason, card.unblockWhen, st.done, st.total, (card.comments || []).length,
+      card.reworkReason ? 1 : 0, card.blockedReason, card.unblockWhen, st.done, st.total,
       (card.attachments || []).length, (card.dependsOn || []).length, depsSatisfied(card) ? 1 : 0, card.cancelReason,
       card.updatedAt, isActiveWork(card) ? 1 : 0].join('\u0002');
   }
@@ -1276,7 +1271,6 @@ const WB = window.WB = {};
     for (const t of tags.slice(0, 3)) foot.append(h('span', { class: 'chip', text: t }));
     if (tags.length > 3) foot.append(h('span', { class: 'chip', text: `+${tags.length - 3}`, title: tags.slice(3).join(', ') }));
     if (st.total) foot.append(h('span', { class: 'meta', title: `${st.done} of ${st.total} subtasks done` }, progress(st.done, st.total), `${st.done}/${st.total}`));
-    if ((card.comments || []).length) foot.append(h('span', { class: 'meta', title: 'Comments' }, icon('comment'), card.comments.length));
     if ((card.attachments || []).length) foot.append(h('span', { class: 'meta', title: 'Files' }, icon('clip'), card.attachments.length));
     if ((card.dependsOn || []).length) foot.append(h('span', { class: 'meta', title: depsSatisfied(card) ? 'Prerequisites complete' : 'Waiting on prerequisites' }, icon('link'), card.dependsOn.length));
     const parts = [top, h('div', { class: 'card-title', text: card.title || 'Untitled' }), foot];
@@ -1537,29 +1531,21 @@ const WB = window.WB = {};
         { name: 'to', label: 'Continue in', value: 'inprogress', options: [{ value: 'inprogress', label: 'In Progress' }, { value: 'task', label: 'Task' }] }] });
       return v ? WB.api.lifecycle(c.id, 'resume', v) : { ok: false };
     }),
-    reasoned: (id, action, title, label, ok, extra = {}) => flow(id, async c => {
-      const v = await prompt({ title: `${title} ${ref(c)}`, body: c.title, ok, fields: [{ name: action === 'improve' ? 'text' : 'reason', label, required: true, multiline: true }] });
-      return v ? WB.api.lifecycle(c.id, action, { ...v, ...extra }) : { ok: false };
+    reasoned: (id, action, title, label, ok) => flow(id, async c => {
+      const v = await prompt({ title: `${title} ${ref(c)}`, body: c.title, ok, fields: [{ name: 'reason', label, required: true, multiline: true }] });
+      return v ? WB.api.lifecycle(c.id, action, v) : { ok: false };
     }),
     cancel: id => A.reasoned(id, 'cancel', 'Cancel', 'Why is it being canceled?', 'Cancel card'),
-    rework: id => A.reasoned(id, 'rework', 'Return', 'What needs another pass?', 'Return for rework'),
-    bug: id => A.reasoned(id, 'bug', 'Reopen', 'What is broken?', 'Reopen as bug'),
-    improve: id => A.reasoned(id, 'improve', 'Improve', 'What should be improved?', 'Reopen'),
     takeover: id => A.reasoned(id, 'takeover', 'Take over', 'Why are you taking over?', 'Take over'),
+    // Reopening Done work and returning open work for another pass are one action; `as` says what the new cycle is.
     reopen: id => flow(id, async c => {
-      const v = await prompt({ title: `Reopen ${ref(c)}`, body: c.title, ok: 'Reopen', fields: [
-        { name: 'reason', label: 'Why reopen it?', required: true, multiline: true },
-        { name: 'to', label: 'Reopen into', value: 'task', options: [{ value: 'task', label: 'Task' }, { value: 'inprogress', label: 'In Progress' }] }] });
-      return v ? WB.api.lifecycle(c.id, 'reopen', { reason: v.reason, to: v.to, as: 'task' }) : { ok: false };
+      const done = c.column === 'done';
+      const v = await prompt({ title: done ? `Reopen ${ref(c)}` : `Return ${ref(c)} for rework`, body: c.title, ok: done ? 'Reopen' : 'Return', fields: [
+        { name: 'reason', label: done ? 'Why reopen it?' : 'What needs another pass?', required: true, multiline: true },
+        { name: 'to', label: 'Reopen into', value: 'task', options: [{ value: 'task', label: 'Task' }, { value: 'inprogress', label: 'In Progress' }] },
+        { name: 'as', label: 'Reopen as', value: 'task', options: [{ value: 'task', label: 'Rework' }, { value: 'bug', label: 'Bug' }, { value: 'improve', label: 'Improvement' }] }] });
+      return v ? WB.api.lifecycle(c.id, 'reopen', v) : { ok: false };
     }),
-    followUp: id => flow(id, async c => {
-      const v = await prompt({ title: `Follow-up to ${ref(c)}`, body: c.title, ok: 'Create', fields: [{ name: 'title', label: 'Title', required: true }] });
-      if (!v) return { ok: false };
-      const r = await WB.api.structure({ type: 'create-follow-up', sourceCardId: c.id, card: { id: newCardId(v.title), title: v.title, column: 'task' } });
-      if (r.ok && r.res.card) WB.openCard(r.res.card.id);
-      return r;
-    }),
-    workpad: id => flow(id, c => WB.api.lifecycle(c.id, 'workpad')),
     del: id => flow(id, async c => {
       const yes = await confirm({ title: `Delete ${ref(c)}?`, body: `“${c.title}” will be removed from the board. It can only be recovered from a board backup.`, ok: 'Delete', danger: true });
       if (!yes) return { ok: false };
@@ -1590,17 +1576,10 @@ const WB = window.WB = {};
       if (col === 'inprogress' && card.activeOwner && card.activeOwner !== S.actor) items.push({ label: 'Take over…', icon: 'hand', run: () => A.takeover(id) });
       if (col === 'blocked') items.push({ label: 'Resume…', icon: 'play', run: () => A.resume(id) });
       if (col !== 'done' && col !== 'blocked') items.push({ label: 'Block…', icon: 'blocked', run: () => A.block(id) });
-      if (col === 'done') {
-        items.push({ label: 'Reopen…', icon: 'rework', run: () => A.reopen(id) },
-          { label: 'Reopen as bug…', icon: 'bug', run: () => A.bug(id) },
-          { label: 'Improve…', icon: 'spark', run: () => A.improve(id) },
-          { label: 'Create follow-up…', icon: 'plus', run: () => A.followUp(id) });
-      } else {
-        items.push({ label: 'Return for rework…', icon: 'rework', run: () => A.rework(id) },
-          { label: 'Cancel card…', icon: 'canceled', run: () => A.cancel(id) });
-      }
-      items.push('sep', { label: 'Add acceptance template', icon: 'edit', run: () => A.workpad(id) },
-        { label: 'Copy reference', icon: 'copy', hint: `#${card.num}`, run: () => A.copyRef(id) },
+      items.push(col === 'done' ? { label: 'Reopen…', icon: 'rework', run: () => A.reopen(id) }
+        : { label: 'Return for rework…', icon: 'rework', run: () => A.reopen(id) });
+      if (col !== 'done') items.push({ label: 'Cancel card…', icon: 'canceled', run: () => A.cancel(id) });
+      items.push('sep', { label: 'Copy reference', icon: 'copy', hint: `#${card.num}`, run: () => A.copyRef(id) },
         'sep', { label: 'Delete…', icon: 'trash', danger: true, run: () => A.del(id) });
       return items;
     },
@@ -2019,8 +1998,6 @@ const WB = window.WB = {};
     menu(e.currentTarget, [
       { label: 'New card', icon: 'new', hint: 'C', run: newCardDialog },
       'sep',
-      { label: 'Export board ZIP', icon: 'download', run: exportBoard },
-      'sep',
       { label: 'Newest cards first', icon: 'sort', checked: S.newestFirst, run: () => { S.newestFirst = !S.newestFirst; store.set(boardKey('order'), S.newestFirst ? 'newest' : null); renderBoard(); } },
       { label: 'Reset column layout', icon: 'reset', run: resetColumns },
       { label: 'In Progress limit…', icon: 'layers', run: setWip },
@@ -2032,18 +2009,6 @@ const WB = window.WB = {};
       { label: 'Refresh', icon: 'rework', run: () => refresh() },
     ], { align: 'end' });
   });
-
-  async function exportBoard() {
-    try {
-      const response = await fetch('api/export', { cache: 'no-store' });
-      if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Export failed'); }
-      const url = URL.createObjectURL(await response.blob());
-      const link = h('a', { href: url, download: `${BOARD}.zip` });
-      document.body.append(link); link.click(); link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-      toast('Board export downloaded');
-    } catch (error) { toast(error.message, { error: true, ms: 7000 }); }
-  }
 
   function setZoom(z, announce = true) {
     S.zoom = Math.round(Math.min(1.6, Math.max(0.6, z)) * 100) / 100;
@@ -2101,7 +2066,7 @@ const WB = window.WB = {};
     av.textContent = initials(S.actor); av.style.setProperty('--tone', toneFor(S.actor));
   }
   $('#actor-btn').addEventListener('click', async () => {
-    const v = await prompt({ title: 'Acting as', body: 'This label is recorded on your edits, comments and claims. It is attribution, not an account.', ok: 'Save', fields: [{ name: 'actor', label: 'Label', required: true, value: S.actor }] });
+    const v = await prompt({ title: 'Acting as', body: 'This label is recorded on your edits, notes and claims. It is attribution, not an account.', ok: 'Save', fields: [{ name: 'actor', label: 'Label', required: true, value: S.actor }] });
     if (!v) return;
     if (v.actor.length > 80 || /[\u0000-\u001f\u007f]/.test(v.actor)) { toast('Use at most 80 characters without control characters', { error: true }); return; }
     S.actor = v.actor; store.set('workboard.previewActor', S.actor); renderActor(); emit('actor', S.actor);
@@ -2361,13 +2326,13 @@ const WB = window.WB = {};
 (() => {
   const { ui, api, actions: A } = WB;
   const { h, icon } = ui;
-  const SUB_CAP = 60, HIST_CAP = 8, MSG_CAP = 50, LOG_CAP = 12;
+  const SUB_CAP = 60, HIST_CAP = 8, LOG_CAP = 12;
   const PRIORITIES = [['critical', 'Critical'], ['mid', 'Mid'], ['low', 'Low'], [null, 'None']];
 
   let panel = null, body, barStatus, refBtn, primaryBtn, expandBtn, composer, sendBtn, who, fileInput;
   let cur = null;               // {id, card, slots, title, gone} for the card on show
   let primaryRun = null, sending = false, closeTimer = 0, prepFrame = 0;
-  const drafts = new Map();     // card id -> unsent comment
+  const drafts = new Map();     // card id -> unsent note
   const noteUi = new Map();     // card id -> notes timeline state: expanded entry ids, newest seen, show-all, composer draft
   const bases = new WeakMap();  // text control -> the card value it was last synced with
 
@@ -2575,7 +2540,7 @@ const WB = window.WB = {};
   }
 
   // ── Writes ──────────────────────────────────────────────────────────
-  // Read-modify-write edits (tags, links, dependencies, subtasks) run one at a time against the
+  // Read-modify-write edits (tags, dependencies, subtasks) run one at a time against the
   // latest card, so quick successive edits never overwrite each other.
   let chain = Promise.resolve();
   function edit(id, build) {
@@ -2587,15 +2552,14 @@ const WB = window.WB = {};
     const tree = structuredClone(c.subtasks || []);
     return change(tree) === false ? null : api.patchCard(id, { subtasks: tree });
   });
-  const setRefs = (id, key, change) => edit(id, c => {
-    const next = change(c[key] || []);
-    if (!next) return null;
-    return key === 'dependsOn' ? api.lifecycle(id, 'dependencies', { ids: next }) : api.patchCard(id, { links: next });
+  const setDeps = (id, change) => edit(id, c => {
+    const next = change(c.dependsOn || []);
+    return next ? api.lifecycle(id, 'dependencies', { ids: next }) : null;
   });
-  function addRef(id, key, raw) {
+  function addDep(id, raw) {
     const d = WB.card(raw);
-    if (!d || d.id === id) { ui.toast(d ? 'A card cannot point at itself' : `No card matches “${raw}”`, { error: true }); return { ok: false }; }
-    return setRefs(id, key, list => (list.includes(d.id) ? null : [...list, d.id]));
+    if (!d || d.id === id) { ui.toast(d ? 'A card cannot depend on itself' : `No card matches “${raw}”`, { error: true }); return { ok: false }; }
+    return setDeps(id, list => (list.includes(d.id) ? null : [...list, d.id]));
   }
 
   // Text saves on blur (and on Enter when `enter`) only when it differs from the card; a failed save
@@ -2709,9 +2673,9 @@ const WB = window.WB = {};
     expandBtn = iconBtn('expand', 'Wide view', toggleWide, 'btn icon sm', '');
     expandBtn.setAttribute('aria-pressed', 'false');
     body = h('div', { class: 'panel-body' });
-    composer = h('textarea', { rows: 1, attrs: { 'aria-label': 'Comment' },
+    composer = h('textarea', { rows: 1, attrs: { 'aria-label': 'Note' },
       on: { input: syncSend, keydown: e => { if (isEnter(e)) { e.preventDefault(); send(); } } } });
-    sendBtn = h('button', { class: 'btn icon send', type: 'button', disabled: true, title: 'Send', attrs: { 'aria-label': 'Send comment' }, on: { click: send } }, icon('up'));
+    sendBtn = h('button', { class: 'btn icon send', type: 'button', disabled: true, title: 'Send', attrs: { 'aria-label': 'Add note' }, on: { click: send } }, icon('up'));
     who = h('span', { class: 'who' });
     fileInput = h('input', { type: 'file', multiple: true, hidden: true,
       on: { change: () => { const files = [...fileInput.files]; fileInput.value = ''; upload(files); } } });
@@ -2741,7 +2705,7 @@ const WB = window.WB = {};
     });
   }
   function setActor(label) {
-    composer.placeholder = `Comment as ${label}…`;
+    composer.placeholder = `Note as ${label}…`;
     who.textContent = label;
   }
   function toggleWide() {
@@ -2755,7 +2719,7 @@ const WB = window.WB = {};
     if (!id || !text || sending) return;
     sending = true;
     syncSend();
-    const r = await api.comment(id, { type: 'add', text });
+    const r = await api.lifecycle(id, 'note', { summary: text });  // A long or multi-line text moves to the note body.
     sending = false;
     if (r.ok) {
       if (drafts.get(id)?.trim() === text) drafts.delete(id);
@@ -2781,7 +2745,7 @@ const WB = window.WB = {};
       subtasks(id),
       notes(id),
       textSection(id, 'Write-up', 'writeup', 'What shipped and how it was verified…'),
-      attachments(id), activity(), discussion(id)];
+      attachments(id), activity()];
   }
   function fillBar(c) {
     fillStatus(barStatus, c);
@@ -2826,14 +2790,12 @@ const WB = window.WB = {};
     const tagInput = onEnterAdd(inline('Add tag', 'Add tag'),
       t => edit(id, x => ((x.tags || []).includes(t) ? null : api.patchCard(id, { tags: [...(x.tags || []), t] }))));
 
-    // Depends on / Links: pills for the referenced cards plus an inline "#42" input.
-    const refs = (key, text) => {
-      const list = h('span', { style: { display: 'contents' } });
-      const sig = r => { const d = WB.card(r); return d ? [d.num, d.title, d.column, d.outcome] : r; };
-      slot(c => json((c[key] || []).map(sig)),
-        c => put(list, (c[key] || []).map(r => pill(r, key === 'dependsOn', () => setRefs(id, key, l => l.filter(x => x !== r))))), { cross: true });
-      return [list, onEnterAdd(inline(key === 'dependsOn' ? 'Add #card' : 'Link #card', text), raw => addRef(id, key, raw))];
-    };
+    // Depends on: pills for the prerequisite cards plus an inline "#42" input.
+    const deps = h('span', { style: { display: 'contents' } });
+    const depSig = r => { const d = WB.card(r); return d ? [d.num, d.title, d.column, d.outcome] : r; };
+    slot(c => json((c.dependsOn || []).map(depSig)),
+      c => put(deps, (c.dependsOn || []).map(r => pill(r, () => setDeps(id, l => l.filter(x => x !== r))))), { cross: true });
+    const depInput = onEnterAdd(inline('Add #card', 'Add dependency'), raw => addDep(id, raw));
 
     const code = field(h('input', { class: 'add-inline mono', placeholder: 'Add code', attrs: { 'aria-label': 'Code' } }),
       c => c.code || '', v => api.patchCard(id, { code: v.trim() }), { enter: true });
@@ -2864,17 +2826,16 @@ const WB = window.WB = {};
       label('Priority'), value(prio),
       label('Owner'), owner,
       label('Tags'), value(tags, tagInput),
-      label('Depends on'), value(refs('dependsOn', 'Add dependency')),
-      label('Links'), value(refs('links', 'Add link')),
+      label('Depends on'), value(deps, depInput),
       label('Code'), value(code),
       blockedLabel, blocked,
       outcomeLabel, outcome,
       label('Created'), created,
       label('Updated'), updated);
   }
-  function pill(ref, showDone, onRemove) {
+  function pill(ref, onRemove) {
     const d = WB.card(ref);
-    const ok = showDone && !!d && d.column === 'done' && d.outcome === 'completed';
+    const ok = !!d && d.column === 'done' && d.outcome === 'completed';
     const name = d ? `#${d.num}` : ref;
     return h('span', { class: ok ? 'dep ok' : 'dep', title: d ? `${name} ${d.title} · ${ok ? 'complete' : WB.colName(d.column)}` : 'Card not found' },
       h('span', { class: 'ref mono', text: d ? name : '?' }),
@@ -3040,9 +3001,7 @@ const WB = window.WB = {};
     }
     if (st.draft) showComposer();
 
-    return section('Notes', count, [allBtn,
-      h('button', { class: 'btn xs', type: 'button', on: { click: () => A.workpad(id) } }, icon('edit', 'sm'), 'Add acceptance template'),
-      addBtn], pin, comp, list, more);
+    return section('Notes', count, [allBtn, addBtn], pin, comp, list, more);
   }
 
   function subtasks(id) {
@@ -3085,7 +3044,7 @@ const WB = window.WB = {};
       text.readOnly = locked;
       bindText(text, v => editTree(id, tree => { const node = tree.find(x => x.id === s.id); if (!node) return false; node.text = v; }), { enter: true, required: true });
       const ownerFinishes = assignment && !assignment.owner && c.activeOwner === WB.state.actor;  // Core accepts the card owner's own done at once.
-      const box = h('button', { class: 'box', type: 'button', disabled: assignment ? !(mine || ownerFinishes) || c.column !== 'inprogress' || assignment.state === 'blocked' : locked,
+      const box = h('button', { class: 'box', type: 'button', disabled: assignment ? !(mine || ownerFinishes) || c.column !== 'inprogress' : locked,
         attrs: { role: 'checkbox', 'aria-checked': String(!!s.done), 'aria-label': s.text || 'Subtask' },
         on: { click: () => toggle(s, el, box) } }, icon('check'));
       const status = h('div', { class: 'subtask-assignment' });
@@ -3094,7 +3053,6 @@ const WB = window.WB = {};
         status.append(h('span', { text: `${s.id} · ${assignment.state}${assignment.owner ? ` · @${assignment.owner}` : ''}` }));
         status.append(h('span', { text: `Review: ${assignment.review?.state || 'pending'}` }));
         if (assignment.scope?.length) status.append(h('span', { text: `Scope: ${assignment.scope.join(', ')}` }));
-        if (assignment.dependsOn?.length) status.append(h('span', { text: `After: ${assignment.dependsOn.join(', ')}` }));
         if (assignment.state === 'available' && c.column === 'inprogress') {
           status.append(button('Claim', async () => {
             try {
@@ -3107,26 +3065,14 @@ const WB = window.WB = {};
           if (lead) status.append(button('Configure…', async () => {
             const v = await ui.prompt({ title: 'Configure assignment', body: `${s.id}: ${s.text}`, ok: 'Save', fields: [
               { name: 'scope', label: 'Write scope · relative paths, one per line', multiline: true, value: (assignment.scope || []).join('\n') },
-              { name: 'dependsOn', label: 'Prerequisite assignment IDs · comma separated', value: (assignment.dependsOn || []).join(', ') },
             ] });
-            if (v) await change('configure', [s.id], { scope: v.scope.split('\n').map(x => x.trim()).filter(Boolean),
-              dependsOn: v.dependsOn.split(/[\s,]+/).filter(Boolean) });
+            if (v) await change('configure', [s.id], { scope: v.scope.split('\n').map(x => x.trim()).filter(Boolean) });
           }));
-        } else if (assignment.state === 'claimed' || assignment.state === 'blocked') {
-          const op = mine ? 'release' : 'takeover';
-          status.append(button(mine ? 'Release…' : 'Take over…', async () => {
-            const v = await ui.prompt({ title: mine ? 'Release subtask' : 'Take over subtask',
-              body: `${s.id}: ${s.text}`, ok: mine ? 'Release' : 'Take over',
+        } else if (assignment.state === 'claimed' && !mine) {
+          status.append(button('Take over…', async () => {
+            const v = await ui.prompt({ title: 'Take over subtask', body: `${s.id}: ${s.text}`, ok: 'Take over',
               fields: [{ name: 'reason', label: 'Reason and unfinished work', required: true, multiline: true }] });
-            if (v) await change(op, [s.id], { reason: v.reason });
-          }));
-          if (mine && assignment.state === 'blocked') status.append(button('Resume', () => change('resume', [s.id])));
-          if (mine && assignment.state === 'claimed') status.append(button('Block…', async () => {
-            const v = await ui.prompt({ title: 'Block assignment', body: `${s.id}: ${s.text}`, ok: 'Block', fields: [
-              { name: 'reason', label: 'What is blocking the work?', required: true, multiline: true },
-              { name: 'until', label: 'What will unblock it?', required: true, multiline: true },
-            ] });
-            if (v) await change('block', [s.id], v);
+            if (v) await change('takeover', [s.id], { reason: v.reason });
           }));
         } else if (assignment.state === 'completed' && lead) {
           const ref = { cardId: id, subtaskId: s.id, num: c.num };
@@ -3135,7 +3081,6 @@ const WB = window.WB = {};
         }
       }
       const content = h('div', { class: 'check-content' }, text, status,
-        assignment?.blocker ? h('p', { class: 'subtask-result', text: `Blocked: ${assignment.blocker.reason} · Until: ${assignment.blocker.until}` }) : null,
         assignment?.review?.state === 'changes_requested' ? h('p', { class: 'subtask-result', text: `Changes requested: ${assignment.review.reason || ''}` }) : null,
         assignment?.result ? h('p', { class: 'subtask-result', text: assignment.result }) : null);
       const el = h('div', { class: s.done ? 'check-row done' : 'check-row', dataset: { sid: s.id } }, box, content,
@@ -3198,57 +3143,6 @@ const WB = window.WB = {};
     return section('Activity', count, null, list, more);
   }
 
-  function discussion(id) {
-    const count = counter();
-    const thread = h('div', { class: 'thread' });
-    let all = false;
-    const more = moreBtn(() => { all = true; flush(); });
-    slot(c => json([c.comments, c.activeOwner, WB.state.actor]) + all, c => {
-      const list = c.comments || [];
-      count.textContent = list.length || '';
-      put(thread, (all ? list : list.slice(-MSG_CAP)).map(m => message(m, c)));
-      more.hidden = all || list.length <= MSG_CAP;
-      more.textContent = `Show all ${list.length}`;
-    }, { busy: () => !!thread.querySelector('textarea') });
-
-    function message(m, c) {
-      const text = h('div', { class: 'msg-text', text: m.text });
-      return h('div', { class: 'msg' }, ui.avatar(m.by || '?'),
-        h('div', { class: 'msg-body' },
-          h('div', { class: 'msg-head' },
-            h('b', { text: m.by || 'Unknown' }), when(m.at),
-            m.updatedAt ? h('span', { title: `Edited ${ui.fmtDateTime(m.updatedAt)}${m.updatedBy ? ` by ${m.updatedBy}` : ''}`, text: 'edited' }) : null,
-            moderates(c, m.by) ? h('span', { class: 'msg-tools' },
-              iconBtn('edit', 'Edit comment', () => editMessage(m, text)),
-              iconBtn('trash', 'Delete comment', async () => {
-                if (await ui.confirm({ title: 'Delete comment?', body: 'It will be removed for everyone.', ok: 'Delete', danger: true })) api.comment(id, { type: 'delete', id: m.id });
-              })) : null),
-          text));
-    }
-    function editMessage(m, textEl) {
-      if (textEl.hidden) return;
-      const input = h('textarea', { class: 'field', attrs: { 'aria-label': 'Edit comment' } });
-      input.value = m.text;
-      const close = () => { box.remove(); textEl.hidden = false; flush(); };
-      const save = async () => {
-        const text = input.value.trim();
-        if (!text) return;
-        if (text === m.text) { close(); return; }
-        ok.disabled = true;
-        const r = await api.comment(id, { type: 'edit', id: m.id, text });
-        ok.disabled = false;
-        if (r.ok) close(); else input.setAttribute('aria-invalid', 'true');
-      };
-      const ok = h('button', { class: 'btn xs primary', type: 'button', text: 'Save', on: { click: save } });
-      const box = h('div', {}, input, h('div', { class: 'msg-actions' }, h('button', { class: 'btn xs', type: 'button', text: 'Cancel', on: { click: close } }), ok));
-      input.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); } });
-      textEl.hidden = true;
-      textEl.after(box);
-      input.focus();
-    }
-    return section('Discussion', count, null, more, thread);
-  }
-
   // ── Public API ──────────────────────────────────────────────────────
   function open(id) {
     const card = WB.card(id);
@@ -3281,8 +3175,8 @@ const WB = window.WB = {};
         prepFrame = requestAnimationFrame(() => { panel.classList.remove('preparing'); panel.classList.add('open'); });
       });
     }
-    // ponytail: a 5 s createdAt window stands in for a "just created" flag (the new-card and follow-up
-    // flows open the card at once); pass an explicit flag from core if others' fresh cards steal focus.
+    // ponytail: a 5 s createdAt window stands in for a "just created" flag (the new-card flow opens the
+    // card at once); pass an explicit flag from core if others' fresh cards steal focus.
     const fresh = Date.now() - Date.parse(card.createdAt) < 5000;
     const target = fresh ? cur.title : panel;
     // Focusing forces a synchronous layout of the new content; do it after the slide-in so the
@@ -3313,9 +3207,8 @@ const WB = window.WB = {};
     const card = WB.card(cur.id);
     if (!card) { showGone(); return; }
     if (cur.gone) { cur.gone.remove(); cur.gone = null; cur.card = null; }
-    if (card === cur.card) return;
-    // Unchanged card content (same changedRev): only parts that show other cards can differ.
-    const crossOnly = card.changedRev != null && card.changedRev === cur.card?.changedRev;
+    // The same card object, or the same changedRev: only parts that show other cards can differ.
+    const crossOnly = card === cur.card || (card.changedRev != null && card.changedRev === cur.card?.changedRev);
     cur.card = card;
     render(card, crossOnly);
   }
@@ -3464,40 +3357,28 @@ const WB = window.WB = {};
     if (result.ok) load('inbox');
   }
   WB.review = review;
-  // One write per card, however many of its findings are acknowledged.
-  async function acknowledge(rows) {
-    const byCard = new Map();
-    for (const row of rows) byCard.set(row.cardId, [...(byCard.get(row.cardId) || []), row.note.id]);
-    for (const [cardId, noteIds] of byCard) if (!(await WB.api.acknowledge(cardId, noteIds)).ok) break;
-    load('inbox');
-  }
   function paintInbox() {
     if (noData('inbox', "Couldn't load the inbox")) return;
     const state = store.inbox, items = state.data.items;
-    cur.ackAll.hidden = items.filter(row => row.kind === 'finding').length < 2;
-    cur.head.p.textContent = `Results, blockers, shared findings and running assignments for ${WB.state.actor}. Open the parent card for the full handoff.`;
+    cur.head.p.textContent = `Results and running assignments for ${WB.state.actor}. Open the parent card for the full handoff.`;
     show(JSON.stringify([WB.state.actor, state.data.rev, WB.state.rev, state.error && errText(state.error)]), () => [
       state.error && staleNote('inbox', state.error),
       ...items.map(row => {
         const card = WB.card(row.cardId), subtask = card?.subtasks?.find(s => s.id === row.subtaskId);
-        if (!card || (row.kind === 'claim' && row.state === 'blocked')) return null;  // Its blocker row already shows it.
-        const label = { review: 'Result awaiting review', blocker: 'Assignment blocked', finding: 'Shared finding', changes_requested: 'Changes requested',
-          claim: 'Assignment in progress' }[row.kind] || row.kind;
+        if (!card) return null;
+        const label = { review: 'Result awaiting review', changes_requested: 'Changes requested', claim: 'Assignment in progress' }[row.kind] || row.kind;
         const tools = h('div', { class: 'tools' });
         if (row.kind === 'review' && card.column === 'inprogress') tools.append(  // Review needs In Progress; a Blocked card shows the row only.
           h('button', { class: 'btn sm primary', type: 'button', on: { click: () => review(row, 'accept') } }, 'Accept result'),
           h('button', { class: 'btn sm outline', type: 'button', on: { click: () => review(row, 'request-changes') } }, 'Request changes…'));
-        if (row.kind === 'finding') tools.append(h('button', { class: 'btn sm outline', type: 'button', on: { click: () => acknowledge([row]) } }, 'Acknowledge'));
-        const body = row.kind === 'finding' ? [row.note.summary, row.note.body].filter(Boolean).join('\n\n') : row.kind === 'blocker'
-          ? `${row.blocker?.reason || ''}\nUnblocks when: ${row.blocker?.until || ''}`
-          : row.kind === 'changes_requested' ? row.review?.reason
+        const body = row.kind === 'changes_requested' ? row.review?.reason
           : row.kind === 'claim' ? `Last activity: ${WB.ui.relTime(row.lastActivityAt) || 'unknown'}` : subtask?.delegation?.result;
-        return block(label, row.owner ? `@${row.owner}` : row.note?.by ? `@${row.note.by}` : '',
+        return block(label, row.owner ? `@${row.owner}` : '',
           h('button', { class: 'btn sm', type: 'button', on: { click: () => WB.openCard(row.cardId) } }, `#${card.num} ${card.title}`),
           h('p', { class: 'view-note', text: row.subtaskId ? `${row.subtaskId}${subtask ? ` · ${subtask.text}` : ''}` : 'Shared with the parent' }),
           h('p', { class: 'subtask-result', text: body || '' }), tools);
       }),
-      !items.length && empty('done', 'Inbox is clear', 'New results, assignment blockers and shared findings will appear here.'),
+      !items.length && empty('done', 'Inbox is clear', 'New results and requested changes will appear here.'),
     ]);
   }
 
@@ -3729,9 +3610,7 @@ const WB = window.WB = {};
   const VIEWS = {
     inbox: {
       render() {
-        cur.ackAll = h('button', { class: 'btn sm outline', type: 'button', hidden: true,
-          on: { click: () => acknowledge(store.inbox.data.items.filter(row => row.kind === 'finding')) } }, 'Acknowledge all');
-        mount('Inbox', `Review work for ${WB.state.actor}.`, [cur.ackAll, retry('inbox')]); paintInbox(); load('inbox');
+        mount('Inbox', `Review work for ${WB.state.actor}.`, [retry('inbox')]); paintInbox(); load('inbox');
       },
       paint: paintInbox,
       update() { paintInbox(); schedule('inbox'); },

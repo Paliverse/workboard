@@ -3,9 +3,11 @@
   binary                          PyInstaller app -> dist/workboard-<os>-<arch>.{zip,tar.gz}; on Windows
                                   also compiles npm's launcher (packaging/launcher.cs) into _internal/
   smoke PATH                      run a release archive (or an installed executable) end to end
-                                  in a scratch home: --version, init, one delegated subtask round trip,
-                                  add --from, export, digest, serve + HTTP; a Windows archive also runs
-                                  a two-line argument through the npm launcher in a fake npm prefix
+                                  in a scratch home: --version, init, a write and read back (board.db),
+                                  one delegated subtask round trip, add --from, digest, serve + HTTP;
+                                  a Windows archive runs in a fake npm prefix after bin/launcher.js (node):
+                                  a two-line argument through the launcher exe, then npm's sh shim (Git's sh)
+                                  with node off PATH: --version, a two-line argument, stdin, the exit code
   checksums [DIR]                 DIR/SHA256SUMS over every file in DIR (default: dist)
   notes --version X               print the CHANGELOG.md section of X (GitHub Release notes)
   npm --version X                 build/npm/: the `@paliverse/workboard` package + one package per archive in dist/
@@ -123,11 +125,25 @@ def smoke(args) -> None:
         target = Path(args.path).resolve()
         launcher = target.name.endswith(".zip")
         if launcher:
-            # Unpack into npm's global layout, so the launcher finds the binary the way it does after npm install -g.
+            # npm's global layout plus stand-ins for npm's shims; bin/launcher.js (postinstall) then installs the
+            # launcher exes and rewrites the sh shims, as after npm install -g.
+            node, sh = shutil.which("node"), shutil.which("sh")
+            if not node or not sh:
+                raise SystemExit("smoke needs node and sh (Git for Windows) on PATH for the npm launchers")
             prefix = tmp / "npm"
-            package = prefix / "node_modules/@paliverse/workboard/node_modules/@paliverse"
+            main = prefix / "node_modules/@paliverse/workboard"
             cpu = "arm64" if "arm64" in target.name else "x64"
-            target = extract(target, package / f"workboard-win32-{cpu}") / "workboard.exe"
+            package = main / f"node_modules/{NPM_SCOPE}/workboard-win32-{cpu}"
+            target = extract(target, package) / "workboard.exe"
+            write_json(package / "package.json", {"name": f"{NPM_SCOPE}/workboard-win32-{cpu}"})
+            shutil.copytree(ROOT / "packaging" / "npm" / "bin", main / "bin")
+            for name in ("workboard", "wb"):
+                (prefix / name).write_text('#!/bin/sh\nbasedir=$(dirname "$0")\nexec node '
+                                           '"$basedir/node_modules/@paliverse/workboard/bin/workboard.js" "$@"\n',
+                                           encoding="utf-8", newline="\n")
+                (prefix / f"{name}.cmd").write_text(
+                    '@node "%~dp0\\node_modules\\@paliverse\\workboard\\bin\\workboard.js" %*\r\n', encoding="utf-8")
+            subprocess.run([node, str(main / "bin" / "launcher.js")], check=True, timeout=60)
         elif target.name.endswith(".tar.gz"):
             target = extract(target, tmp / "app") / "workboard"
         project = tmp / "project"
@@ -136,8 +152,8 @@ def smoke(args) -> None:
         env.pop("PYTHONPATH", None)  # exercise the packaged code only
         (tmp / "home").mkdir()
 
-        def cli(*argv: str, exe: Path = target) -> str:
-            proc = subprocess.run([str(exe), *argv], cwd=project, env=env, stdin=subprocess.DEVNULL,
+        def cli(*argv: str, exe: list[str] | None = None) -> str:
+            proc = subprocess.run([*(exe or [str(target)]), *argv], cwd=project, env=env, stdin=subprocess.DEVNULL,
                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
             print(f"$ workboard {' '.join(argv)}  [exit {proc.returncode}]\n{proc.stdout}{proc.stderr}".rstrip())
             if proc.returncode:
@@ -150,14 +166,35 @@ def smoke(args) -> None:
         if cli("--version").strip() != f"workboard {version}":
             raise SystemExit(f"smoke failed: --version does not report workboard {version}")
         cli("init", "smoke")
-        # One delegated round trip plus add --from and export load every private module in the frozen app.
+        # One delegated round trip plus add --from load every private module in the frozen app.
         num = str(cli_json("--actor", "Main", "add", "--title", "Smoke card")["num"])
+        if not any(Path(env["WORKBOARD_HOME"]).glob("boards/*/board.db")):
+            raise SystemExit("smoke failed: no board.db after the first writes (the SQLite store)")
+        # A write read back by the next process; on Windows through npm's launcher exe, which passes its raw command
+        # line through, line breaks included.
+        cli("--actor", "Main", "note", num, "--summary", "launcher", "--body", "two\nlines",
+            exe=[str(prefix / "workboard.exe")] if launcher else None)
+        if cli_json("context", num)["card"]["log"][-1].get("body") != "two\nlines":
+            raise SystemExit("smoke failed: a two-line note did not read back intact")
         if launcher:
-            # The npm launcher passes its raw command line through, line breaks included.
-            shutil.copy2(target.parent / "_internal" / LAUNCHER, prefix / "workboard.exe")
-            cli("--actor", "Main", "note", num, "--summary", "launcher", "--body", "two\nlines", exe=prefix / "workboard.exe")
-            if cli_json("context", num)["card"]["log"][-1].get("body") != "two\nlines":
-                raise SystemExit("smoke failed: the npm launcher did not pass a two-line argument through intact")
+            # npm's sh shims (Git Bash, omp's bash) exec the binary themselves: node is off PATH from here on.
+            env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep) if not Path(p, "node.exe").is_file())
+            for name in ("workboard", "wb"):
+                if cli("--version", exe=[sh, (prefix / name).as_posix()]).strip() != f"workboard {version}":
+                    raise SystemExit(f"smoke failed: npm's {name} sh shim did not run the binary")
+            shim = [sh, (prefix / "workboard").as_posix()]
+            # Typed in sh as agents do (a Windows command line into sh.exe would split the line break itself).
+            script = tmp / "shim.sh"
+            script.write_text('"$1" --actor Main note "$2" --summary shim --body \'two\nlines\' &&\n'
+                              '"$1" --actor Main note "$2" --summary stdin --stdin <<\'EOF\'\nhéllo\nwörld ✓\nEOF\n',
+                              encoding="utf-8", newline="\n")
+            cli(shim[1], num, exe=[sh, script.as_posix()])
+            if [entry.get("body") for entry in cli_json("context", num)["card"]["log"][-2:]] != ["two\nlines", "héllo\nwörld ✓"]:
+                raise SystemExit("smoke failed: npm's sh shim did not pass a two-line argument and stdin through intact")
+            codes = {subprocess.run([*runner, "context", "999999"], cwd=project, env=env, stdin=subprocess.DEVNULL,
+                                    capture_output=True).returncode for runner in ([str(target)], shim)}
+            if len(codes) != 1 or 0 in codes:
+                raise SystemExit(f"smoke failed: npm's sh shim changed the exit code of a failing command: {codes}")
         cli("--actor", "Main", "start", num)
         subtask = cli_json("--actor", "Main", "subtask", num, "add", "Produce")["items"][0]["id"]
         cli("--actor", "Main", "subtask", num, "delegate", subtask)
@@ -167,9 +204,6 @@ def smoke(args) -> None:
         if cli_json("--actor", "Main", "done", num, "--writeup", "Integrated the result")["column"] != "done":
             raise SystemExit("smoke failed: the parent card did not complete")
         cli("--actor", "Main", "add", "--from", num, "--title", "Smoke copy")
-        cli("export", "--out", str(tmp / "smoke.zip"))
-        if not zipfile.is_zipfile(tmp / "smoke.zip"):
-            raise SystemExit("smoke failed: export did not write a ZIP")
         cli("digest")
         serve_smoke(target, project, env, tmp / "serve.log")
     print(f"smoke ok: {args.path}")

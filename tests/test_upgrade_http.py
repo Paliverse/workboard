@@ -14,7 +14,7 @@ import unittest
 from unittest import mock
 
 from tests.support import SRC, make_env, scratch
-from workboard import core, doctor, install, server, update
+from workboard import __version__, core, doctor, install, server, update
 
 
 class UpgradeHttpBoundary(unittest.TestCase):
@@ -46,7 +46,7 @@ class UpgradeHttpBoundary(unittest.TestCase):
             "if os.environ.get('WB_OLD_SERVER') == '1':\n"
             "  from workboard import core\n"
             "  current=core.runtime_info()\n"
-            "  core.runtime_info=lambda: {**current, 'schemaVersion':3, 'supportedSchemaVersions':[1,2,3], 'capabilities':['context']}\n"
+            "  core.runtime_info=lambda: {**current, 'version':'0.3.0', 'schemaVersion':3, 'capabilities':['context']}\n"
             "cli.main(sys.argv[1:])\n",
             encoding="utf-8")
         self.env.update(WB_UPGRADE_WRAPPER=str(self.wrapper), WB_UPGRADE_CHILD_PID=str(self.child_pid))
@@ -157,8 +157,8 @@ class UpgradeHttpBoundary(unittest.TestCase):
         self.assertTrue(server.stop())
         self._wait_for_pid_exit(new_pid)
 
-    def test_status_doctor_and_restart_flag_a_server_that_cannot_read_current_boards(self):
-        self.assertNotIn(core.SCHEMA_VERSION, self.old_health["supportedSchemaVersions"])
+    def test_status_doctor_and_restart_flag_a_server_of_another_version(self):
+        self.assertNotEqual(self.old_health["version"], __version__)  # A 0.3.x server cannot read board.db.
 
         class Backend:
             def status(self):
@@ -166,7 +166,7 @@ class UpgradeHttpBoundary(unittest.TestCase):
 
         with mock.patch.object(install, "_backend", lambda: Backend()), \
                 mock.patch("shutil.which", return_value=None):
-            self.assertIs(install.service_status()["schemaMatch"], False)
+            self.assertIs(install.service_status()["versionMatch"], False)
             report = doctor.diagnose()
         self.assertIn("server-schema-mismatch", {item["code"] for item in report["blockers"]})
 
