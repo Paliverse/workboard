@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-13
+
 **Breaking changes.** Each board moves to a new store, `board.db`, the first time 0.4.0 uses it, and WorkBoard 0.3.x and earlier refuse migrated boards instead of reading them. Restart the server after updating (`workboard upgrade` does it): a 0.3.x server left running can't read migrated boards. There is no downgrade except restoring the pre-migration `board.json`, which stays in the board's `.backups/` folder; see [Upgrading to 0.4.0](docs/install.md#upgrading-to-040). `export`, `import`, `sweep`, `next`, `ack`, `workpad`, subtask `block`/`resume`/`release`, subtask prerequisites, card links and the separate comment stream are removed, and comments become timeline notes (see Removed). `done` and `cancel` now close a card another actor holds.
 
 ### Added
@@ -19,9 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refusals of a `call` request carry `fix`, a corrected request that passes the same validation, when the correction is clear, and `usage`, the op's `help` entry. For example `"priority":"high"` gets a fix with `critical`, `bug` with a `title` gets a fix to `add` with the tag `bug`, a CLI line such as `show 12` sent to `call` gets `{"op":"context","card":12}`, and `context` with `fields` gets the matching `query`.
 - `workboard call` also takes JSON requests as arguments: `workboard call '{"op":"context","card":12}'`.
 - `doctor` checks the store: `split-brain`, `store-missing`, `stub-missing`, `store-corrupt` (`PRAGMA quick_check`) and `row-mismatch` blockers, `legacy-storage` and `store-leftover` warnings, and `home-not-local` when `WORKBOARD_HOME` is on a network drive, a network filesystem or a synced folder such as OneDrive or Dropbox, where SQLite's write-ahead log isn't safe. `doctor` never migrates or writes.
+- The agent skill has a Hygiene section: an agent that finds WorkBoard instructions elsewhere (`AGENTS.md`, `CLAUDE.md`, brief templates, scripts) that disagree with the skill, such as a `label` key, reading `board.json` or one process per request, updates them to match in the same piece of work, or tells the user what to change when it can't.
 
 ### Changed
 
+- The agent skill is about half as long (66 lines instead of 120). It teaches one name for each op and key, leaves the key table to `help`, and tells Main to paste the `handoff` prompt verbatim into worker briefs: workers briefed without it failed 10.8% of their calls, with it 3.7%.
 - `done` and `cancel` close a card another actor holds, without a `takeover` first; the history entry records the previous holder as `previousOwner`, and `expectedRev` still guards the write. Two thirds of the takeovers on real boards existed only to close a card.
 - `done` accepts delegated results that are completed but not yet accepted, with the usual generated notes and history; 54 such results sat unaccepted on real boards. Delegated work that isn't completed still keeps the card open, and the refusal names it.
 - Anyone may post `note --subtask` on a step nobody holds: a plain checklist step or delegated work that is still available. A step another worker holds still needs that worker or the card's active owner.
@@ -326,7 +330,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.3.11...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Paliverse/workboard/compare/v0.3.11...v0.4.0
 [0.3.11]: https://github.com/Paliverse/workboard/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/Paliverse/workboard/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/Paliverse/workboard/compare/v0.3.8...v0.3.9
