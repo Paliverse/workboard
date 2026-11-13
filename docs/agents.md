@@ -59,7 +59,7 @@ Input may be a stream of objects (one per line or pretty-printed) or an array. E
 
 ## The protocol
 
-The [WorkBoard skill](../src/workboard/skills/workboard/SKILL.md) is the protocol agents follow: one `call` per step, `help`, the `fix` and `usage` in refusals, the loop from `digest` or `query` through `context`, `start`, notes and subtasks to `done`, delegating subtasks through the `handoff` prompt, the worker's side of an assignment, and its rules. `skills install` puts that same file where each harness reads it, so this page doesn't repeat it. Every command's options, output and error codes are in the [CLI reference](cli.md), and the rules for delegated work in [Delegated subtasks](cli.md#delegated-subtasks).
+The [WorkBoard skill](../src/workboard/skills/workboard/SKILL.md) is the protocol agents follow: one `call` per step, `help`, the `fix` and `usage` in refusals, the loop from `digest` or `query` through `context`, `start`, notes and subtasks to `done`, delegating subtasks through the `handoff` prompt, the worker's side of an assignment, hygiene (an agent that finds stale WorkBoard instructions in `AGENTS.md`, `CLAUDE.md`, templates or scripts updates them to match the skill), and its rules. `skills install` puts that same file where each harness reads it, so this page doesn't repeat it. Every command's options, output and error codes are in the [CLI reference](cli.md), and the rules for delegated work in [Delegated subtasks](cli.md#delegated-subtasks).
 
 WorkBoard 0.4.0 moves each board into `board.db` on its first use, and older versions can't read it, so update every installation that uses a board first (see [Upgrading to 0.4.0](install.md#upgrading-to-040)).
 

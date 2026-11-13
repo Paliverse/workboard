@@ -53,6 +53,9 @@ You own the card, integrate and verify. Workers get subtasks, never the card.
 ## Worker
 Your brief's requests are your calls: `context`, `subtask.claim` before editing, `note` with `subtask` for each finding as soon as it could help, then `subtask.done` with `text` = the result. Edit only your scope and never change the parent card. Then `wait` on your subtask for the review; if Main requests changes, the step is yours again. Stuck? `note` the blocker on your subtask and `wait`.
 
+## Hygiene
+Instructions about WorkBoard elsewhere go stale as it changes: AGENTS.md, CLAUDE.md, brief and prompt templates, scripts. This skill wins where they disagree. When one tells agents to do what this skill doesn't, fix it to match this skill in the same piece of work and note the fix on your card. Examples: an op or key this skill doesn't name (check with `help`), `label` instead of `--actor`, reading board.json, one process per request, a wrapper that drops `--actor` or `--board`. If you can't edit it, tell the user what is stale and the fix.
+
 ## Rules
 - Columns: Backlog (ideas), Task (committed), In Progress (being worked), Blocked (a reason and an exit condition), Done (shipped with evidence, or canceled).
 - One card per unit of work the user names; steps are subtasks. At `add`, the user's words go in `origin` and the acceptance criteria in `notes`.
