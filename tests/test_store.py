@@ -134,13 +134,13 @@ class Store(unittest.TestCase):
 
         with mock.patch.object(core, "_read_shared", stale_first):
             self.assertEqual(core.load(path)["cards"], expected)
-        real_open, opens = core.open_shared, []
+        opens = []
 
         def missing_once(target, *args, **kwargs):  # ReplaceFileW's moment without a board.json
             opens.append(target)
             if len(opens) == 1:
                 raise FileNotFoundError(2, "replacing", str(target))
-            return real_open(target, *args, **kwargs)
+            return open(target, *args, **kwargs)  # not open_shared: its Windows opener exists only on Windows
 
         with mock.patch.object(core, "_IS_WINDOWS", True), mock.patch.object(core, "open_shared", missing_once):
             self.assertEqual(core.load(path)["cards"], expected)

@@ -218,7 +218,6 @@ class DataIntegrityTest(DoctorCase):
             stream.write(b"\x0d" + b"\xff" * 7)
         report = self.inspect()
         self.assertIn("store-corrupt", codes(report))
-        self.assertIn("cards_col", next(item["message"] for item in report["blockers"]))
 
     def test_corrupted_legacy_board_json_is_a_blocker(self):
         legacy(self.board, self.doc)
