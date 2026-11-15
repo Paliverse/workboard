@@ -20,8 +20,9 @@ from . import __version__
 KEEP_DAYS, KEEP_BYTES, DAY_BYTES = 60, 200 << 20, 50 << 20
 _OP = re.compile(r"[a-z][a-z.\-]{0,31}")  # what a cli or call op may log; anything else is "?"
 _KEY = re.compile(r"[A-Za-z][A-Za-z0-9_\-]{0,31}")  # request keys and options: names, never text
-# The caller's text follows these (argparse's echo, an unknown op or field name), or is the value quoted: never logged.
-_ECHO = re.compile(r"(unrecognized arguments:|ambiguous option:|unknown op|unknown fields:).*", re.S)
+# The caller's text follows these (argparse's echo, an unknown op or field name), or is the value quoted: never
+# logged, except an op or field name that looks like one.
+_ECHO = re.compile(r"(unrecognized arguments:|ambiguous option:|unknown op|unknown fields:)(.*)", re.S)
 _REFUSED = re.compile(r"(invalid choice:|invalid \S+ value:|ignored explicit argument) "
                       r"(?:'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")")
 _FILETIME_UNIX = 116444736000000000  # 100 ns ticks from 1601-01-01 to 1970-01-01
@@ -70,10 +71,20 @@ def _identity() -> dict:
     return {"host": host}
 
 
+def _echo(m: re.Match) -> str:
+    """An echo of the caller's arguments becomes '…'; an unknown op or field name stays if it looks like a name."""
+    if m[1] == "unknown op" and (op := re.match(r' "([^"]*)"', m[2])) and _OP.fullmatch(op[1]):
+        return f'{m[1]} "{op[1]}" …'
+    if m[1] == "unknown fields:":
+        names = (name.strip() for name in m[2].split(";")[0].split(","))
+        return f"{m[1]} " + ", ".join(name if _KEY.fullmatch(name) else "…" for name in names) + " …"
+    return m[1] + " …"
+
+
 def _redact(message: str) -> str:
     """argparse's echo of the arguments and the values it quotes become '…', as do quoted spans with
     whitespace or over 24 characters; apostrophes don't pair."""
-    message = _REFUSED.sub(r"\1 …", _ECHO.sub(r"\1 …", message))
+    message = _REFUSED.sub(r"\1 …", _ECHO.sub(_echo, message))
     return re.sub(r"(?<!\w)'[^'\n]*'(?!\w)|\"[^\"\n]*\"",
                   lambda m: m[0] if len(m[0]) <= 26 and not any(c.isspace() for c in m[0])
                   else m[0][0] + "…" + m[0][0], message)[:200]
@@ -122,6 +133,12 @@ def note(**fields) -> None:
     rec = getattr(_local, "rec", None)
     if rec is not None:
         _merge(rec, fields)
+
+
+def missing(*names: str) -> bool:
+    """The open record holds none of these fields; false outside a request, so callers skip the work."""
+    rec = getattr(_local, "rec", None)
+    return rec is not None and not any(name in rec for name in names)
 
 
 def _prune(logs: str) -> None:
@@ -182,6 +199,9 @@ def end(**fields) -> None:
                 t, _boot = {"boot": _boot, **t}, None
         if "err" in rec:
             rec["err"] = _redact(str(rec["err"]))
+        if "boardArg" in rec:  # A board argument that matched none stays only if it reads like a name, as quotes do.
+            arg = str(rec["boardArg"])
+            rec["boardArg"] = arg if len(arg) <= 24 and not any(c.isspace() for c in arg) else "…"
         op = rec.get("op")  # The server builds its op from its routes; cli and call ops come from the caller.
         if rec["entry"] != "http" and op is not None and not (isinstance(op, str) and _OP.fullmatch(op)):
             rec["op"] = "?"

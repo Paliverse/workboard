@@ -7,7 +7,9 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -428,19 +430,13 @@ class CallAndWait(unittest.TestCase):
         self.assertEqual((labelled["num"], add["actor"]), (2, "Main"))
         self.assertEqual(self.calls({"op": "query", "card": add["num"], "fields": "tags"})[0]["cards"], [{"tags": ["x"]}])
         rev = self.calls({"op": "which"})[0]["rev"]
-        body, move, claim, high, both = self.calls(
-            {"op": "add", "title": "t", "body": "y"},
+        move, claim, both = self.calls(
             {"op": "move", "card": 1, "column": "done"},
             {"op": "claim", "card": 1},
-            {"op": "update", "card": 1, "priority": "high"},
             {"op": "show", "id": 1, "label": "Ada", "actor": "Grace"}, ok=False)
-        self.assertEqual(body["error"], 'add doesn\'t take "body"')
-        self.assertNotIn("fix", body)
-        self.assertIn("notes", body["usage"]["optional"])
         self.assertEqual(move["code"], "state")  # move runs as fly, which leaves Done to done.
         self.assertIn('did you mean "start" (or "subtask.claim")?', claim["error"])
         self.assertEqual(claim["fix"], {"op": "start", "card": 1})
-        self.assertEqual(high["fix"], {"op": "update", "card": 1, "priority": "critical"})
         self.assertIn('"label" and "actor" differ', both["error"])
         self.assertEqual(self.calls({"op": "which"})[0]["rev"], rev)
         proc = self.cli(["move", "1", "done"])
@@ -667,8 +663,8 @@ class CallAndWait(unittest.TestCase):
         self.assertEqual(tagged["cards"], [{"num": 3}])
         self.assertEqual([card["num"] for card in words["cards"]], [1])
         self.assertEqual((phrase["cards"], absent["cards"]), ([], []))
-        unknown = self.calls({"op": "query", "fields": "num,status"}, ok=False)[0]
-        self.assertIn("unknown fields: status", unknown["error"])
+        unknown = self.calls({"op": "query", "fields": "num,stat"}, ok=False)[0]
+        self.assertIn("unknown fields: stat", unknown["error"])
         shorthand = self.json(["search", "finding", "11"])
         self.assertEqual(shorthand, words)
 
@@ -702,6 +698,49 @@ class CallAndWait(unittest.TestCase):
                                   {"op": "query", "text": "absent", "fields": "num,estimat"}, ok=False)
         self.assertEqual(subset["cards"], [{"num": 2, "estimate": None}])
         self.assertIn("unknown fields: estimat", typo["error"])
+
+    def test_query_reading_some_keys_gives_what_whole_cards_give(self):
+        """Each query three ways: SQL candidates with only the keys its filters and fields read, candidates with
+        whole cards, and every whole card filtered in Python (the path before SQL narrowing)."""
+        self.calls({"op": "add", "title": "Größe der Straße", "tags": ["bug", "ui"], "priority": "critical"},  # 2
+                   {"op": "add", "title": "İstanbul crash", "tags": ["bug"]},                                  # 3
+                   {"op": "add", "title": "\u212a-band crash", "notes": "naïve café", "on": 3},                # 4
+                   {"op": "add", "title": "Plain", "notes": "crash site", "column": "backlog"},                # 5
+                   {"op": "start", "card": 3}, {"op": "block", "card": 3, "text": "waiting", "until": "later"},
+                   {"op": "note", "card": 4, "text": "Crash again", "body": "ΣΊΣΥΦΟΣ trace"})
+        con = sqlite3.connect(Path(self.board).with_name(core.DB_NAME), isolation_level=None)  # 0.4.0's writes:
+        body = json.loads(con.execute("SELECT body FROM cards WHERE num = 5").fetchone()[0])  # #5's hay goes stale,
+        body.update(notes="landing site", changedRev=body["changedRev"] + 1)                    # #2's goes missing.
+        con.execute("UPDATE cards SET changed_rev = ?, body = ? WHERE num = 5",
+                    (body["changedRev"], core._dump(body)))
+        con.execute("DELETE FROM hay WHERE id = (SELECT id FROM cards WHERE num = 2)")
+        con.close()
+        queries = [["--text", "crash"], ["--text", "straße"], ["--text", "σίσυφος"], ["--text", "\u212a-BAND"],
+                   ["--text", "landing"], ["--text", "plain", "--text", "crash"],
+                   ["--tag", "bug", "--fields", "num,tag"],
+                   ["--text", "crash", "--fields", "num,title,column,owner,rev,tags,priority,created,changed,notes"],
+                   ["--column", "task", "--column", "blocked", "--text", "crash"], ["--mine", "--text", "crash"],
+                   ["--owner", "Main", "--fields", "num,holder,status"], ["--priority", "critical", "--text", "größe"],
+                   ["--since-days", "1", "--text", "crash", "--limit", "2"],
+                   ["--text", "crash", "--fields", "num,deps"]]
+
+        def query(argv):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cli.main(["query", "--board", "calls", *argv])
+            return json.loads(out.getvalue())["cards"]
+
+        with mock.patch.dict(os.environ, self.env):
+            with mock.patch.object(core, "card_fields", wraps=core.card_fields) as projected:
+                fast = [query(argv) for argv in queries]
+            self.assertEqual(projected.call_count, len(queries) - 1)  # deps reads other cards: whole cards.
+            with mock.patch.object(cli, "_query_keys", return_value=None):
+                whole = [query(argv) for argv in queries]
+            with mock.patch.object(core, "query_candidates", return_value=None):
+                everything = [query(argv) for argv in queries]
+        self.assertEqual(fast, whole)
+        self.assertEqual(fast, everything)
+        self.assertEqual([[card["num"] for card in cards] for cards in fast[:6]], [[3, 4], [2], [4], [4], [5], []])
 
     def test_digest_matches_the_full_load(self):
         def ago(days):
@@ -777,6 +816,57 @@ class CallAndWait(unittest.TestCase):
         self.assertEqual((last_json(line)["error"], last_json(line)["fix"]),
                          ("call reads JSON requests, not commands", {"op": "context", "card": 1, "full": True}))
 
+    def test_requests_0_4_0_refused_now_run(self):
+        """Each REFUSED_0_4 shape against the board it was built for, in order."""
+        setup = self.calls({"op": "start", "card": 1},
+                           {"op": "subtask.add", "card": 1, "text": ["Plain one", "Plain two"]},
+                           {"op": "subtask.add", "card": 1, "text": ["Shared one", "Shared two"], "delegated": True},
+                           *[{"op": "add", "title": f"Waiting {n}"} for n in (2, 3, 4)],
+                           *[{"op": "block", "card": n, "text": "API down", "until": "API is up"}
+                             for n in (2, 3, 4)])
+        bare = self.calls({"op": "start", "card": 2}, ok=False)[0]
+        self.assertEqual((bare["status"], bare["code"]), (409, "state"))  # Leaving Blocked says what changed.
+        got = dict(zip(REFUSED_0_4, self.calls(*REFUSED_0_4.values())))
+        claimed = got["plain claim"]  # A plain step needs no claim: nothing changes, and the action says so.
+        self.assertEqual((claimed["rev"], "delegation" in claimed["item"]), (setup[-1]["rev"], False))
+        self.assertIn("s-1] is a plain step and needs no claim: note and tick it directly", claimed["action"])
+        self.assertTrue(got["plain result"]["item"]["done"])
+        self.assertEqual(got["column list"]["cards"], [{"num": 2}, {"num": 3}, {"num": 4}])
+        self.assertEqual(got["context fields"]["card"], {"num": 1, "title": "Parent", "column": "inprogress"})
+        moves = ("start blocked", "done blocked", "unblock", "close", "start text", "block unblockWhen",
+                 "start resumes")
+        self.assertEqual([got[name]["column"] for name in moves],
+                         ["inprogress", "done", "inprogress", "done", "inprogress", "blocked", "inprogress"])
+        self.assertEqual(got["card"]["card"]["title"], "Parent")
+        self.assertTrue(got["step item"]["item"]["done"])
+        self.assertEqual(list(got["help topic"]["ops"]), ["note"])
+        self.assertIn("history", got["context history"]["card"])
+        rows = got["field names"]["cards"]
+        self.assertEqual([(row["num"], row["column"], row["owner"], row["priority"], row["title"], row["origin"])
+                          for row in rows],
+                         [(1, "inprogress", "Main", "critical", "Parent", ""),
+                          (5, "task", None, None, "Title from text", "Origin from body"),
+                          (6, "inprogress", "Main", "critical", "Titled", "Origin from text")])
+        self.assertTrue(all(row["createdAt"] <= row["updatedAt"] for row in rows))
+        self.assertEqual([(item["id"], item["delegation"]["owner"]) for item in got["claim list"]["items"]],
+                         [("s-3", "Ada"), ("s-4", "Ada")])
+        parent, started = self.calls({"op": "context", "card": 1, "full": True}, {"op": "context", "card": 6})
+        self.assertIn(("s-2", "Verified: 14/14 tests"),
+                      [(entry.get("subtaskId"), entry["body"]) for entry in parent["card"]["log"]])
+        self.assertEqual(parent["card"]["subtasks"][4]["text"], "Step from title")
+        self.assertEqual(started["card"]["log"][-1]["summary"], "Picking this up")
+
+    def test_search_lines_ignore_fields(self):
+        self.calls({"op": "add", "title": "Crash on start"})
+        lines = self.cli(["search", "crash", "--fields", "num"])
+        self.assertEqual((lines.returncode, lines.stdout.split()[:2]), (0, ["#2", "task"]), lines.stderr)
+
+    def test_add_text_beside_from_is_the_origin(self):
+        self.calls({"op": "add", "title": "Crash on start"})
+        copied = self.calls({"op": "add", "from": 2, "text": "Seen again in the log"})[0]
+        card = self.calls({"op": "query", "card": copied["num"], "fields": "title,origin"})[0]["cards"][0]
+        self.assertEqual(card, {"title": "Crash on start", "origin": "Seen again in the log"})
+
 
 # Requests agents really sent from 2026-10-28 to 11-13 that call refused (build/friction/calls.jsonl).
 REPLAYED = [
@@ -827,6 +917,33 @@ REPLAYED = [
     {"op": "claim", "card": 2182},
 ]
 
+# Shapes 0.4.0 refused in its first 1.5 days (usage-*.jsonl), each now run as meant. The board test builds what
+# they name: card 1 In Progress with plain steps s-1, s-2 and delegated s-3, s-4; cards 2 to 4 Blocked.
+REFUSED_0_4 = {
+    "plain claim": {"op": "subtask.claim", "card": 1, "subtask": "s-1"},
+    "plain result": {"op": "subtask.done", "card": 1, "subtask": "s-2", "result": "Verified: 14/14 tests"},
+    "column list": {"op": "query", "column": ["task", "blocked"], "fields": "num"},
+    "context fields": {"op": "context", "card": 1, "fields": "num,title,state"},
+    "priority high": {"op": "update", "card": 1, "priority": "high"},
+    "start blocked": {"op": "start", "card": 2, "text": "The API is back"},
+    "done blocked": {"op": "done", "card": 3, "text": "Shipped without the API"},
+    "unblock": {"op": "unblock", "card": 4, "text": "The API is back"},
+    "close": {"op": "close", "card": 4, "text": "Shipped"},
+    "card": {"op": "card", "card": 1},
+    "add body": {"op": "add", "text": "Title from text", "body": "Origin from body"},
+    "add text": {"op": "add", "title": "Titled", "text": "Origin from text", "priority": "urgent"},
+    "start text": {"op": "start", "card": 6, "text": "Picking this up"},
+    "step title": {"op": "subtask.add", "card": 1, "title": "Step from title"},
+    "step item": {"op": "subtask.done", "card": 1, "item": "s-5"},
+    "help topic": {"op": "help", "topic": "note"},
+    "context history": {"op": "context", "card": 1, "history": True},
+    "block unblockWhen": {"op": "block", "card": 1, "text": "Waiting on review", "unblockWhen": "review lands"},
+    "start resumes": {"op": "start", "card": 1, "text": "Review landed"},
+    "field names": {"op": "query", "card": [1, 5, 6],
+                    "fields": "num,state,holder,priority,title,origin,created,changed"},
+    "claim list": {"op": "subtask.claim", "card": 1, "subtask": ["s-3", "s-4"], "actor": "Ada"},
+}
+
 
 class Vocabulary(unittest.TestCase):
     """The OPS table, validated without a board."""
@@ -838,7 +955,7 @@ class Vocabulary(unittest.TestCase):
 
     def test_real_refused_requests_now_run_or_carry_a_fix_that_passes(self):
         fixed = 0
-        for request in REPLAYED:
+        for request in [*REPLAYED, *REFUSED_0_4.values()]:
             with self.subTest(request=request):
                 try:
                     self.runs(request)
@@ -847,7 +964,7 @@ class Vocabulary(unittest.TestCase):
                     self.assertIn(refused.fix["op"], cli.OPS)  # A fix uses canonical names.
                     self.runs(refused.fix)
                     fixed += 1
-        self.assertEqual(fixed, 8)
+        self.assertEqual(fixed, 5)
 
     def test_ops_table_and_argparse_agree(self):
         commands = cli._commands(cli.build_parser())

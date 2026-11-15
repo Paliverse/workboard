@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Paliverse
 """0.4.0 policies: done/cancel over another holder (P1), done accepting finished results (P2), notes on
-unheld steps (P3), comments folding into the log on migration, and schema 1-2 refusal."""
+unheld steps (P3), comments folding into the log on migration, and schema 1-2 refusal. 0.4.1: Blocked cards
+start with a note and close with done, plain steps take a result, and claiming one changes nothing."""
 from __future__ import annotations
 
 import json
@@ -93,6 +94,71 @@ class StepNotes(unittest.TestCase):
         self.assertIn("held by W", str(caught.exception))
         for by in ("W", "Main"):
             core.publish_subtask_note(doc, card, "s-3", f"from {by}", "", by)
+
+
+class BlockedCards(unittest.TestCase):
+    def setUp(self):
+        self.doc = board()
+        self.card = started(self.doc, "Ada")
+        core.workflow_action(self.doc, self.card, "block", {"reason": "API down", "until": "it is back"}, "Ada")
+
+    def test_start_with_a_note_resumes_it_as_resume_does(self):
+        for note in (None, "  "):
+            with self.assertRaises(core.WorkflowError) as caught:
+                core.workflow_action(self.doc, self.card, "start", {} if note is None else {"note": note}, "Bob")
+            self.assertEqual(caught.exception.code, "state")
+            self.assertIn("use resume with a resolution note", str(caught.exception))
+        core.workflow_action(self.doc, self.card, "start", {"note": "API is back"}, "Bob")
+        last = self.card["history"][-1]
+        self.assertEqual((self.card["column"], self.card["activeOwner"], self.card["blockedReason"]),
+                         ("inprogress", "Bob", None))
+        self.assertEqual((last["ev"], last["by"], last["note"], last["from"], last["to"]),
+                         ("unblocked", "Bob", "API is back", "blocked", "inprogress"))
+
+    def test_done_closes_it_with_the_writeup_as_its_resolution(self):
+        core.workflow_action(self.doc, self.card, "complete", {"writeup": "Shipped with a local stub"}, "Bob")
+        self.assertEqual((self.card["column"], self.card["outcome"], self.card["writeup"], self.card["blockedReason"]),
+                         ("done", "completed", "Shipped with a local stub", None))
+        self.assertEqual((self.card["history"][-1]["from"], self.card["history"][-1]["to"]), ("blocked", "done"))
+
+
+class PlainSteps(unittest.TestCase):
+    def setUp(self):
+        self.doc = board()
+        self.card = started(self.doc)
+        subtask(self.doc, self.card, "add", "Main", texts=["parse", "write", "ship"])
+
+    def test_done_with_a_result_ticks_and_notes_each_step_once(self):
+        for _ in range(2):  # A retry finds the note and adds none.
+            subtask(self.doc, self.card, "done", "W", ids=["s-1", "s-2"], result=" parsed and written ")
+        notes = [(e["subtaskId"], e["summary"], e["body"], e["by"]) for e in self.card["log"] if "subtaskId" in e]
+        self.assertEqual(notes, [("s-1", "result s-1", "parsed and written", "W"),
+                                 ("s-2", "result s-2", "parsed and written", "W")])
+        self.assertEqual([(st["done"], st.get("doneBy"), "delegation" in st) for st in self.card["subtasks"]],
+                         [(True, "W", False), (True, "W", False), (False, None, False)])
+        with self.assertRaises(core.WorkflowError):
+            subtask(self.doc, self.card, "done", "W", ids=["s-3"], result=" ")
+        self.assertFalse(self.card["subtasks"][2]["done"])
+
+    def test_claiming_an_open_step_changes_nothing(self):
+        before = json.dumps(self.card, sort_keys=True)
+        for by in ("W", "V"):  # Nobody comes to hold it, so nobody blocks another claimer or the owner.
+            item, = subtask(self.doc, self.card, "claim", by, ids=["s-3"])
+            self.assertNotIn("delegation", item)
+        self.assertEqual(json.dumps(self.card, sort_keys=True), before)
+        subtask(self.doc, self.card, "rm", "Main", ids=["s-2"])
+        subtask(self.doc, self.card, "done", "Main", ids=["s-1", "s-3"])
+        core.workflow_action(self.doc, self.card, "complete", {"writeup": "shipped"}, "Main")
+        self.assertEqual(self.card["column"], "done")
+
+    def test_claiming_a_done_step_is_refused_and_an_open_one_needs_no_in_progress_card(self):
+        subtask(self.doc, self.card, "done", "Main", ids=["s-1"])
+        with self.assertRaises(core.WorkflowError) as caught:
+            subtask(self.doc, self.card, "claim", "W", ids=["s-1"])
+        self.assertEqual(caught.exception.code, "state")
+        core.workflow_action(self.doc, self.card, "block", {"reason": "wait", "until": "later"}, "Main")
+        self.assertEqual(subtask(self.doc, self.card, "claim", "W", ids=["s-2"]), [self.card["subtasks"][1]])
+        self.assertFalse(any("delegation" in st for st in self.card["subtasks"]))
 
 
 class LegacyBoards(unittest.TestCase):

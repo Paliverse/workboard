@@ -134,9 +134,9 @@ Body: `{"baseRev", "actor"?, "action", "details": {}}`. If the card has another 
 
 | `action` | `details` | Allowed from | Effect |
 |---|---|---|---|
-| `start` | `note`? | not Blocked (use `resume`), not Done | In Progress, claimed by the actor. Dependencies and the WIP limit are enforced. A no-op if you already own it. |
-| `submit` | `summary`, `verification` | Backlog, Task or In Progress | Completes with write-up `summary` + `Verification: verification`, as `complete` does. |
-| `complete` | `writeup` | Backlog, Task or In Progress | Done, outcome `completed`, owner cleared. Outside In Progress, the card's dependencies must be completed (409 `deps`). Every delegated subtask must be completed (409 `state`); completed results not yet accepted are accepted with it. |
+| `start` | `note`? | not Done; Blocked only with `note` | In Progress, claimed by the actor. Dependencies and the WIP limit are enforced. A no-op if you already own it. On a Blocked card it runs `resume` with `note` as the resolution; without `note` it is 409 `state`. |
+| `submit` | `summary`, `verification` | Backlog, Task, In Progress or Blocked | Completes with write-up `summary` + `Verification: verification`, as `complete` does. |
+| `complete` | `writeup` | Backlog, Task, In Progress or Blocked | Done, outcome `completed`, owner cleared. Outside In Progress, the card's dependencies must be completed (409 `deps`). Every delegated subtask must be completed (409 `state`); completed results not yet accepted are accepted with it. |
 | `block` | `reason`, `until` | not Done | Blocked, owner cleared. |
 | `resume` | `note`, `to`? (`task`\|`inprogress`, default `inprogress`) | Blocked | Leaves Blocked. `inprogress` runs the `start` checks. |
 | `takeover` | `reason` | In Progress | Owner becomes the actor. |
@@ -157,10 +157,10 @@ For `action: "subtask"`, `details` holds `op`, `ids` and the fields that operati
 | `op` | Fields | Effect |
 |---|---|---|
 | `add` | `texts` (one or more), `delegated`? (boolean) | Add subtasks to the end of the checklist; `delegated: true` makes them available delegated work. |
-| `done`, `undone`, `rm` | `ids` | Plain checklist subtasks: any number of ids, any actor; `result` is refused (422). Removing a delegated subtask needs the card's owner (409 `owned`). |
+| `done`, `undone`, `rm` | `ids` | Plain checklist subtasks: any number of ids, any actor. `done` with a `result` also posts it as a note on each step that doesn't have that note yet (summary `result s-N`); `undone` ignores `result`. Removing a delegated subtask needs the card's owner (409 `owned`). |
 | `delegate` | one id | Make an open checklist subtask available. |
 | `configure` | one id, `scope` (paths relative to the project root) | Set the saved write scope; `[]` clears it. On claimed work it keeps the claim but can only grow: a scope that drops a saved path, or `[]`, is 409 `state`. |
-| `claim` | one id | Claim available work. |
+| `claim` | one id | Claim available work. On an open plain checklist step it changes nothing, since a plain step needs no claim; on a done one it is 409 `state`. |
 | `done` | one id, `result` | The worker completes claimed work. The card's owner can also complete available work or work it holds; that result is accepted at once. |
 | `undone` | one id | The worker reopens completed work that was not accepted. |
 | `takeover` | one id, `reason` | Take claimed work from its worker. |
@@ -272,8 +272,8 @@ Card fields:
 | `by` | The actor label, or `null` for migrated entries whose stamp had none |
 | `summary` | One line, 1–160 characters, no line breaks |
 | `body` | Markdown, at most 32,000 characters, trailing whitespace stripped; `""` when empty |
-| `subtaskId` | Optional: the subtask a note is about, on a CLI `note --subtask` entry or a generated note |
-| `kind` | Optional: `"generated"` for notes the subtask lifecycle writes (results, takeovers, reviews) |
+| `subtaskId` | Optional: the subtask a note is about, on a CLI `note --subtask` entry, a generated note or the result note of a plain step's `done` |
+| `kind` | Optional: `"generated"` for notes the subtask lifecycle writes on delegated work (results, takeovers, reviews) |
 | `editedAt` | Optional: when its author last edited the entry (CLI `note edit`), or when a comment from before 0.4 was last edited |
 | `editedBy` | Optional: who last edited a comment from before 0.4 |
 

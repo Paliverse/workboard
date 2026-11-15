@@ -219,6 +219,21 @@ class DataIntegrityTest(DoctorCase):
         report = self.inspect()
         self.assertIn("store-corrupt", codes(report))
 
+    def test_search_text_rows_are_not_findings(self):
+        tamper(self.board, "UPDATE hay SET rev = rev - 1, text = 'stale'")  # 0.4.0 changed the card since.
+        tamper(self.board, "INSERT INTO hay VALUES ('gone', 1, 'a card 0.4.0 deleted')")
+
+        def data(report):
+            return [finding for finding in report["blockers"] + report["warnings"] if finding["category"] == "data"]
+
+        self.assertEqual(data(self.inspect()), [])
+        tamper(self.board, "DROP TABLE hay")  # A 0.4.0 store is checked as it is, never upgraded.
+        tamper(self.board, "PRAGMA user_version = 5")
+        self.assertEqual(data(self.inspect()), [])
+        con = sqlite3.connect(self.board.with_name(wb.DB_NAME))
+        self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 5)
+        con.close()
+
     def test_corrupted_legacy_board_json_is_a_blocker(self):
         legacy(self.board, self.doc)
         self.board.write_text('{"rev":1,"rev":2}', encoding="utf-8")

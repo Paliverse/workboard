@@ -8,8 +8,10 @@ import contextlib
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -60,12 +62,12 @@ class Store(unittest.TestCase):
             json.dumps({"cards": [LEGACY["cards"][0], SWEPT, PURGED]}), encoding="utf-8")
         return path, data, core.normalize_doc(json.loads(data))["cards"] + [core.normalize_card(SWEPT)]
 
-    def board(self, name, cards, next_num=None) -> Path:
+    def board(self, name, cards, next_num=None, columns=None) -> Path:
         project = self.base / f"project-{len(list(self.base.glob('project-*')))}"
         project.mkdir()
         return core.create_board(name, project, {
             "name": name, "rev": 0, "nextNum": next_num or len(cards) + 1,
-            "columns": [dict(c) for c in core.DEFAULT_COLUMNS], "cards": cards})
+            "columns": columns or [dict(c) for c in core.DEFAULT_COLUMNS], "cards": cards})
 
     def nums(self, doc) -> list:
         return [c["num"] for c in doc["cards"]]
@@ -255,6 +257,111 @@ class Store(unittest.TestCase):
             cli.main(["recover", "--apply", "--json", "--board", "undo", "--actor", "tester"])
         self.assertEqual(json.loads(out.getvalue())["code"], "stale")
         self.assertEqual(core.load(path)["cards"][0]["title"], "second")
+
+    def test_text_candidates_are_exact_for_any_unicode_word_or_phrase(self):
+        texts = ["Größe der Straße", "İstanbul trip", "\u212a-band radio", "naïve café", "ΣΊΣΥΦΟΣ rolls",
+                 "Big Data jobs", "big old data", "plain ascii"]
+        path = self.board("hay", [card(n, f"c-{n}", "done" if n % 2 else "task", title=text)
+                                  for n, text in enumerate(texts, 1)])
+        doc = core.load(path)
+        queries = [["Straße"], ["strasse"], ["İstanbul"], ["istanbul"], ["\u212a-BAND"], ["café"], ["Σίσυφος"],
+                   ["big data"], ["big", "data"], ["ascii", "plain"], ['"quoted"'], ["nowhere"]]
+        with core.snapshot(path) as con:
+            found = {}
+            for words in queries:
+                words = [word.lower() for word in words]  # As query lowers them.
+                expected = sorted(c["id"] for c in doc["cards"] if all(w in core.card_haystack(c) for w in words))
+                found[" + ".join(words)] = sorted(core.query_candidates(con, words=words))
+                self.assertEqual(found[" + ".join(words)], expected, words)
+            self.assertEqual(sorted(core.query_candidates(con, columns=["task"], words=["data"])), ["c-6"])
+            self.assertEqual(len(core.query_candidates(con, columns=["task", "done"])), len(texts))
+            self.assertIsNone(core.query_candidates(con, words=[""]))
+        self.assertEqual((found["big data"], found["big + data"], found["k-band"], found["i̇stanbul"],
+                          found["istanbul"], found["σίσυφος"]),
+                         (["c-6"], ["c-6", "c-7"], ["c-3"], ["c-2"], [], ["c-5"]))
+
+    def test_rows_a_0_4_0_writer_changes_match_by_their_body_until_0_4_1_rewrites_them(self):
+        path = self.board("stale", [card(1, "old-1", title="Before"), card(2, "same-2", title="Untouched"),
+                                    card(3, "gone-3", title="Untouched too")])
+        con = sqlite3.connect(path.with_name(core.DB_NAME), isolation_level=None)  # 0.4.0's writes: no hay.
+        body = json.loads(con.execute("SELECT body FROM cards WHERE id = 'old-1'").fetchone()[0])
+        body.update(title="Zebra crossing", changedRev=7)
+        con.execute("UPDATE cards SET changed_rev = 7, body = ? WHERE id = 'old-1'", (core._dump(body),))
+        new = core.normalize_card(card(4, "new-4", title="Zebra herd", changedRev=7))
+        con.execute("INSERT INTO cards VALUES (?, ?, ?, ?, ?, ?, ?, ?)", core._row(new, 9, core._dump(new)))
+        con.execute("DELETE FROM cards WHERE id = 'gone-3'")  # Its hay row stays behind.
+        con.close()
+        with core.snapshot(path) as con:  # Stale hay ("Before") or none: the body decides.
+            self.assertEqual(sorted(core.query_candidates(con, words=["zebra"])), ["new-4", "old-1"])
+            self.assertEqual(sorted(core.query_candidates(con, words=["untouched"])), ["same-2"])
+            self.assertEqual(core.query_candidates(con, words=["before"]), [])
+        with core.board_transaction(path, None, "1", scope="card") as doc:
+            core.append_note(core.resolve_ref(doc, "1"), "seen", "", "tester")
+            core.save(path, doc)
+        with core.snapshot(path) as con:
+            self.assertEqual(con.execute("SELECT rev FROM hay WHERE id = 'old-1'").fetchone()[0],
+                             core.load(path, ["1"], "card")["cards"][0]["changedRev"])
+            self.assertEqual(sorted(core.query_candidates(con, words=["zebra", "seen"])), ["old-1"])
+        with core.board_transaction(path) as doc:  # 0.4.1 deletes a card's hay with it.
+            doc["cards"] = [c for c in doc["cards"] if c["id"] != "same-2"]
+            core.save(path, doc)
+        with core.snapshot(path) as con:
+            self.assertIsNone(con.execute("SELECT 1 FROM hay WHERE id = 'same-2'").fetchone())
+
+    def test_a_0_4_0_store_upgrades_on_first_open(self):
+        path = self.board("upgrade", [card(1, "one-1", title="Alpha"), card(2, "two-2", notes="Gamma Ray")])
+        con = sqlite3.connect(path.with_name(core.DB_NAME), isolation_level=None)
+        con.executescript("DROP TABLE hay; PRAGMA user_version = 5;")  # The store as 0.4.0 made it.
+        con.close()
+        with core.snapshot(path) as con:
+            self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], core.STORE_VERSION)
+            rows = {cid: (rev, text) for cid, rev, text in con.execute("SELECT id, rev, text FROM hay")}
+            self.assertEqual(core.query_candidates(con, words=["gamma ray"]), ["two-2"])
+        self.assertEqual(rows, {c["id"]: (c["changedRev"], core.card_haystack(c)) for c in core.load(path)["cards"]})
+        with mock.patch.object(core, "_upgrade", side_effect=AssertionError("upgraded twice")):
+            core.load(path)  # Upgraded stores pay one user_version read.
+
+    def test_wip_limit_holds_on_card_scoped_loads_and_racing_writers(self):
+        columns = [dict(c) for c in core.DEFAULT_COLUMNS]
+        next(c for c in columns if c["id"] == "inprogress")["wipLimit"] = 2
+        path = self.board("wip", [card(1, "busy-1", "inprogress", activeOwner="Ada", claimedAt=AT),
+                                  *(card(n, f"todo-{n}") for n in (2, 3, 4, 5))], columns=columns)
+        doc = core.load(path, ["2", "3"], "card")
+        self.assertNotIn("busy-1", [c["id"] for c in doc["cards"]])
+        core.workflow_action(doc, core.resolve_ref(doc, "2"), "start", {}, "Bob")
+        with self.assertRaises(core.WorkflowError) as caught:  # #1 unloaded plus #2 started in this doc.
+            core.workflow_action(doc, core.resolve_ref(doc, "3"), "start", {}, "Bob")
+        self.assertEqual(caught.exception.code, "wip")
+        self.assertNotIn(core._UNLOADED_WIP, json.dumps(core.load(path, [], "card")["cards"]))
+        # Two writers start #4 and #5 while one slot is free: the second waits on BEGIN IMMEDIATE, then counts
+        # the first's start inside its own transaction.
+        first_in, second_trying, results = threading.Event(), threading.Event(), {}
+
+        def start(ref, by):
+            try:
+                with core.board_transaction(path, None, ref, scope="card") as doc:
+                    if ref == "4":
+                        first_in.set()
+                        second_trying.wait(10)
+                        time.sleep(0.3)  # The second writer is now waiting on the lock.
+                    core.workflow_action(doc, core.resolve_ref(doc, ref), "start", {}, by)
+                    core.save(path, doc, by=by)
+                results[ref] = "ok"
+            except core.WorkflowError as exc:
+                results[ref] = exc.code
+
+        first = threading.Thread(target=start, args=("4", "Ada"))
+        first.start()
+        first_in.wait(10)
+        second = threading.Thread(target=lambda: (second_trying.set(), start("5", "Bob")))
+        second.start()
+        first.join(30)
+        second.join(30)
+        self.assertEqual(results, {"4": "ok", "5": "wip"})
+        doc = core.load(path)
+        self.assertEqual([c["num"] for c in doc["cards"] if c["column"] == "inprogress"], [1, 4])
+        with core.snapshot(path) as con:
+            self.assertNotIn(core._UNLOADED_WIP, dict(con.execute("SELECT k, v FROM meta")))
 
     def test_board_names_match_ignoring_case_or_by_folder(self):
         self.board("DSX_V3_SourceCode", [])

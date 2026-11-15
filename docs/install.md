@@ -180,6 +180,10 @@ After updating by hand, run `workboard skills install --refresh` and `workboard 
 
 `workboard service status` and `workboard doctor` (`server-schema-mismatch`) flag a running server whose version differs from the CLI's, since it may not read your boards.
 
+### Upgrading to 0.4.1
+
+The first 0.4.1 command that opens a 0.4.0 board adds a search table to its `board.db` and fills it, once: under a second on a board of about 3,000 cards, and the file grows by about a quarter. There is nothing to run, and 0.4.0 can still read and write the board afterwards; text searches by 0.4.1 still find cards that 0.4.0 changed. Restart the server as after any update (`workboard upgrade` does it).
+
 ### Upgrading to 0.4.0
 
 0.4.0 keeps each board in a SQLite file, `board.db`, instead of one large `board.json` (see [architecture.md](architecture.md#persistence)).

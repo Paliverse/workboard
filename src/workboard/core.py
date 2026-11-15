@@ -894,13 +894,18 @@ def normalize_doc(raw: dict) -> dict:
 # every other top-level key in `meta`, and each changed card's previous body in `card_versions`.
 # board.json becomes a schema-5 stub that 0.3.x and older refuse, so an old install never sees the
 # board as empty. Each write is one SQLite transaction (WAL, synchronous=FULL, 30 s busy wait).
+# `hay` holds each card's card_haystack for text search, stamped with the changedRev it was made from.
+# It is a table of its own because 0.4.0 inserts cards with `VALUES` for exactly the columns it knows and
+# keeps writing an upgraded store: a row 0.4.0 wrote has no hay row or an older stamp, so it counts as stale.
 
 DB_NAME = "board.db"
-STORE_SCHEMA = 5
+STORE_SCHEMA = 5  # board.json stub's schemaVersion.
+STORE_VERSION = 6  # board.db's PRAGMA user_version: 6 added `hay` (0.4.1); 0.4.0 made 5 and ignores it.
 VERSION_KEEP = 2000  # card_versions keeps the newest this many revisions: the restore horizon,
 VERSION_BYTES = 64 << 20  # trimmed to about this many bytes of bodies from the oldest end.
 _STUB_MAX = 4096
-_DDL = """
+_HAY_DDL = "CREATE TABLE IF NOT EXISTS hay(id TEXT PRIMARY KEY, rev INTEGER NOT NULL, text TEXT NOT NULL)"
+_DDL = f"""
 CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE cards(id TEXT PRIMARY KEY, num INTEGER UNIQUE, col TEXT NOT NULL, done_at TEXT,
                    changed_rev INTEGER NOT NULL, pos INTEGER NOT NULL, deps TEXT NOT NULL, body TEXT NOT NULL);
@@ -910,8 +915,10 @@ CREATE INDEX cards_changed ON cards(changed_rev);
 CREATE INDEX cards_deps ON cards(deps, id, col) WHERE deps != '[]';
 CREATE TABLE card_versions(rev INTEGER NOT NULL, card_id TEXT NOT NULL, body TEXT,
                            PRIMARY KEY (rev, card_id));
-PRAGMA user_version = 5;
+{_HAY_DDL};
+PRAGMA user_version = {STORE_VERSION};
 """
+_UNLOADED_WIP = "inProgressUnloaded"  # load(): In Progress cards the doc does not hold; never saved.
 _store = threading.local()  # .open: {db key: _Loaded} for this thread's open write transactions
 
 
@@ -974,7 +981,7 @@ def _sql_errors(db: Path):
 
 
 def _open(board_path):
-    """A connection to the board's store; a legacy board.json migrates on first touch."""
+    """A connection to the board's store; a legacy board.json migrates and a 0.4.0 store upgrades on first touch."""
     import sqlite3
     db = _db(board_path)
     # No board.json is no board, whatever else is left. _migrate decides the rest under the lock,
@@ -986,7 +993,34 @@ def _open(board_path):
     con = sqlite3.connect(f"file:{path}?mode=rw", uri=True, timeout=30, isolation_level=None)
     con.execute("PRAGMA synchronous=FULL")
     con.execute("PRAGMA mmap_size=268435456")  # Reads map the file instead of copying pages: 256 MB.
+    try:
+        if con.execute("PRAGMA user_version").fetchone()[0] < STORE_VERSION:
+            _upgrade(con)
+    except BaseException:
+        con.close()  # Rolls back a half-made upgrade.
+        raise
     return con
+
+
+def _upgrade(con) -> None:
+    """A 0.4.0 store (user_version 5) gains `hay`, a row for every card, in one write transaction; another
+    process opening it at the same time waits on the lock, then finds it done."""
+    con.execute("BEGIN IMMEDIATE")
+    if con.execute("PRAGMA user_version").fetchone()[0] < STORE_VERSION:
+        con.execute(_HAY_DDL)
+        con.executemany("INSERT OR REPLACE INTO hay VALUES (?, ?, ?)",
+                        filter(None, map(_hay_row, con.execute("SELECT id, changed_rev, body FROM cards"))))
+        con.execute(f"PRAGMA user_version = {STORE_VERSION}")
+    con.execute("COMMIT")
+
+
+def _hay_row(row: tuple) -> tuple | None:
+    """(id, changed_rev, body) → the card's hay row; a body it can't read gets none, so stays a candidate."""
+    cid, rev, body = row
+    try:
+        return cid, rev, card_haystack(json.loads(body))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
 
 
 def _migrate(board_path: Path) -> None:
@@ -1045,6 +1079,14 @@ def _row(card: dict, pos: int, body: str) -> tuple:
             _dump(card["dependsOn"]), body)
 
 
+def card_haystack(card: dict) -> str:
+    """A normalized card's searchable text, lowercased by str.lower(): title, origin, notes, writeup, ID,
+    tags, subtask texts, and note summaries and bodies, joined by spaces. Query's text filter matches it."""
+    return " ".join([card["title"], card["origin"], card["notes"], card["writeup"], card["id"], *card["tags"],
+                     *(st["text"] for st, _ in iter_subtasks(card["subtasks"])),
+                     *(text for entry in card["log"] for text in (entry["summary"], entry["body"]))]).lower()
+
+
 def _install_store(board_path: Path, doc: dict, original: bytes | None = None) -> None:
     """Write a normalized doc to board.db.tmp and keep `original` in .backups; then commit: the stub
     replaces board.json and the tmp becomes board.db. A crash before the stub leaves board.json in charge."""
@@ -1053,7 +1095,7 @@ def _install_store(board_path: Path, doc: dict, original: bytes | None = None) -
     for leftover in (tmp, *(tmp.with_name(tmp.name + suffix) for suffix in ("-journal", "-wal", "-shm"))):
         require_write_scope(leftover).unlink(missing_ok=True)
     doc["schemaVersion"] = SCHEMA_VERSION
-    for key in ("changeEpoch", "changeJournal"):  # Dropped incremental-context journal (dev builds).
+    for key in ("changeEpoch", "changeJournal", _UNLOADED_WIP):  # Dropped dev-build journal; load's count.
         doc.pop(key, None)
     con = sqlite3.connect(tmp, isolation_level=None)
     try:
@@ -1064,6 +1106,8 @@ def _install_store(board_path: Path, doc: dict, original: bytes | None = None) -
                             [(key, _dump(value)) for key, value in doc.items() if key != "cards"])
             con.executemany("INSERT INTO cards VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                             [_row(card, pos, _dump(card)) for pos, card in enumerate(doc["cards"])])
+            con.executemany("INSERT INTO hay VALUES (?, ?, ?)",
+                            [(card["id"], card["changedRev"], card_haystack(card)) for card in doc["cards"]])
             con.execute("COMMIT")
             con.execute("PRAGMA journal_mode=WAL")
     finally:
@@ -1129,6 +1173,11 @@ def _read(con, refs=(), scope="all", ids=()) -> tuple[dict, _Loaded]:
         base.count = con.execute("SELECT count(*) FROM cards").fetchone()[0]
     doc = {key: json.loads(value) for key, value in base.meta.items()}
     doc["cards"] = [json.loads(body) for _, _, body in rows]
+    if scope != "all":  # The WIP limit counts the In Progress cards the doc does not hold (see _require_start).
+        unloaded = (con.execute("SELECT count(*) FROM cards WHERE col = 'inprogress'").fetchone()[0]
+                    - sum(card["column"] == "inprogress" for card in doc["cards"]))
+        if unloaded:
+            doc[_UNLOADED_WIP] = unloaded
     base.rev = doc["rev"]
     base.cards = {cid: (body, pos) for cid, pos, body in rows}
     base.card = next((card["num"] for card in doc["cards"] if card["id"] == first), None) if first else None
@@ -1180,30 +1229,46 @@ def board_rev(board_path) -> int:
 
 # Reads inside one snapshot() for query and digest, so neither has to load every card.
 
-def query_candidates(con, column=None, held=False, tags=(), words=()) -> list | None:
+def query_candidates(con, columns=(), held=False, tags=(), words=()) -> list | None:
     """IDs of the cards a query may match, or None when no filter narrows; never fewer than match, so the
-    caller filters them again. column: a column ID; held: only cards with a holder (In Progress and Blocked
-    alone have one); tags: values the card's tags hold; words: text lowercased by str.lower(). Bodies are
-    JSON and SQLite's lower() folds only ASCII, so only printable ASCII words without a space, `"` or `\\`
-    narrow. str.lower() also turns U+212A into k and U+0130 into i + U+0307, so a body holding U+212A stays
-    for a word with a k, and one holding U+0130 for a word ending in i."""
+    caller filters them again. columns: column IDs, any of; held: only cards with a holder (In Progress and
+    Blocked alone have one); tags: values the card's tags hold; words: any text lowercased by str.lower(),
+    phrases too, each a substring of card_haystack. Every card returned holds every word: its hay row decides
+    when fresh, else (0.4.0 wrote the card since) its body, so the caller needn't check the words again."""
     where, params = [], []
-    if column is not None:
-        where.append("col = ?")
-        params.append(column)
+    if columns:
+        where.append(f"c.col IN ({', '.join('?' * len(columns))})")
+        params += columns
     if held:
-        where.append("col IN ('inprogress', 'blocked')")
+        where.append("c.col IN ('inprogress', 'blocked')")
     for tag in tags:
-        where.append("instr(body, ?)")
+        where.append("instr(c.body, ?)")
         params.append(_dump(tag))
-    for word in words:
-        if word and word.isascii() and word.isprintable() and not any(ch in word for ch in ' "\\'):
-            folded = [ch for ch, hit in (("\u212a", "k" in word), ("\u0130", word.endswith("i"))) if hit]
-            where.append(f"({' OR '.join(['instr(lower(body), ?)'] + ['instr(body, ?)'] * len(folded))})")
-            params += [word, *folded]
+    words = [word for word in words if word]
+    if words:
+        where.append(f"(h.rev IS NOT c.changed_rev OR ({' AND '.join(['instr(h.text, ?)'] * len(words))}))")
+        params += words
     if not where:
         return None
-    return [cid for (cid,) in con.execute(f"SELECT id FROM cards WHERE {' AND '.join(where)}", params)]
+    stale = "CASE WHEN h.rev IS c.changed_rev THEN NULL ELSE c.body END" if words else "NULL"
+    rows = con.execute(f"SELECT c.id, {stale} FROM cards c LEFT JOIN hay h ON h.id = c.id "
+                       f"WHERE {' AND '.join(where)}", params)
+    return [cid for cid, body in rows
+            if body is None or all(word in card_haystack(json.loads(body)) for word in words)]
+
+
+def card_fields(con, ids, keys) -> list[dict]:
+    """The cards with these IDs in board order, each holding id, num and `keys` (top-level, without a double
+    quote; a key a card lacks is None, as card.get gives). SQLite picks them out of each body, so Python never
+    decodes the rest of it (timeline, subtasks, notes)."""
+    t0 = time.perf_counter()
+    keys = ["id", "num", *(key for key in dict.fromkeys(keys) if key not in ("id", "num"))]
+    rows = con.execute(f"SELECT json_extract(body, {', '.join('?' * len(keys))}) FROM cards "
+                       "WHERE id IN (SELECT value FROM json_each(?)) ORDER BY pos",
+                       [*(f'$."{key}"' for key in keys), _dump(list(ids))]).fetchall()
+    cards = [dict(zip(keys, json.loads(values))) for (values,) in rows]
+    usage.stage("load", t0)
+    return cards
 
 
 def card_has_key(con, key: str) -> bool:
@@ -1391,6 +1456,9 @@ def _commit(base: _Loaded, doc: dict, by: str | None) -> int:
                     [_row(final, pos[cid], body) for cid, (final, body, old) in written.items() if old is None])
     moved = [(p, cid) for cid, p in pos.items() if cid not in written and loaded[cid][1] != p]
     con.executemany("UPDATE cards SET pos = ? WHERE id = ?", moved)
+    con.executemany("DELETE FROM hay WHERE id = ?", [(cid,) for cid in gone])
+    con.executemany("INSERT OR REPLACE INTO hay VALUES (?, ?, ?)",
+                    [(cid, final["changedRev"], card_haystack(final)) for cid, (final, _, _) in written.items()])
     versions = ([(rev, cid, None if old is None else old[0]) for cid, (_, _, old) in written.items()]
                 + [(rev, cid, loaded[cid][0]) for cid in gone])
     con.executemany("INSERT INTO card_versions VALUES (?, ?, ?)", versions)
@@ -1405,7 +1473,7 @@ def _commit(base: _Loaded, doc: dict, by: str | None) -> int:
                     "OVER (ORDER BY rev DESC) total FROM card_versions) WHERE total > ? ORDER BY rev DESC LIMIT 1)",
                     (VERSION_BYTES,))
     meta = normalize_doc({key: value for key, value in doc.items()  # Every save writes the current schema.
-                          if key not in ("cards", "changeEpoch", "changeJournal")}
+                          if key not in ("cards", "changeEpoch", "changeJournal", _UNLOADED_WIP)}
                          | {"schemaVersion": SCHEMA_VERSION, "cards": []})
     del meta["cards"]
     high = con.execute("SELECT max(num) FROM cards").fetchone()[0]
@@ -1613,7 +1681,7 @@ def _require_start(doc: dict, card: dict, ids: list | None = None, *, wip: bool 
     column = next((c for c in doc["columns"] if c["id"] == "inprogress"), {})
     limit = column.get("wipLimit")
     if wip and card["column"] != "inprogress" and type(limit) is int and limit > 0:
-        active = sum(c["column"] == "inprogress" for c in doc["cards"])
+        active = doc.get(_UNLOADED_WIP, 0) + sum(c["column"] == "inprogress" for c in doc["cards"])
         if active >= limit:
             raise WorkflowError(
                 f"In Progress holds {active} cards and its limit is {limit}, set by the user in the browser; "
@@ -1739,8 +1807,11 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
         if destination == "inprogress":
             action = "start"
     if action == "start":
-        if frm == "blocked":
-            raise WorkflowError("use resume with a resolution note", 409, "state")
+        if frm == "blocked":  # With a note, start is resume: the note is the resolution.
+            if not (note or "").strip():
+                raise WorkflowError(f"use resume with a resolution note, or start with a note: {fmt_ref(card)} is "
+                                    "Blocked", 409, "state")
+            return workflow_action(doc, card, "resume", {"note": note, "to": "inprogress"}, by)
         if frm == "done":
             raise WorkflowError("leaving Done requires reasoned reopen or rework", 409, "state")
         if frm == "inprogress" and owner == by:
@@ -1751,8 +1822,6 @@ def workflow_action(doc: dict, card: dict, action: str, details: dict, by: str) 
         if frm == "done":
             raise WorkflowError(f"{fmt_ref(card)} is already Done; rework or reopen it to change the result",
                                 409, "state")
-        if frm == "blocked":
-            raise WorkflowError("use resume with a resolution note", 409, "state")
         if unfinished := [st for st in unaccepted_delegations(card) if st["delegation"]["state"] != "completed"]:
             raise WorkflowError(f"delegated work keeps {fmt_ref(card)} open: "
                                 + "; ".join(_unfinished_delegation(st, by) for st in unfinished), 409, "state")
@@ -2577,10 +2646,7 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
             item = {"id": f"s-{number}", "text": text, "done": False, "createdAt": now_iso(),
                     "doneAt": None, "by": by}
             if details.get("delegated"):
-                item["delegation"] = {"state": "available", "owner": None,
-                                      "claimedAt": None, "result": "", "scope": [],
-                                      "review": {"state": "pending", "by": None,
-                                                 "at": None, "reason": ""}}
+                item["delegation"] = _available_delegation()
             destination.append(item)
             existing[item["id"]] = item
             selected.append(item)
@@ -2609,10 +2675,10 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
         touch(card)
         return selected_items
     if action in ("done", "undone") and not any(item.get("delegation") for item in selected_items):
-        if details.get("result") is not None:
-            raise WorkflowError(f"result applies only to delegated subtasks, not plain checklist steps "
-                                f"({', '.join(ids)}); tick without result and post evidence with note and subtask")
-        # Legacy checklist ticks are plain field edits: any actor, atomic for a batch.
+        # Legacy checklist ticks are plain field edits: any actor, atomic for a batch. done's result is evidence,
+        # posted once as a note on each step (as a retry finds it there).
+        result = details.get("result")
+        result = _required_text(result, "subtask result") if action == "done" and result is not None else None
         done = action == "done"
         changed = [item for item in selected_items if item["done"] != done]
         for item in changed:
@@ -2624,6 +2690,10 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
         if changed:
             hist(card, f"subtask-{action}", by=by, note=", ".join(item["id"] for item in changed))
             touch(card)
+        for item in selected_items if result is not None else ():
+            if not any(entry.get("subtaskId") == item["id"] and entry["body"] == result
+                       for entry in card.get("log") or ()):
+                append_note(card, f"result {item['id']}", result, by)["subtaskId"] = item["id"]
         return selected_items
     if action == "accept" and len(selected_items) > 1:  # One revision; any refusal saves nothing.
         return [accepted for sid in ids
@@ -2649,13 +2719,14 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
             raise WorkflowError("only open checklist work can be delegated", 409, "state")
         if delegation is not None:
             return [selected]
-        selected["delegation"] = {"state": "available", "owner": None,
-                                  "claimedAt": None, "result": "", "scope": [],
-                                  "review": {"state": "pending", "by": None,
-                                             "at": None, "reason": ""}}
+        selected["delegation"] = _available_delegation()
     else:
         if delegation is None:
-            raise WorkflowError(f"{selected['id']} is a plain checklist item; delegate it first", 409, "state")
+            if action != "claim":
+                raise WorkflowError(f"{selected['id']} is a plain checklist item; delegate it first", 409, "state")
+            if selected.get("done"):
+                raise WorkflowError(f"{selected['id']} is done; only open checklist work can be claimed", 409, "state")
+            return [selected]  # A plain step needs no claim: anyone notes and ticks it, so nothing changes.
         if action in ("configure", "accept", "request-changes"):
             _require_parent_owner(card, by, action)
         if action in ("claim", "done", "undone") and (
@@ -2765,6 +2836,12 @@ def subtask_action(doc: dict, card: dict, action: str, details: dict, by: str) -
     hist(card, f"subtask-{action}", by=by, note=note)
     touch(card)
     return [selected]
+
+
+def _available_delegation() -> dict:
+    """A fresh delegation: available to claim, nobody's yet."""
+    return {"state": "available", "owner": None, "claimedAt": None, "result": "", "scope": [],
+            "review": {"state": "pending", "by": None, "at": None, "reason": ""}}
 
 
 def _accept_result(card: dict, item: dict, by: str) -> None:

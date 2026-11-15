@@ -99,6 +99,17 @@ class FocusedContext(unittest.TestCase):
             self.assertNotIn("history", trimmed["card"])
             self.assertEqual(trimmed["omitted"]["history"], len(history))
 
+    def test_fields_project_the_card_as_query_does(self):
+        self.json(["add", "--title", "Follow-up", "--on", "1"])
+        card = self.json(["context", "2", "--fields", "num,deps,status,owner,history"])["card"]
+        self.assertEqual({key: value for key, value in card.items() if key != "history"},
+                         {"num": 2, "deps": [1], "column": "task", "owner": None})
+        self.assertTrue(card["history"])  # Fields read the whole card, as query's do.
+        focused = self.json(["context", "1", "--subtask", "mine", "--fields", "subtasks"], "Ada")["card"]
+        self.assertEqual([item["id"] for item in focused["subtasks"]], ["mine"])
+        self.assertEqual(list(focused), ["subtasks"])
+        self.rejected(["context", "1", "--fields", "num,estimat"], "invalid")
+
     def test_selected_completed_work_survives_trimming(self):
         with core.board_transaction(self.path) as doc:
             card = core.resolve_ref(doc, "1")

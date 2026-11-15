@@ -57,6 +57,7 @@ class UsageLog(unittest.TestCase):
         self.assertNotEqual(cli["pid"], show["pid"])
         self.assertEqual(show["pid"], refused["pid"])
         self.assertNotIn("Logged", json.dumps([cli, show, refused]))
+        self.assertEqual(refused["board"], "usage")  # Refused before it read a board: named from the registry.
 
     def test_caller_text_never_reaches_the_log(self):
         home = self.base / "home"
@@ -79,6 +80,25 @@ class UsageLog(unittest.TestCase):
                          [("note", []), ("fly", ["to"]), ("?", []), ("note", ["card", "text"]),
                           ("fly", ["card", "column", "x"])])
         self.assertEqual([r["err"] for r in logged[:2]], ["unrecognized arguments: …"] * 2)
+        self.assertEqual([r.get("board") for r in logged], ["usage"] * 5)
+
+    def test_query_logs_the_cards_it_loaded(self):
+        home = self.base / "home"
+        env = self.board(home)
+        for title in ("Needle", "Hay"):
+            run(["add", "--title", title], cwd=self.project, env={**env, "WORKBOARD_USAGE_LOG": "0"})
+        for args in (["query", "--text", "needle"], ["search", "needle"], ["query"]):
+            self.assertEqual(run(args, cwd=self.project, env=env).returncode, 0, args)
+        self.assertEqual([r.get("candidates") for r in records(home)], [1, 1, None])  # None: every card loaded.
+
+    def test_a_board_argument_that_matched_none_stays_only_if_it_reads_like_a_name(self):
+        home = self.base / "home"
+        env = self.board(home)
+        for board in ("nope", "rotate SECRETTOKEN123 now", "x" * 25):
+            self.assertEqual(run(["query", "--board", board], cwd=self.project, env=env).returncode, 1, board)
+        logged = records(home)
+        self.assertEqual([r.get("boardArg") for r in logged], ["nope", "…", "…"])
+        self.assertNotIn("SECRETTOKEN123", json.dumps(logged))
 
     def test_opt_out_and_unwritable_logs_change_nothing(self):
         direct = "from workboard import usage\nusage.begin('cli', op='direct')\nusage.end(ok=True)\nprint('{}')\n"
@@ -141,7 +161,8 @@ class UsageLog(unittest.TestCase):
                  "unrecognized arguments: bug by rotating SECRET": "unrecognized arguments: …",
                  "ambiguous option: --no=SECRET could match --note, --notes": "ambiguous option: …",
                  'unknown op "notehunter2xyz"; did you mean note?': "unknown op …",
-                 "unknown fields: hunter2secret; fields take any card key": "unknown fields: …",
+                 'unknown op "close"; did you mean "done"?': 'unknown op "close" …',
+                 "unknown fields: stat, rotate the key; fields take any card key": "unknown fields: stat, … …",
                  '"text" (use "terms")': '"text" (use "terms")',
                  "no board named 'ompbridge'": "no board named 'ompbridge'",
                  "card's owner isn't 'Ada'": "card's owner isn't 'Ada'"}

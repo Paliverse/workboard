@@ -456,6 +456,8 @@ class MultiBoardApiTest(unittest.TestCase):
         assert life(ctx, capacity["id"], "start")[0] == 409
         assert mutate(ctx, "/api/structure", {"operation": {"type": "create-card", "card": {
             "id": str(uuid.uuid4()), "title": "Cannot bypass WIP by creation", "column": "inprogress"}}})[0] == 409
+        moved = mutate(ctx, f"/api/card/{capacity['id']}", {"card": {"column": "inprogress"}})  # Card scope.
+        assert (moved[0], moved[1]["code"]) == (409, "wip"), moved
         assert life(ctx, wid, "start", actor=other)[0] == 409
         assert mutate(ctx, "/api/structure", {"operation": {"type": "delete-card", "cardId": wid}},
                       actor=other)[0] == 409

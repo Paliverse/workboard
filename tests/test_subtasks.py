@@ -681,7 +681,12 @@ class DelegationWorkflow(unittest.TestCase):
 
     def test_plain_results_assignment_removal_and_done_card_rechecks(self):
         plain = self.json(["subtask", self.ref, "add", "Plain step"])["item"]["id"]
-        self.assertIn(plain, self.reject(["subtask", self.ref, "done", plain, "--result", "Evidence"], "invalid")["error"])
+        for _ in range(2):  # A result ticks the step and notes it there, once even when retried.
+            self.assertTrue(self.json(["subtask", self.ref, "done", plain, "--result", "Evidence"])["item"]["done"])
+        notes = [entry for entry in core.resolve_ref(core.load(self.path), self.ref)["log"]
+                 if entry.get("subtaskId") == plain]
+        self.assertEqual([(entry["summary"], entry["body"], entry["by"]) for entry in notes],
+                         [(f"result {plain}", "Evidence", "Main")])
         sid, = self.add("Main's assignment")
         self.reject(["subtask", self.ref, "rm", sid], "owned", "Grace")
         self.action("claim", sid, actor="Ada")
@@ -729,7 +734,8 @@ class DelegationWorkflow(unittest.TestCase):
         self.assertEqual(self.json(["done", dependent, "--writeup", "Prerequisite shipped"])["column"], "done")
         self.reject(["done", dependent, "--writeup", "Twice"], "state")
         self.json(["block", self.ref, "--reason", "Waiting", "--until", "Input arrives"])
-        self.reject(["done", self.ref, "--writeup", "Still blocked"], "state")
+        closed = self.json(["done", self.ref, "--writeup", "Shipped once input arrived"])  # The writeup resolves it.
+        self.assertEqual((closed["column"], closed["outcome"]), ("done", "completed"))
 
     def test_create_card_in_progress_claims_it_under_the_start_rules(self):
         doc = core.load(self.path)

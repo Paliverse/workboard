@@ -86,9 +86,9 @@ def cmd_add(args):
     p = wb.find_board(args.board)
     origin = _read_stdin() if args.origin_stdin else (args.origin or "")
     notes = _read_stdin() if args.notes_stdin else args.notes
-    # Only open cards are needed (WIP and readiness), plus the cards this one copies or depends on.
+    # Only the cards this one copies or depends on: the WIP limit counts In Progress on any scope.
     refs = (*([args.source] if args.source else []), *(args.on or []))
-    with wb.board_transaction(p, scope="open", refs=refs) as doc:
+    with wb.board_transaction(p, scope="card", refs=refs) as doc:
         source = _resolve(doc, args.source) if args.source else None
         card = wb.create_card(doc, wb.actor(), title=args.title, column=args.column, priority=args.priority,
                               tags=args.tag or (), origin=origin, notes=notes, source=source,
@@ -104,19 +104,22 @@ def _fly(doc, card, col, note=None):
 def _run_workflow(args, action, details):
     p = wb.find_board(args.board)
     by = wb.actor()
-    # Moving into In Progress checks other open cards (WIP, dependencies); the rest touch one card.
-    scope = "open" if action == "start" or details.get("to") == "inprogress" else "card"
-    with wb.board_transaction(p, args.expected_rev, args.ref, scope=scope) as doc:
+    # One card with its dependencies: the WIP limit counts In Progress on any scope.
+    with wb.board_transaction(p, args.expected_rev, args.ref, scope="card") as doc:
         card = _resolve(doc, args.ref)
         already_owned = card["column"] == "inprogress" and card.get("activeOwner") == by
+        # start's text: on a Blocked card what changed (start resumes it), else a timeline note after the start.
+        note = details.pop("note", None) if action == "start" and card["column"] != "blocked" else None
         wb.workflow_action(doc, card, action, details, by)
-        if not (action == "start" and already_owned):
+        if note:
+            wb.workflow_action(doc, card, "note", {"summary": note}, by)
+        if not (action == "start" and already_owned and not note):
             wb.save(p, doc, by=by)
     return card, doc
 
 
 def cmd_start(args):
-    card, doc = _run_workflow(args, "start", {})
+    card, doc = _run_workflow(args, "start", {"note": args.note})
     _emit(args, card, doc, "→ inprogress")
 
 
@@ -131,8 +134,7 @@ def cmd_done(args):
 def cmd_fly(args):
     p = wb.find_board(args.board)
     column = wb.slugify(args.column, 24)
-    scope = "open" if column in ("inprogress", "in-progress") else "card"  # In Progress checks the WIP limit.
-    with wb.board_transaction(p, args.expected_rev, args.ref, scope=scope) as doc:
+    with wb.board_transaction(p, args.expected_rev, args.ref, scope="card") as doc:
         card = _resolve(doc, args.ref)
         if column == "done":
             raise wb.WorkflowError(f"use done {args.ref} --writeup to complete work", 409, "state")
@@ -250,16 +252,23 @@ def cmd_subtask(args):
                    "reason": args.reason, "result": result}
         if args.scope is not None or args.clear_scope:
             details["scope"] = args.scope or []
-        items = wb.workflow_action(doc, card, "subtask", details, by)
+        if args.op == "claim":  # Each ID claims on its own, in one revision: any refusal saves nothing.
+            items = [item for sid in dict.fromkeys(args.what)
+                     for item in wb.workflow_action(doc, card, "subtask", {**details, "ids": [sid]}, by)]
+        else:
+            items = wb.workflow_action(doc, card, "subtask", details, by)
         if json.dumps(card, sort_keys=True, ensure_ascii=False) != before:
             wb.save(p, doc, by=by)
         subtasks = [st for st, _ in wb.iter_subtasks(card["subtasks"])]
         count = sum(st["done"] for st in subtasks)
-    ids = ", ".join(st["id"] for st in items)
+    plain = [st["id"] for st in items if args.op == "claim" and not st.get("delegation")]
+    ids = ", ".join(st["id"] for st in items if st["id"] not in plain)
     verb = {"add": "added", "done": "done", "undone": "reopened", "rm": "removed",
             "delegate": "delegated", "claim": "claimed", "takeover": "taken over", "configure": "configured",
             "accept": "accepted", "request-changes": "changes requested"}[args.op]
-    action = f"subtask [{ids}] {verb} · {count}/{len(subtasks)} done"
+    action = " · ".join([*([f"subtask [{ids}] {verb}"] if ids else []),
+                         *([f"subtask [{', '.join(plain)}] is a plain step and needs no claim: note and tick it "
+                            "directly"] if plain else []), f"{count}/{len(subtasks)} done"])
     _emit(args, card, doc, action, items=items, item=items[0] if len(items) == 1 else None)
 
 
@@ -296,10 +305,14 @@ def cmd_depends(args):
 
 
 def cmd_context(args):
-    print(json.dumps(wb.card_context(wb.find_board(args.board), args.ref, full=args.full,
-                                    subtask_id=args.subtask,
-                                    assigned_to=wb.actor() if args.mine else args.assigned_to),
-                     ensure_ascii=False, indent=None if args.json else 2))
+    p = wb.find_board(args.board)
+    context = wb.card_context(p, args.ref, full=args.full or args.fields is not None, subtask_id=args.subtask,
+                              assigned_to=wb.actor() if args.mine else args.assigned_to)
+    if args.fields is not None:  # The card as query projects it.
+        with wb.snapshot(p) as con:
+            context["card"] = _card_rows(con, {dep["id"]: dep["num"] for dep in context["dependencies"]},
+                                         [context["card"]], args.fields)[0]
+    print(json.dumps(context, ensure_ascii=False, indent=None if args.json else 2))
 
 
 def cmd_inbox(args):
@@ -388,10 +401,10 @@ OPS = {
                 example={"op": "help", "for": "note"}),
     "digest": _op("board pulse: your cards, in progress, blocked, recently shipped, ready", "digest"),
     "query": _op("the cards matching every filter given; text: words that must all appear", "query",
-                 optional="text... card... column tags... priority owner mine sinceDays limit fields",
+                 optional="text... card... column... tags... priority owner mine sinceDays limit fields",
                  example={"op": "query", "text": "login timeout", "fields": "num,title,column,owner"}),
     "context": _op("one card with its notes, subtasks, dependencies and readiness", "context {card}",
-                   "card", "full subtask mine assignedTo", example={"op": "context", "card": 12}),
+                   "card", "full subtask mine assignedTo fields", example={"op": "context", "card": 12}),
     "note.get": _op("one note by its ID or a unique prefix of 4+ characters", "note.get {id}", "id", "card"),
     "inbox": _op("completed results and held delegated work waiting for you", "inbox {card}", optional="card"),
     "wait": _op("wait read-only until a card or subtask changes", "wait {card}", "card", "subtask after timeout"),
@@ -406,7 +419,8 @@ OPS = {
                              "card id", _REV),
     "add": _op("create a card", "add", "title|from", "column priority tags... origin notes on...",
                example={"op": "add", "title": "Login times out", "priority": "mid", "tags": ["bug"]}),
-    "start": _op("take a card into In Progress; you become its owner", "start {card}", "card", _REV),
+    "start": _op("take a card into In Progress; you become its owner; text = a note (Blocked: what changed)",
+                 "start {card}", "card", "text " + _REV, "note"),
     "done": _op("ship a card to Done, whoever holds it; text = the writeup; completed delegated results are "
                 "accepted with it", "done {card}", "card text", _REV, "writeup",
                 {"op": "done", "card": 12, "text": "Fixed the timeout; tests pass"}),
@@ -431,7 +445,8 @@ OPS = {
     "note.rm": _op("remove your own note", "note {card} rm {id}", "card id", _REV),
     "subtask.add": _op("add steps (text: one or a list); delegated: work another actor claims",
                        "subtask {card} add -- {text...}", "card text", "delegated " + _REV),
-    "subtask.done": _op("tick steps; for delegated work text = the result", "subtask {card} done -- {subtask...}",
+    "subtask.done": _op("tick steps; text = the result (on a plain step, a note on it)",
+                        "subtask {card} done -- {subtask...}",
                         "card subtask", "text " + _REV, "result",
                         {"op": "subtask.done", "card": 12, "subtask": "s-1", "text": "Verified: 14/14 tests"}),
     "subtask.undone": _op("untick steps", "subtask {card} undone -- {subtask...}", "card subtask", _REV),
@@ -454,15 +469,16 @@ KEYS = {
     "op": 'the operation; {"op":"help","for":OP} describes one',
     "card": 'card number (12 or "#12"), ID or code; query also takes a list',
     "text": "the op's main text: note summary (one line), done writeup, reason, subtask result, "
-            "resume or fly note; query: words that must all appear (a list keeps phrases)",
+            "start, resume or fly note; query: words that must all appear (a list keeps phrases)",
     "body": "markdown evidence under a note's summary",
     "subtask": "subtask ID (s-1); a list on subtask ops that act on several",
     "id": "note or attachment ID; note.get takes a unique prefix of 4+ characters",
-    "column": "backlog, task or inprogress (query also takes done and blocked)",
+    "column": "backlog, task or inprogress (query also takes done and blocked, and a list: any of them)",
     "tags": "tags to set (add) or that must all be present (query): one or a list",
     "priority": "critical, mid or low",
-    "fields": "query projection, a comma list or a list: any card key (num, id, title, column, priority, tags, "
-              "origin, notes, writeup, log, …) plus owner, deps (card numbers) and rev (the card's changedRev)",
+    "fields": "query and context projection, a comma list or a list: any card key (num, id, title, column, "
+              "priority, tags, origin, notes, writeup, log, …) plus owner, deps (card numbers) and rev "
+              "(the card's changedRev)",
     "expectedRev": "rev from your last read; a card write fails if that card changed since",
     "actor": "your label, overriding --actor",
     "board": "board name or project folder, overriding --board",
@@ -487,22 +503,30 @@ KEYS = {
 _SAMPLES = {"card": 12, "text": "…", "id": "8f3a…", "subtask": "s-1", "column": "inprogress", "title": "…",
             "until": "…", "worker": "Ada", "out": "C:/tmp/copy.png", "file": "C:/tmp/shot.png"}
 # Names agents send for an op that has one meaning: run as that op.
-OP_ALIASES = {**dict.fromkeys(("show", "get", "card.get", "read"), "context"),
+OP_ALIASES = {**dict.fromkeys(("show", "get", "card.get", "read", "card"), "context"),
               **dict.fromkeys(("search", "list"), "query"), **dict.fromkeys(("create", "new"), "add"),
               **dict.fromkeys(("comment", "comment.add", "card.note"), "note"),
-              **dict.fromkeys(("bug", "improve", "rework"), "reopen"), "move": "fly"}
+              **dict.fromkeys(("bug", "improve", "rework"), "reopen"), "move": "fly", "close": "done",
+              "unblock": "resume"}
 # Guesses with two meanings: refused, naming both.
-OP_GUESSES = {**dict.fromkeys(("close", "complete", "finish"), ("done", "cancel")),
+OP_GUESSES = {**dict.fromkeys(("complete", "finish"), ("done", "cancel")),
               "claim": ("start", "subtask.claim")}
 CLI_ONLY = frozenset({"init", "link", "serve", "open", "setup", "skills", "service", "upgrade", "version",
                       "doctor", "recover", "columns-core", "call"})
 # Unambiguous names agents send for a key, accepted silently on the ops that take the key.
 SYNONYMS = {"card": ("ref", "num"), "subtask": ("subtasks",), "tags": ("tag",), "file": ("path",),
-            "text": ("summary", "writeup", "reason", "result", "note", "texts")}
-OP_SYNONYMS = {"query": {"card": ("ref", "num", "cards"), "text": ("terms", "q", "query", "search")}}
-PRIORITY_FIXES = {"high": "critical", "medium": "mid", "normal": "mid"}
+            "text": ("summary", "writeup", "reason", "result", "note", "texts"), "until": ("unblockWhen",)}
+OP_SYNONYMS = {"query": {"card": ("ref", "num", "cards"), "text": ("terms", "q", "query", "search")},
+               "help": {"for": ("topic",)}, "context": {"full": ("history",)}, "add": {"origin": ("body",)},
+               **{op: {"subtask": ("subtasks", "item")} for op in OPS if op.startswith("subtask.")},
+               "subtask.add": {"text": (*SYNONYMS["text"], "title")}}
+PRIORITY_ALIASES = {**dict.fromkeys(("high", "urgent", "highest"), "critical"),
+                    **dict.fromkeys(("medium", "normal"), "mid"), "lowest": "low"}
+# Names agents send for a query or context field.
+FIELD_ALIASES = {"created": "createdAt", "updated": "updatedAt", "changed": "updatedAt", "state": "column",
+                 "status": "column", "holder": "owner", "assignee": "owner"}
 # Ops agents send for another op's job: (that op, why), offered as the fix when the request fits it.
-WRONG_OPS = {"context": ("query", "context returns the whole card; for chosen fields use query")}
+WRONG_OPS = {"context": ("query", "context reads one card; to find cards use query")}
 HEREDOC = "workboard call <<'EOF', one JSON request per line, then EOF"
 CALL_SHAPE = ("workboard --actor LABEL call <<'EOF', one JSON request per line, then EOF; one JSON result "
               "line each. Arguments work too: workboard call '{\"op\":\"context\",\"card\":12}'")
@@ -675,6 +699,10 @@ def _call_argv(request, board=None, *, fixing=False):
             raise CallRefused(f"{op} takes {key} once: " + " or ".join(f'"{name}"' for name in present)
                               + ", not both", op)
         values[key] = values.pop(present[0])
+    if op == "add" and "text" in values:  # The card's text: its title, or with a title (given or copied) its origin.
+        target = "origin" if "title" in values or "from" in values else "title"
+        if target not in values:
+            values[target] = values.pop("text")
     if "id" in values and "id" not in spec["keys"] and "card" in spec["keys"]:  # Here "id" can only be the card.
         value = values["id"]
         if "subtask" in spec["keys"] and (op.startswith("subtask.") or isinstance(value, str)
@@ -687,10 +715,8 @@ def _call_argv(request, board=None, *, fixing=False):
         values["card"] = values.pop("id")
     if isinstance(values.get("fields"), list):  # The comma list, sent as a list.
         values["fields"] = ",".join(map(str, values["fields"]))
-    if "priority" in spec["keys"] and isinstance(values.get("priority"), str) and values["priority"] in PRIORITY_FIXES:
-        fixed = PRIORITY_FIXES[values["priority"]]
-        raise CallRefused(f'priority is critical, mid or low; did you mean "{fixed}"?', op,
-                          _fix(op, {**values, "priority": fixed}, board, fixing))
+    if "priority" in spec["keys"] and isinstance(values.get("priority"), str):
+        values["priority"] = PRIORITY_ALIASES.get(values["priority"], values["priority"])
 
     # An unknown key outranks a missing one: `{"op":"note","sumary":…}` lacks "text" only by mistake.
     unknown = [key for key in values if key not in spec["keys"]]
@@ -801,6 +827,8 @@ def cmd_call(args):
         usage.begin("call", seq=seq)
         result = refusal or _call_request(request, args.board)
         failed |= not result["ok"]
+        if not result["ok"]:
+            _note_board((request.get("board") if isinstance(request, dict) else None) or args.board)
         line = json.dumps(result, ensure_ascii=True, separators=(",", ":"))  # Any wrapper's codec reads ASCII.
         print(line, flush=True)
         usage.end(**{key: value for key, value in (
@@ -1000,55 +1028,83 @@ def cmd_list(args):
               f"{prog} {tags} ({age})")
 
 
-def _card_rows(con, doc, cards, fields) -> list:
-    """The query projection: any card key, plus owner, deps (card numbers), rev and tag; num,title,column
-    by default. A key is known if a normalized card has it or any card on the board does, not just `doc`'s."""
-    nums = {card["id"]: card["num"] for card in doc["cards"]}
-    derived = {"owner": lambda c: c["activeOwner"], "deps": lambda c: [nums.get(dep) for dep in c["dependsOn"]],
-               "rev": lambda c: c["changedRev"], "tag": lambda c: c["tags"]}
-    names = [name.strip() for name in (fields or "num,title,column").split(",") if name.strip()]
+# Query fields that read a card key under another name; deps reads other cards' numbers.
+_FIELD_KEYS = {"owner": "activeOwner", "rev": "changedRev", "tag": "tags"}
+
+
+def _field_names(fields) -> list:
+    return [FIELD_ALIASES.get(name.strip(), name.strip()) for name in (fields or "num,title,column").split(",")
+            if name.strip()]
+
+
+def _card_rows(con, nums, cards, fields) -> list:
+    """The query projection: any card key, plus owner, deps (card numbers, from `nums`: ID to number), rev and
+    tag; num,title,column by default. A key is known if a normalized card has it or any card on the board does."""
+    names = _field_names(fields)
     keys = wb.normalize_card({})
-    unknown = [name for name in names if name not in derived and name not in keys and not wb.card_has_key(con, name)]
+    unknown = [name for name in names if name not in _FIELD_KEYS and name != "deps" and name not in keys
+               and not wb.card_has_key(con, name)]
     if unknown:
         raise wb.WorkflowError(f"unknown fields: {', '.join(unknown)}; fields take any card key (num, id, title, "
                                "column, priority, tags, origin, notes, writeup, log, …) plus owner, deps and rev")
-    return [{name: derived[name](c) if name in derived else c.get(name) for name in names} for c in cards]
+    return [{name: [nums.get(dep) for dep in c["dependsOn"]] if name == "deps" else c.get(_FIELD_KEYS.get(name, name))
+             for name in names} for c in cards]
 
 
 def _has_words(card, words) -> bool:
     """Every word appears somewhere in the card's text (title, notes, subtasks, timeline)."""
-    hay = " ".join([card["title"], card["origin"], card["notes"], card["writeup"], card["id"], *card["tags"],
-                    *(st["text"] for st, _ in wb.iter_subtasks(card["subtasks"])),
-                    *(text for entry in card["log"] for text in (entry["summary"], entry["body"]))]).lower()
+    hay = wb.card_haystack(card)
     return all(word in hay for word in words)
 
 
-def _query_doc(con, p, args) -> dict:
-    """The board _query_cards filters, read in the caller's snapshot: with a card, column, owner, tag or text
-    filter only the cards SQL finds may match (never fewer, so the result is the same), else every card."""
+def _query_keys(args) -> list | None:
+    """The card keys query's filters and fields read, or None when they need whole cards: deps (other cards'
+    numbers) or a field name with a double quote, which SQL can't name."""
+    names = _field_names(args.fields)
+    if "deps" in names or any('"' in name for name in names):
+        return None
+    held = args.mine or args.owner is not None  # card_holder reads activeOwner, column and history.
+    used = {"column": args.column or held, "tags": args.tag, "priority": args.priority,
+            "updatedAt": args.since_days, "activeOwner": held, "history": held}
+    return [*(_FIELD_KEYS.get(name, name) for name in names), *(key for key, on in used.items() if on)]
+
+
+def _query_doc(con, p, args) -> tuple[dict, set]:
+    """The board _query_cards filters, read in the caller's snapshot, and the IDs SQL found holding every text
+    word. With a card, column, owner, tag or text filter only the cards SQL finds may match (never fewer, so the
+    result is the same), else every card; cards hold only the keys the filters and fields read, when they can."""
     if args.limit is not None and args.limit < 1:
         raise wb.WorkflowError("limit must be at least 1")
     if args.card:  # Every card each ref could name, so refs resolve as on the whole board.
-        return wb.load(p, refs=args.card, scope="card", con=con)
-    column = _filter_column(wb.load(p, scope="card", con=con), args.column) if args.column else None
-    ids = wb.query_candidates(con, column, held=args.mine or args.owner is not None, tags=args.tag or (),
-                              words=[word.lower() for word in args.text or ()])
-    return wb.load(p, con=con) if ids is None else wb.load(p, scope="card", ids=ids, con=con)
+        doc, ids = wb.load(p, refs=args.card, scope="card", con=con), ()
+    else:
+        keys = _query_keys(args)
+        board = wb.load(p, scope="card", con=con) if args.column or keys is not None else None
+        ids = wb.query_candidates(con, columns=[_filter_column(board, ref) for ref in args.column or ()],
+                                  held=args.mine or args.owner is not None, tags=args.tag or (),
+                                  words=[word.lower() for word in args.text or ()])
+        if ids is None:
+            return wb.load(p, con=con), set()
+        doc = (wb.load(p, scope="card", ids=ids, con=con) if keys is None
+               else {**board, "cards": wb.card_fields(con, ids, keys)})
+    usage.note(candidates=len(doc["cards"]))
+    return doc, set(ids)
 
 
-def _query_cards(doc, args) -> list:
-    """Cards matching every filter given, oldest first; limit keeps the newest."""
-    column = _filter_column(doc, args.column) if args.column else None
+def _query_cards(doc, args, matched=frozenset()) -> list:
+    """Cards matching every filter given, oldest first; limit keeps the newest. `matched`: IDs known to hold
+    every text word."""
+    columns = {_filter_column(doc, ref) for ref in args.column or ()}
     owner = wb.actor() if args.mine else args.owner
     wanted = {_resolve(doc, ref)["id"] for ref in args.card} if args.card else None
     words = [word.lower() for word in args.text or ()]
     cards = sorted((c for c in doc["cards"]
-                    if (wanted is None or c["id"] in wanted) and (column is None or c["column"] == column)
+                    if (wanted is None or c["id"] in wanted) and (not columns or c["column"] in columns)
                     and all(tag in c["tags"] for tag in args.tag or ())
                     and (args.priority is None or c["priority"] == args.priority)
                     and (owner is None or wb.card_holder(c) == owner)
                     and (not args.since_days or _age_days(c["updatedAt"]) <= args.since_days)
-                    and (not words or _has_words(c, words))),
+                    and (not words or c["id"] in matched or _has_words(c, words))),
                    key=lambda c: c["num"])
     return cards[-args.limit:] if args.limit else cards
 
@@ -1056,8 +1112,9 @@ def _query_cards(doc, args) -> list:
 def cmd_query(args):
     p = wb.find_board(args.board)
     with wb.snapshot(p) as con:  # One revision for the candidates, the cards and the field check.
-        doc = _query_doc(con, p, args)
-        rows = _card_rows(con, doc, _query_cards(doc, args), args.fields)
+        doc, matched = _query_doc(con, p, args)
+        rows = _card_rows(con, {c["id"]: c["num"] for c in doc["cards"]}, _query_cards(doc, args, matched),
+                          args.fields)
     print(json.dumps({"ok": True, "rev": doc["rev"], "cards": rows}, ensure_ascii=False))
 
 
@@ -1066,8 +1123,10 @@ def cmd_search(args):
     if args.json:
         return cmd_query(args)
     p = wb.find_board(args.board)
+    args.fields = None  # The lines show num, column and title, whatever --fields asked the JSON for.
     with wb.snapshot(p) as con:
-        hits = _query_cards(_query_doc(con, p, args), args)
+        doc, matched = _query_doc(con, p, args)
+        hits = _query_cards(doc, args, matched)
     for c in hits[:20]:
         print(f"{wb.fmt_ref(c):>6}  {c['column']:<12} {c['title'][:56]}")
     if not hits:
@@ -1383,7 +1442,7 @@ _EXTERNAL = frozenset({"setup", "skills", "service", "version", "upgrade", "doct
 
 def _query_arguments(p):
     p.add_argument("--card", action="append", metavar="REF", help="only this card (repeatable)")
-    p.add_argument("--column")
+    p.add_argument("--column", action="append", help="a column the card is in (repeatable: any of them)")
     p.add_argument("--tag", action="append", help="a tag the card must have (repeatable)")
     p.add_argument("--priority", choices=["critical", "mid", "low"])
     owner = p.add_mutually_exclusive_group()
@@ -1435,6 +1494,7 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
 
     p = add("start", cmd_start, "fly a card to In Progress")
     p.add_argument("ref")
+    p.add_argument("--note", help="a timeline note; on a Blocked card what changed, as resume")
 
     p = add("done", cmd_done, "ship a card to Done, whoever holds it (writeup required); completed delegated "
                               "results are accepted with it")
@@ -1525,6 +1585,7 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
     focus.add_argument("--subtask", help="focus one subtask")
     focus.add_argument("--mine", action="store_true", help="focus subtasks assigned to your actor")
     focus.add_argument("--assigned-to", help="focus subtasks assigned to this actor")
+    p.add_argument("--fields", help="comma list, as query's: the card holds only these")
 
     p = add("handoff", cmd_handoff, "prepare a read-only worker prompt for delegated work")
     p.add_argument("ref")
@@ -1650,6 +1711,24 @@ def _op_name(args) -> str:
     return f"{args.cmd}.{operation}" if operation else args.cmd
 
 
+def _note_board(explicit) -> None:
+    """Name a refused request's board in the usage log from the registry alone, never reading the board."""
+    if usage.missing("board", "boardArg"):
+        with contextlib.suppress(Exception):
+            wb.resolve_board(explicit if isinstance(explicit, str) else None)
+
+
+def _board_option(argv):
+    """--board's value, read without the parser (which may be what refused the command)."""
+    options = argv[:argv.index("--")] if "--" in argv else argv
+    for token, value in zip(options, [*options[1:], None]):
+        if token == "--board":
+            return value
+        if token.startswith("--board="):
+            return token[8:]
+    return None
+
+
 def main(argv=None):
     """Run one command. As the process entry (no argv) it also writes the usage record, then flushes
     and exits without interpreter teardown; in-process callers (call, tests) get SystemExit as usual."""
@@ -1670,6 +1749,8 @@ def main(argv=None):
         if record:
             usage.end(ok=False, err=f"{type(exc).__name__}: {exc}")
         raise
+    if status:
+        _note_board(_board_option(argv))
     if record:
         usage.end(ok=status == 0)
     for stream in (sys.stdout, sys.stderr):

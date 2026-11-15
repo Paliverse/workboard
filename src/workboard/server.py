@@ -603,18 +603,13 @@ def _handle_card_patch(handler, reference: str) -> None:
                 _apply_document_changes(doc, document)
             return card, positioned
 
-        # Moving a card, or placing it among its column's cards, needs every open card (WIP limit, neighbours).
-        scope = "open" if position or "column" in card_payload else "card"
+        # Placing a card among its column's cards needs them (every open card); the WIP limit needs no cards.
+        scope = "open" if position else "card"
         doc, (card, positioned) = _mutate(handler, payload, base_rev, apply_fn, scope, (unquote(reference),))
     except _FAILURES as e:
         return _send_error(handler, e)
     handler._json({"ok": True, **_saved_meta(doc), "card": card,
                    "positioned": positioned, "event": "card-updated"}, 200)
-
-
-# These read only the card, its dependencies and dependents. A dependency edit walks the whole dependency graph
-# for cycles; anything else may move the card into In Progress, whose WIP limit counts every open card.
-_CARD_SCOPED_ACTIONS = frozenset({"note", "subtask", "submit", "complete", "block", "cancel", "takeover"})
 
 
 def _handle_lifecycle_patch(handler, reference: str) -> None:
@@ -633,7 +628,9 @@ def _handle_lifecycle_patch(handler, reference: str) -> None:
             items = _op_lifecycle(doc, card, action, details, by)
             return card, items
 
-        scope = "card" if action in _CARD_SCOPED_ACTIONS else "all" if action == "dependencies" else "open"
+        # Only the card, its dependencies and dependents (the WIP limit counts the rest in SQL); a dependency
+        # edit walks the whole dependency graph for cycles.
+        scope = "all" if action == "dependencies" else "card"
         doc, (card, items) = _mutate(handler, payload, base_rev, apply_fn, scope, (unquote(reference),))
     except _FAILURES as e:
         return _send_error(handler, e)
@@ -688,8 +685,6 @@ def _handle_structure_patch(handler) -> None:
         raw = operation.get("card") if operation["type"] == "create-card" else None
         if operation["type"] == "sort-cards" or _names_card(handler.board, (raw or {}).get("id")):
             scope = "all"  # Every card moves, or a client-chosen ID that some card already names.
-        elif isinstance(raw, dict) and raw.get("column") == "inprogress":
-            scope = "open"  # Created In Progress: the WIP limit counts every open card.
         else:
             scope = "card"
         refs = (operation["cardId"],) if isinstance(operation.get("cardId"), str) else ()
