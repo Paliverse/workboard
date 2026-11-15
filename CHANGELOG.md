@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `upgrade` reports what the upgraded `workboard` printed when it can't read its version, such as a missing platform package, instead of `list index out of range`.
+- The release publishes `@paliverse/workboard` only after the registry serves every platform package. 0.4.1's main package went live while its Windows x64 package was still missing, so a Windows x64 install in that window got no binary.
+
 ## [0.4.1] - 2026-11-15
 
 The first 1.5 days of 0.4.0's usage log showed slow starts on large boards, refusals of names and steps agents keep sending, and gaps in the log itself. Each board's store upgrades once, the first time this version opens it; 0.4.0 still reads and writes an upgraded store.

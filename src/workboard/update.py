@@ -157,12 +157,15 @@ def _new_workboard() -> list[str]:
 
 def _new_version(new: list[str]) -> str:
     import subprocess
+    proc = None
     try:
         proc = subprocess.run([*new, "version", "--json"], stdin=subprocess.DEVNULL, capture_output=True,
                               text=True, encoding="utf-8", errors="replace", timeout=60)
         version = json.loads(proc.stdout.strip().splitlines()[-1])["version"]
     except (OSError, ValueError, IndexError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
-        raise wb.WorkflowError(f"the upgraded `{display(new)}` did not report its version: {exc}", 500, "io")
+        said = proc.stderr.strip().splitlines() if proc and proc.stderr else []
+        raise wb.WorkflowError(f"the upgraded `{display(new)}` did not report its version: "
+                               f"{said[-1] if said else exc}", 500, "io")
     if proc.returncode or not isinstance(version, str) or not version.strip():
         raise wb.WorkflowError(f"the upgraded `{display(new)}` did not report its version", 500, "io")
     return version

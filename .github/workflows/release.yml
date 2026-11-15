@@ -144,12 +144,24 @@ jobs:
           for dir in $dirs; do
             test -f "build/npm/$dir/package.json" || { echo "::error::build/npm/$dir was not built"; exit 1; }
           done
-          for dir in $dirs; do
-            name=$(node -p "require('./build/npm/$dir/package.json').name")
+          publish() {
+            name=$(node -p "require('./build/npm/$1/package.json').name")
             # `npm view` exits 0 with empty output when the package exists but the version does not.
             if [ -n "$(npm view "$name@$VERSION" version 2>/dev/null)" ]; then
               echo "$name@$VERSION is already published"
             else
-              npm publish "build/npm/$dir" --access public
+              npm publish "build/npm/$1" --access public
             fi
+          }
+          for dir in ${dirs% workboard}; do publish "$dir"; done
+          # The registry serves a new version minutes after its publish. An install that resolves workboard@latest
+          # before its platform package does skips that optional dependency silently and leaves no binary.
+          for dir in ${dirs% workboard}; do
+            name=$(node -p "require('./build/npm/$dir/package.json').name")
+            for i in $(seq 60); do
+              [ -n "$(npm view "$name@$VERSION" version --prefer-online 2>/dev/null)" ] && break
+              [ "$i" = 60 ] && { echo "::error::$name@$VERSION is not on the registry after 15 minutes"; exit 1; }
+              sleep 15
+            done
           done
+          publish workboard
