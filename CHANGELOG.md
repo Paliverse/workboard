@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-15
+
+The first 1.5 days of 0.4.0's usage log showed slow starts on large boards, refusals of names and steps agents keep sending, and gaps in the log itself. Each board's store upgrades once, the first time this version opens it; 0.4.0 still reads and writes an upgraded store.
+
+### Added
+
+- `call` runs more of the names agents send, silently, while `help` and refusals keep teaching one name: the ops `close` (as `done`), `unblock` (as `resume`) and `card` (as `context`).
+- Keys: `item` means `subtask` on `subtask.*` ops, `title` means `text` on `subtask.add`, `topic` means `for` on `help`, `history` means `full` on `context`, `unblockWhen` means `until`, and `body` means `origin` on `add`. On `add`, `text` is the title, or the origin when a `title` is given.
+- Priorities: `high`, `urgent` and `highest` run as `critical`, `medium` and `normal` as `mid`, and `lowest` as `low`. 0.4.0 refused `high`, `medium` and `normal` with a fix.
+- `query --column` is repeatable (`column` takes a list in `call`) and matches any of the columns; `context --fields` (`fields`) returns the card with only those fields, as `query` projects them; `fields` also takes `created`, `updated` or `changed`, `state` or `status`, and `holder` or `assignee` for `createdAt`, `updatedAt`, `column` and `owner`; `subtask.claim` takes a list and claims all of the steps or none.
+- `start --note` (`text` in `call`) posts a timeline note with the start, in the same revision.
+
+### Changed
+
+- `board.db` keeps each card's lowercased search text in a new `hay` table, and `query`'s text filter matches there instead of in the JSON bodies; a query then reads only the keys its fields and filters need instead of whole cards. A card 0.4.0 created or changed since this version last wrote it is checked against its body, so text search still finds it. On a copy of the largest real board (2,890 cards; in-process medians, machine busy), a one-word text `query` with `fields` took 44 ms instead of 122 ms; the one-time upgrade took 0.56–0.74 s, and `board.db` grew by about 27%. See [The store](docs/architecture.md#the-store).
+- The In Progress limit counts In Progress cards in SQL, so `start`, `resume`, `fly`, `add` and the browser's moves and card creation load only the card with its dependencies and dependents instead of every open card. On the same board, `start` took 19 ms instead of 226 ms, `resume` 22 ms instead of 150 ms and `add` 17 ms instead of 139 ms; the load inside them 2 ms instead of 53 ms.
+- `start` on a Blocked card with a note resumes it into In Progress, the note as the resolution, instead of refusing with "use resume". Without a note it is still `state`, naming both ways.
+- `done` closes a Blocked card, with the write-up as the resolution, instead of refusing with "use resume"; as from Backlog or Task, its dependencies must be completed. The browser's `complete` and `submit` follow the same rule.
+- `subtask.done` with a result on plain checklist steps ticks them and posts the result as a note on each step, once, instead of refusing the result as `invalid`.
+- `subtask.claim` on an open plain checklist step succeeds and changes nothing, instead of `state` ("delegate it first"): its result says the step is plain and needs no claim, so note and tick it directly, as anyone may. A done plain step is still `state`.
+
+### Fixed
+
+- The usage log left `board` out of requests refused before the board was found, such as `call` refusals of an op or key and argument errors. They now log it, found from the request's `board`, `--board` or the working folder through the registry, without reading the board.
+- `query` logs `candidates`: how many cards it loaded to filter after the SQL prefilter (left out when nothing narrowed it), so a review can see how much the prefilter saves.
+- Redaction turned every name after `unknown op` and `unknown fields:` into `…`, so the log couldn't say which names agents guessed. A name that looks like an op or a key now stays; anything else is still `…`.
+- `boardArg`, a board argument that matched no board, was logged as given, so a mistyped argument could put text in the log. It now stays only when it is at most 24 characters without whitespace, like a quoted span in an error; anything else is `…`.
+
 ## [0.4.0] - 2026-11-13
 
 **Breaking changes.** Each board moves to a new store, `board.db`, the first time 0.4.0 uses it, and WorkBoard 0.3.x and earlier refuse migrated boards instead of reading them. Restart the server after updating (`workboard upgrade` does it): a 0.3.x server left running can't read migrated boards. There is no downgrade except restoring the pre-migration `board.json`, which stays in the board's `.backups/` folder; see [Upgrading to 0.4.0](docs/install.md#upgrading-to-040). `export`, `import`, `sweep`, `next`, `ack`, `workpad`, subtask `block`/`resume`/`release`, subtask prerequisites, card links and the separate comment stream are removed, and comments become timeline notes (see Removed). `done` and `cancel` now close a card another actor holds.
@@ -330,7 +358,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/Paliverse/workboard/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Paliverse/workboard/compare/v0.3.11...v0.4.0
 [0.3.11]: https://github.com/Paliverse/workboard/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/Paliverse/workboard/compare/v0.3.9...v0.3.10
