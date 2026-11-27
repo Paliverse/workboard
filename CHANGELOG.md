@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-27
+
 ### Fixed
 
 - On Windows, the background service launcher (`workboardw.exe serve --service`) crashed with `'NoneType' object has no attribute 'flush'` after handing off to its runtime copy at login, because windowed builds start with `sys.stdout` and `sys.stderr` set to `None`.
@@ -364,7 +366,8 @@ First public release.
 - Card notes timeline: `note REF --summary TEXT [--body MARKDOWN | --stdin]` appends an entry with a one-line summary (at most 160 characters) and an optional markdown body. The card panel shows the timeline newest first, with collapsible entries and a composer; the free-form `notes` field stays as pinned notes. `context` returns the newest 10 entries and `show` the newest 5 unless `--full` is given.
 - Board schema 3. Schema 1 and 2 boards are still read; their `[YYYY-MM-DD actor] text` note lines move losslessly into the timeline and are saved as schema 3 on the next write.
 
-[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/Paliverse/workboard/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/Paliverse/workboard/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/Paliverse/workboard/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Paliverse/workboard/compare/v0.3.11...v0.4.0
 [0.3.11]: https://github.com/Paliverse/workboard/compare/v0.3.10...v0.3.11
