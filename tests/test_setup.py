@@ -392,6 +392,39 @@ class RuntimeCopyTest(ScratchCase):
         with mock.patch.object(install, "_WINDOWS", False), mock.patch.object(sys, "frozen", True, create=True):
             self.assertFalse(install.relaunch_from_runtime_copy())
 
+    def test_windowed_process_entry_exits_cleanly_without_std_streams(self):
+        """Windowed Windows builds (workboardw.exe, pythonw.exe) start with stdout/stderr as None."""
+        app = self.app()
+        self.frozen_windows(app / "workboardw.exe")
+        popen = self.enterContext(mock.patch("subprocess.Popen"))
+
+        class Exited(BaseException):
+            def __init__(self, code):
+                self.code = code
+
+        def fake_exit(code):
+            raise Exited(code)
+
+        self.enterContext(mock.patch.object(os, "_exit", fake_exit))
+        self.enterContext(mock.patch.object(sys, "stdout", None))
+        self.enterContext(mock.patch.object(sys, "stderr", None))
+
+        # Successful runtime-copy handoff returns before server._log_to_file() replaces stdout/stderr.
+        with mock.patch.object(sys, "argv", [str(app / "workboardw.exe"), "serve", "--service"]):
+            with self.assertRaises(Exited) as handoff:
+                cli.main()
+        self.assertEqual(handoff.exception.code, 0)
+        copy = wb.home() / "runtime" / f"{__version__}-{install.runtime_fingerprint(app)}"
+        self.assertEqual(popen.call_args.args[0], [str(copy / "workboardw.exe"), "serve", "--service"])
+
+        # Command failures with None stdio also exit cleanly without AttributeError.
+        with mock.patch.object(sys, "argv", [str(app / "workboardw.exe"), "--not-an-option"]):
+            with self.assertRaises(Exited) as failed:
+                cli.main()
+        self.assertEqual(failed.exception.code, 2)
+        self.assertIsNone(sys.stdout)
+        self.assertIsNone(sys.stderr)
+
 
 class ServiceTest(ScratchCase):
     def test_windows_run_value_lifecycle(self):

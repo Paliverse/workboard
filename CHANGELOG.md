@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Windows, the background service launcher (`workboardw.exe serve --service`) crashed with `'NoneType' object has no attribute 'flush'` after handing off to its runtime copy at login, because windowed builds start with `sys.stdout` and `sys.stderr` set to `None`.
 - `upgrade` reports what the upgraded `workboard` printed when it can't read its version, such as a missing platform package, instead of `list index out of range`.
 - The release publishes `@paliverse/workboard` only after the registry serves every platform package. 0.4.1's main package went live while its Windows x64 package was still missing, so a Windows x64 install in that window got no binary.
 

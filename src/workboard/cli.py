@@ -1754,8 +1754,9 @@ def main(argv=None):
     if record:
         usage.end(ok=status == 0)
     for stream in (sys.stdout, sys.stderr):
-        with contextlib.suppress(OSError, ValueError):
-            stream.flush()
+        if stream is not None:
+            with contextlib.suppress(OSError, ValueError):
+                stream.flush()
     os._exit(status)
 
 

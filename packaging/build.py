@@ -7,7 +7,8 @@
                                   one delegated subtask round trip, add --from, digest, serve + HTTP;
                                   a Windows archive runs in a fake npm prefix after bin/launcher.js (node):
                                   a two-line argument through the launcher exe, then npm's sh shim (Git's sh)
-                                  with node off PATH: --version, a two-line argument, stdin, the exit code
+                                  with node off PATH: --version, a two-line argument, stdin, the exit code,
+                                  and workboardw.exe serve --service runtime-copy handoff without stdio
   checksums [DIR]                 DIR/SHA256SUMS over every file in DIR (default: dist)
   notes --version X               print the CHANGELOG.md section of X (GitHub Release notes)
   npm --version X                 build/npm/: the `@paliverse/workboard` package + one package per archive in dist/
@@ -206,6 +207,9 @@ def smoke(args) -> None:
         cli("--actor", "Main", "add", "--from", num, "--title", "Smoke copy")
         cli("digest")
         serve_smoke(target, project, env, tmp / "serve.log")
+        windowed = target.with_name("workboardw.exe")
+        if windowed.is_file():
+            service_smoke(windowed, project, env)
     print(f"smoke ok: {args.path}")
 
 
@@ -256,6 +260,93 @@ def serve_smoke(exe: Path, project: Path, env: dict, log: Path) -> None:
         if not started.get("ok") or started.get("port") != info["port"]:
             raise SystemExit(f"smoke failed: unexpected serve --json line {started}")
         print(f"POST /api/shutdown -> server exited {proc.returncode}")
+
+
+def _wait_windows_pid(pid: int, timeout: float, *, terminate: bool = False) -> bool:
+    import _winapi
+    try:
+        handle = _winapi.OpenProcess(0x00100001, False, pid)  # SYNCHRONIZE | PROCESS_TERMINATE
+    except OSError:
+        return True
+    try:
+        if _winapi.WaitForSingleObject(handle, int(timeout * 1000)) == _winapi.WAIT_OBJECT_0:
+            return True
+        if terminate:
+            try:
+                _winapi.TerminateProcess(handle, 1)
+            except OSError:
+                pass
+            _winapi.WaitForSingleObject(handle, 5000)
+        return False
+    finally:
+        _winapi.CloseHandle(handle)
+
+
+def service_smoke(windowed: Path, project: Path, env: dict) -> None:
+    """Windows `workboardw.exe serve --service --port 0` without stdio: clean handoff to runtime copy, /health, shutdown."""
+    home = Path(env["WORKBOARD_HOME"])
+    state = home / "server.json"
+    log = home / "logs" / "server.log"
+    # No stdin/stdout/stderr redirection: windowed builds get sys.stdout = sys.stderr = None, matching Windows login.
+    proc = subprocess.Popen([str(windowed), "serve", "--service", "--port", "0"], cwd=project, env=env, close_fds=True)
+    info = None
+    stopped = False
+    try:
+        try:
+            code = proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            raise SystemExit("smoke failed: workboardw serve --service did not hand off and exit within 30s")
+        if code != 0:
+            raise SystemExit(f"smoke failed: workboardw serve --service exited {code}")
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                info = json.loads(state.read_text(encoding="utf-8"))
+                break
+            except (OSError, ValueError):
+                time.sleep(0.2)
+        if info is None:
+            raise SystemExit("smoke failed: workboardw runtime copy did not write server.json")
+        runtime = (home / "runtime").resolve()
+        if not Path(info["executable"]).resolve().is_relative_to(runtime):
+            raise SystemExit(f"smoke failed: expected runtime copy under {runtime}, got {info['executable']}")
+        base = f"http://127.0.0.1:{info['port']}/"
+        with urllib.request.urlopen(base + "health", timeout=10) as response:
+            health = json.loads(response.read())
+        if not health.get("ok") or health.get("pid") != info["pid"] or info["port"] == 7891:
+            raise SystemExit(f"smoke failed: unexpected service /health response {health}")
+        if not log.is_file() or base not in log.read_text(encoding="utf-8"):
+            raise SystemExit("smoke failed: workboardw runtime copy did not log to logs/server.log")
+        request = urllib.request.Request(base + "api/shutdown", data=b"{}", method="POST", headers={
+            "X-WorkBoard-Token": info["token"], "Content-Type": "application/json", "Origin": base.rstrip("/")})
+        urllib.request.urlopen(request, timeout=10).close()
+        if not _wait_windows_pid(info["pid"], 15):
+            raise SystemExit(f"smoke failed: workboardw runtime copy (pid {info['pid']}) did not exit after shutdown")
+        stopped = True
+        print(f"workboardw serve --service -> handoff ok (runtime pid {info['pid']}, /health ok, shutdown clean)")
+    except BaseException:
+        if log.is_file():
+            print(f"--- service server.log ---\n{log.read_text(encoding='utf-8')}", file=sys.stderr)
+        raise
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        if info is None and state.is_file():
+            try:
+                info = json.loads(state.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                info = None
+        if info is not None and not stopped:
+            try:
+                base = f"http://127.0.0.1:{info['port']}/"
+                request = urllib.request.Request(base + "api/shutdown", data=b"{}", method="POST", headers={
+                    "X-WorkBoard-Token": info["token"], "Content-Type": "application/json",
+                    "Origin": base.rstrip("/")})
+                urllib.request.urlopen(request, timeout=5).close()
+            except OSError:
+                pass
+            _wait_windows_pid(info["pid"], 10, terminate=True)
 
 
 def checksums(args) -> None:
