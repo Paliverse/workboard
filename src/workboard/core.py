@@ -303,9 +303,9 @@ def _named_board(boards: dict, explicit: str) -> str | None:
 
 
 def resolve_board(explicit: str | None = None) -> tuple[str, Path]:
-    """(name, board.json) for --board / $WORKBOARD_DEFAULT_BOARD (a name or a folder), else the cwd.
+    """(name, board.json) for --board / $WORKBOARD_BOARD / $WORKBOARD_DEFAULT_BOARD (a name or a folder), else the cwd.
     The usage record gets the board's name, or (boardArg) the board argument that matched none."""
-    explicit = explicit or os.environ.get("WORKBOARD_DEFAULT_BOARD")
+    explicit = explicit or os.environ.get("WORKBOARD_BOARD") or os.environ.get("WORKBOARD_DEFAULT_BOARD")
     try:
         name, path = _resolve_board(explicit)
     except WorkflowError:
@@ -317,8 +317,8 @@ def resolve_board(explicit: str | None = None) -> tuple[str, Path]:
 
 def _resolve_board(explicit: str | None) -> tuple[str, Path]:
     boards = registry_load()["boards"]
-    hint = (f"Registered boards: {_board_names(boards)}. Pass one with --board NAME "
-            '(or "board": NAME in a call request)')
+    hint = (f"Registered boards: {_board_names(boards)}. Pass one with --board NAME, "
+            'WORKBOARD_BOARD=NAME, or "board": NAME in a call request')
     if explicit:
         name = _named_board(boards, explicit)
         if name is not None:
@@ -900,11 +900,15 @@ def normalize_doc(raw: dict) -> dict:
 
 DB_NAME = "board.db"
 STORE_SCHEMA = 5  # board.json stub's schemaVersion.
-STORE_VERSION = 6  # board.db's PRAGMA user_version: 6 added `hay` (0.4.1); 0.4.0 made 5 and ignores it.
+STORE_VERSION = 7  # 6 added `hay` (0.4.1); 7 added `card_meta` + `cards_cover` for fast inbox/digest/stats.
 VERSION_KEEP = 2000  # card_versions keeps the newest this many revisions: the restore horizon,
 VERSION_BYTES = 64 << 20  # trimmed to about this many bytes of bodies from the oldest end.
 _STUB_MAX = 4096
 _HAY_DDL = "CREATE TABLE IF NOT EXISTS hay(id TEXT PRIMARY KEY, rev INTEGER NOT NULL, text TEXT NOT NULL)"
+_META_DDL = ("CREATE TABLE IF NOT EXISTS card_meta(id TEXT PRIMARY KEY, rev INTEGER NOT NULL, "
+             "priority TEXT, outcome TEXT, rework INTEGER NOT NULL, active_owner TEXT, holder TEXT, "
+             "created_at TEXT, has_delegation INTEGER NOT NULL, has_claimed INTEGER NOT NULL)")
+_COVER_DDL = "CREATE INDEX IF NOT EXISTS cards_cover ON cards(pos, id, num, col, done_at, changed_rev, deps)"
 _DDL = f"""
 CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE cards(id TEXT PRIMARY KEY, num INTEGER UNIQUE, col TEXT NOT NULL, done_at TEXT,
@@ -913,9 +917,11 @@ CREATE INDEX cards_col ON cards(col);
 CREATE INDEX cards_pos ON cards(pos, id);
 CREATE INDEX cards_changed ON cards(changed_rev);
 CREATE INDEX cards_deps ON cards(deps, id, col) WHERE deps != '[]';
+{_COVER_DDL};
 CREATE TABLE card_versions(rev INTEGER NOT NULL, card_id TEXT NOT NULL, body TEXT,
                            PRIMARY KEY (rev, card_id));
 {_HAY_DDL};
+{_META_DDL};
 PRAGMA user_version = {STORE_VERSION};
 """
 _UNLOADED_WIP = "inProgressUnloaded"  # load(): In Progress cards the doc does not hold; never saved.
@@ -1003,13 +1009,20 @@ def _open(board_path):
 
 
 def _upgrade(con) -> None:
-    """A 0.4.0 store (user_version 5) gains `hay`, a row for every card, in one write transaction; another
-    process opening it at the same time waits on the lock, then finds it done."""
+    """Upgrade older stores in one write transaction: 5→6 adds `hay`, 6→7 adds `card_meta` and `cards_cover`.
+    Another process opening the store at the same time waits on the lock, then finds it done."""
     con.execute("BEGIN IMMEDIATE")
-    if con.execute("PRAGMA user_version").fetchone()[0] < STORE_VERSION:
+    version = con.execute("PRAGMA user_version").fetchone()[0]
+    if version < 6:
         con.execute(_HAY_DDL)
         con.executemany("INSERT OR REPLACE INTO hay VALUES (?, ?, ?)",
                         filter(None, map(_hay_row, con.execute("SELECT id, changed_rev, body FROM cards"))))
+    if version < 7:
+        con.execute(_META_DDL)
+        con.execute(_COVER_DDL)
+        con.executemany("INSERT OR REPLACE INTO card_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        filter(None, map(_meta_row, con.execute("SELECT id, changed_rev, body FROM cards"))))
+    if version < STORE_VERSION:
         con.execute(f"PRAGMA user_version = {STORE_VERSION}")
     con.execute("COMMIT")
 
@@ -1019,6 +1032,25 @@ def _hay_row(row: tuple) -> tuple | None:
     cid, rev, body = row
     try:
         return cid, rev, card_haystack(json.loads(body))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _card_meta(card: dict, cid: str | None = None, rev: int | None = None) -> tuple:
+    """A card's card_meta row: tiny scalar fields for fast inbox, digest and board stats."""
+    delegations = [st["delegation"] for st, _ in iter_subtasks(card.get("subtasks") or []) if st.get("delegation")]
+    return (card["id"] if cid is None else cid, card["changedRev"] if rev is None else rev,
+            card.get("priority"), card.get("outcome"), int(bool(card.get("reworkReason"))),
+            card.get("activeOwner"), card_holder(card), card.get("createdAt"),
+            int(bool(delegations)),
+            int(any(delegation.get("state") == "claimed" for delegation in delegations)))
+
+
+def _meta_row(row: tuple) -> tuple | None:
+    """(id, changed_rev, body) → the card's card_meta row; an unreadable body gets none, so stays stale."""
+    cid, rev, body = row
+    try:
+        return _card_meta(json.loads(body), cid, rev)
     except (ValueError, KeyError, TypeError, AttributeError):
         return None
 
@@ -1108,6 +1140,8 @@ def _install_store(board_path: Path, doc: dict, original: bytes | None = None) -
                             [_row(card, pos, _dump(card)) for pos, card in enumerate(doc["cards"])])
             con.executemany("INSERT INTO hay VALUES (?, ?, ?)",
                             [(card["id"], card["changedRev"], card_haystack(card)) for card in doc["cards"]])
+            con.executemany("INSERT INTO card_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            [_card_meta(card) for card in doc["cards"]])
             con.execute("COMMIT")
             con.execute("PRAGMA journal_mode=WAL")
     finally:
@@ -1261,6 +1295,8 @@ def card_fields(con, ids, keys) -> list[dict]:
     """The cards with these IDs in board order, each holding id, num and `keys` (top-level, without a double
     quote; a key a card lacks is None, as card.get gives). SQLite picks them out of each body, so Python never
     decodes the rest of it (timeline, subtasks, notes)."""
+    if not ids:
+        return []
     t0 = time.perf_counter()
     keys = ["id", "num", *(key for key in dict.fromkeys(keys) if key not in ("id", "num"))]
     rows = con.execute(f"SELECT json_extract(body, {', '.join('?' * len(keys))}) FROM cards "
@@ -1281,31 +1317,160 @@ def column_counts(con) -> dict:
     return dict(con.execute("SELECT col, count(*) FROM cards GROUP BY col").fetchall())
 
 
+def _summary_cards(con) -> list[dict]:
+    """Every card in board order from cards_cover + card_meta, falling back to body only on stale rows."""
+    raw = con.execute(
+        "SELECT c.id, c.num, c.col, c.done_at, c.deps, c.changed_rev, "
+        "m.rev, m.priority, m.outcome, m.rework, m.active_owner, m.holder, "
+        "m.created_at, m.has_delegation, m.has_claimed "
+        "FROM cards c INDEXED BY cards_cover LEFT JOIN card_meta m ON m.id = c.id ORDER BY c.pos"
+    ).fetchall()
+    stale_ids = [row[0] for row in raw if row[6] != row[5]]
+    stale = ({cid: json.loads(body) for cid, body in con.execute(
+        "SELECT id, body FROM cards WHERE id IN (SELECT value FROM json_each(?))",
+        (_dump(stale_ids),))} if stale_ids else {})
+    cards = []
+    for (cid, num, col, done_at, deps, changed_rev, m_rev, priority, outcome, rework,
+         active_owner, holder, created_at, has_delegation, has_claimed) in raw:
+        if m_rev == changed_rev:
+            cards.append({
+                "id": cid, "num": num, "column": col, "doneAt": done_at or None,
+                "dependsOn": json.loads(deps) if deps != "[]" else [],
+                "priority": priority, "outcome": outcome,
+                "reworkReason": "1" if rework else None,
+                "activeOwner": active_owner, "holder": holder, "createdAt": created_at,
+                "_hasDelegation": bool(has_delegation), "_hasClaimed": bool(has_claimed),
+            })
+        else:
+            card = stale[cid]
+            delegations = [st["delegation"] for st, _ in iter_subtasks(card.get("subtasks") or [])
+                           if st.get("delegation")]
+            cards.append({
+                "id": cid, "num": card["num"], "column": card["column"], "doneAt": card.get("doneAt"),
+                "dependsOn": card.get("dependsOn") or [],
+                "priority": card.get("priority"), "outcome": card.get("outcome"),
+                "reworkReason": card.get("reworkReason"),
+                "activeOwner": card.get("activeOwner"), "holder": card_holder(card),
+                "createdAt": card.get("createdAt"),
+                "_hasDelegation": bool(delegations),
+                "_hasClaimed": any(d.get("state") == "claimed" for d in delegations),
+            })
+    return cards
+
+
 def claimed_done(con) -> list:
     """IDs of the Done cards that may hold claimed delegated work."""
-    return [cid for (cid,) in con.execute("SELECT id FROM cards WHERE col = 'done' AND instr(body, '\"claimed\"')")]
+    rows = con.execute(
+        "SELECT c.id, m.rev IS c.changed_rev FROM cards c INDEXED BY cards_cover LEFT JOIN card_meta m ON m.id = c.id "
+        "WHERE c.col = 'done' AND (m.rev IS NOT c.changed_rev OR m.has_claimed = 1)"
+    ).fetchall()
+    fresh = [cid for cid, ok in rows if ok]
+    stale = [cid for cid, ok in rows if not ok]
+    if stale:
+        fresh += [cid for (cid,) in con.execute(
+            "SELECT id FROM cards WHERE id IN (SELECT value FROM json_each(?)) AND instr(body, '\"claimed\"')",
+            (_dump(stale),))]
+    return fresh
 
 
 def done_lines(con, columns, keep: int) -> tuple[list, list]:
-    """Done cards for digest without loading Done: the newest `keep` shipped from `columns` (by doneAt, ties in
-    board order) and the last `keep` canceled, in board order. Each reads bodies only until it has `keep`."""
+    """Done cards for digest without scanning Done bodies: the newest `keep` shipped from `columns` (by doneAt,
+    ties in board order) and the last `keep` canceled, in board order."""
     shipped = []
-    for (cid,) in con.execute(f"SELECT id FROM cards WHERE col IN ({', '.join('?' * len(columns))}) "
-                              "AND done_at != '' ORDER BY done_at DESC, pos", list(columns)).fetchall():
+    for (cid,) in con.execute(
+        f"SELECT c.id FROM cards c INDEXED BY cards_cover LEFT JOIN card_meta m ON m.id = c.id "
+        f"WHERE c.col IN ({', '.join('?' * len(columns))}) AND c.done_at != '' "
+        f"AND (m.rev IS NOT c.changed_rev OR coalesce(m.outcome, '') != 'canceled') "
+        f"ORDER BY c.done_at DESC, c.pos", list(columns)
+    ).fetchall():
         card = json.loads(con.execute("SELECT body FROM cards WHERE id = ?", (cid,)).fetchone()[0])
         if card.get("outcome") != "canceled":
             shipped.append(card)
             if len(shipped) == keep:
                 break
-    canceled = []  # +col keeps the walk on cards_pos, newest first, so it stops early.
-    for (body,) in con.execute("SELECT body FROM cards WHERE +col = 'done' "
-                               "AND instr(body, '\"outcome\":\"canceled\"') ORDER BY pos DESC"):
-        card = json.loads(body)
+    canceled = []
+    for (cid,) in con.execute(
+        "SELECT c.id FROM cards c INDEXED BY cards_cover LEFT JOIN card_meta m ON m.id = c.id "
+        "WHERE c.col = 'done' AND (m.rev IS NOT c.changed_rev OR m.outcome = 'canceled') "
+        "ORDER BY c.pos DESC"
+    ).fetchall():
+        card = json.loads(con.execute("SELECT body FROM cards WHERE id = ?", (cid,)).fetchone()[0])
         if card.get("outcome") == "canceled":
             canceled.insert(0, card)
             if len(canceled) == keep:
                 break
     return shipped, canceled
+
+
+_DIGEST_FIELDS = ("title", "column", "activeOwner", "updatedAt", "createdAt", "subtasks",
+                  "blockedReason", "unblockWhen")
+_DONE_LINE_FIELDS = ("title", "doneAt", "cancelReason")
+
+
+def load_inbox(board_path, by: str, ref=None) -> tuple[int, list[dict]]:
+    """Inbox items for `by` in one snapshot: scans cards_cover + card_meta to load only open cards with
+    delegated work (or stale meta rows), or just the single card when `ref` is given."""
+    by = validate_actor(by)
+    if ref is not None:
+        doc = load(board_path, (ref,), "card")
+        return doc["rev"], inbox(doc, by, ref=ref)
+    t0 = time.perf_counter()
+    db = _db(board_path)
+    with snapshot(board_path) as con:
+        rev = json.loads(con.execute("SELECT v FROM meta WHERE k = 'rev'").fetchone()[0])
+        count = con.execute("SELECT count(*) FROM cards").fetchone()[0]
+        ids = [cid for (cid,) in con.execute(
+            "SELECT c.id FROM cards c INDEXED BY cards_cover LEFT JOIN card_meta m ON m.id = c.id "
+            "WHERE c.col != 'done' AND (m.rev IS NOT c.changed_rev OR m.has_delegation = 1) "
+            "ORDER BY c.pos"
+        )]
+        cards = ([json.loads(body) for (body,) in con.execute(
+            "SELECT body FROM cards WHERE id IN (SELECT value FROM json_each(?)) ORDER BY pos",
+            (_dump(ids),))] if ids else [])
+    usage.note(rev=rev, cards=count, bytes=_size(db))
+    usage.stage("load", t0)
+    return rev, inbox({"cards": cards}, by)
+
+
+def load_digest(board_path, by: str, *, include_stats: bool = False) -> dict:
+    """Data for `digest` in one snapshot: scans cards_cover + card_meta once, then projects only the few
+    cards digest displays (inprogress, blocked, mine, delegated, and up to 6 done lines)."""
+    t0 = time.perf_counter()
+    db = _db(board_path)
+    with snapshot(board_path) as con:
+        meta = {key: json.loads(value) for key, value in con.execute("SELECT k, v FROM meta")}
+        rows = _summary_cards(con)
+        usage.stage("load", t0)
+        usage.note(rev=meta["rev"], cards=len(rows), bytes=_size(db))
+        counts: dict[str, int] = {}
+        for row in rows:
+            counts[row["column"]] = counts.get(row["column"], 0) + 1
+        holders = {row["id"]: row["holder"] for row in rows}
+        detail_ids = [row["id"] for row in rows
+                      if row["column"] in ("inprogress", "blocked") or row["holder"] == by
+                      or (row["column"] != "done" and row["_hasDelegation"])
+                      or (row["column"] == "done" and row["_hasClaimed"])]
+        details = card_fields(con, detail_ids, _DIGEST_FIELDS)
+        for card in details:
+            card["holder"] = holders.get(card["id"])
+        shipped, canceled = [], []
+        if not include_stats:
+            done_cols = {col["id"] for col in meta["columns"] if col["kind"] == "done"} | {"done"}
+            shipped_ids = [row["id"] for row in sorted(
+                (row for row in rows if row["column"] in done_cols and row["doneAt"]
+                 and row["outcome"] != "canceled"),
+                key=lambda row: row["doneAt"], reverse=True)[:3]]
+            canceled_ids = [row["id"] for row in rows if row["outcome"] == "canceled"][-3:]
+            if shipped_ids or canceled_ids:
+                by_id = {card["id"]: card for card in card_fields(con, [*shipped_ids, *canceled_ids],
+                                                                  _DONE_LINE_FIELDS)}
+                shipped = [by_id[cid] for cid in shipped_ids if cid in by_id]
+                canceled = [by_id[cid] for cid in canceled_ids if cid in by_id]
+    ready = ready_cards({"cards": rows})
+    stats = board_stats({"cards": rows}) if include_stats else None
+    rework = sum(bool(row["reworkReason"]) for row in rows if row["column"] != "done")
+    return {**meta, "counts": counts, "total": len(rows), "cards": details, "ready": ready,
+            "stats": stats, "rework": rework, "shipped": shipped, "canceled": canceled}
 
 
 @contextlib.contextmanager
@@ -1459,6 +1624,9 @@ def _commit(base: _Loaded, doc: dict, by: str | None) -> int:
     con.executemany("DELETE FROM hay WHERE id = ?", [(cid,) for cid in gone])
     con.executemany("INSERT OR REPLACE INTO hay VALUES (?, ?, ?)",
                     [(cid, final["changedRev"], card_haystack(final)) for cid, (final, _, _) in written.items()])
+    con.executemany("DELETE FROM card_meta WHERE id = ?", [(cid,) for cid in gone])
+    con.executemany("INSERT OR REPLACE INTO card_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [_card_meta(final) for final, _, _ in written.values()])
     versions = ([(rev, cid, None if old is None else old[0]) for cid, (_, _, old) in written.items()]
                 + [(rev, cid, loaded[cid][0]) for cid in gone])
     con.executemany("INSERT INTO card_versions VALUES (?, ?, ?)", versions)
@@ -1978,17 +2146,9 @@ def board_stats(doc: dict) -> dict:
     return stats
 
 
-_STAT_FIELDS = ("priority", "outcome", "reworkReason", "activeOwner", "createdAt", "doneAt")
-
-
 def store_stats(con) -> dict:
-    """board_stats from one SQL row per card in board order (snapshot()): the fields it reads, not the cards."""
-    paths = ", ".join(f"'$.{key}'" for key in _STAT_FIELDS)
-    return board_stats({"cards": [
-        {"id": cid, "num": num, "column": col, "dependsOn": json.loads(deps),
-         **dict(zip(_STAT_FIELDS, json.loads(fields)))}
-        for cid, num, col, deps, fields in
-        con.execute(f"SELECT id, num, col, deps, json_extract(body, {paths}) FROM cards ORDER BY pos")]})
+    """board_stats from cards_cover + card_meta (snapshot()), falling back to body only on stale rows."""
+    return board_stats({"cards": _summary_cards(con)})
 
 
 def append_note(card: dict, summary, body, by: str) -> dict:

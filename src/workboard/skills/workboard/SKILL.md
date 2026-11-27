@@ -7,7 +7,7 @@ description: Shared kanban memory for people and coding agents. Use when startin
 The board is the project's shared memory: the user watches it live, other agents coordinate through it, and your next session resumes from it. Keep it true as you go: your active work In Progress under your name, decisions and evidence on the card, and Done only when someone else could verify the work from the card alone.
 
 ## Calling the board
-- Name yourself on every command, reads too: `workboard --actor NAME …`, one name for the whole session. Outside the project folder add `--board NAME`. A project with no board yet: `workboard init`.
+- Name yourself on every command, reads too: `workboard --actor NAME …`, one name for the whole session. Outside the project folder (e.g. Temp) pass `--board NAME`, `"board"` in `call`, or set `WORKBOARD_BOARD=NAME`. A project with no board yet: `workboard init`.
 - Send a step's requests together in one `call`, one JSON object per line in a quoted heredoc. Each prints one JSON result line, in order; a failure doesn't stop the rest.
   ```bash
   workboard --actor Ada call <<'EOF'

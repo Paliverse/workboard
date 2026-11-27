@@ -222,11 +222,20 @@ class DataIntegrityTest(DoctorCase):
     def test_search_text_rows_are_not_findings(self):
         tamper(self.board, "UPDATE hay SET rev = rev - 1, text = 'stale'")  # 0.4.0 changed the card since.
         tamper(self.board, "INSERT INTO hay VALUES ('gone', 1, 'a card 0.4.0 deleted')")
+        tamper(self.board, "UPDATE card_meta SET rev = rev - 1, has_delegation = 1")
+        tamper(self.board, "INSERT INTO card_meta VALUES ('gone', 1, NULL, NULL, 0, NULL, NULL, NULL, 0, 0)")
 
         def data(report):
             return [finding for finding in report["blockers"] + report["warnings"] if finding["category"] == "data"]
 
         self.assertEqual(data(self.inspect()), [])
+        tamper(self.board, "DROP TABLE card_meta")  # A 0.4.1/0.4.2 store is checked as it is, never upgraded.
+        tamper(self.board, "DROP INDEX cards_cover")
+        tamper(self.board, "PRAGMA user_version = 6")
+        self.assertEqual(data(self.inspect()), [])
+        con = sqlite3.connect(self.board.with_name(wb.DB_NAME))
+        self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 6)
+        con.close()
         tamper(self.board, "DROP TABLE hay")  # A 0.4.0 store is checked as it is, never upgraded.
         tamper(self.board, "PRAGMA user_version = 5")
         self.assertEqual(data(self.inspect()), [])

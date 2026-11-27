@@ -770,9 +770,8 @@ def _query_once(query: str, allowed: set[str]) -> dict:
 def _handle_inbox_get(handler, query: str) -> None:
     try:
         params = _query_once(query, {"actor"})
-        doc = wb.load(handler.board, scope="open")
-        items = wb.inbox(doc, params.get("actor", "user"))
-        return handler._json({"rev": doc["rev"], "items": items})
+        rev, items = wb.load_inbox(handler.board, params.get("actor", "user"))
+        return handler._json({"rev": rev, "items": items})
     except _FAILURES as exc:
         return _send_error(handler, exc)
 

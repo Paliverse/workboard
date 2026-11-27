@@ -321,6 +321,47 @@ class Store(unittest.TestCase):
         with mock.patch.object(core, "_upgrade", side_effect=AssertionError("upgraded twice")):
             core.load(path)  # Upgraded stores pay one user_version read.
 
+    def test_a_0_4_1_store_upgrades_and_stale_card_meta_falls_back_to_body(self):
+        step = [{"id": "s-1", "text": "Slice", "done": False,
+                 "delegation": {"state": "claimed", "owner": "Ada", "claimedAt": AT, "result": ""}}]
+        path = self.board("meta", [
+            card(1, "open-1", "inprogress", activeOwner="Main", claimedAt=AT, subtasks=step),
+            card(2, "blk-2", "blocked", blockedReason="Wait", unblockWhen="Ready",
+                 history=[{"at": AT, "ev": "blocked", "by": "Main"}]),
+            card(3, "done-3", "done", doneAt=AT, outcome="completed"),
+            card(4, "canc-4", "done", doneAt=AT, outcome="canceled", cancelReason="dup"),
+            card(5, "task-5", "task", reworkReason="fix"),
+        ])
+        db = path.with_name(core.DB_NAME)
+        con = sqlite3.connect(db, isolation_level=None)  # 0.4.1/0.4.2 store: user_version 6, no card_meta.
+        con.executescript("DROP TABLE card_meta; DROP INDEX cards_cover; PRAGMA user_version = 6;")
+        con.close()
+        rev, items = core.load_inbox(path, "Main")
+        self.assertEqual([(item["kind"], item["num"], item["owner"]) for item in items], [("claim", 1, "Ada")])
+        con = sqlite3.connect(db, isolation_level=None)
+        self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], core.STORE_VERSION)
+        self.assertEqual(con.execute("SELECT count(*) FROM card_meta").fetchone()[0], 5)
+        # Simulate a 0.4.1/0.4.2 writer updating, inserting and deleting rows without touching card_meta.
+        body = json.loads(con.execute("SELECT body FROM cards WHERE id = 'task-5'").fetchone()[0])
+        body = core.normalize_card({**body, "column": "inprogress", "activeOwner": "Main",
+                                    "claimedAt": AT, "subtasks": step, "changedRev": 9})
+        con.execute("UPDATE cards SET col = 'inprogress', changed_rev = 9, body = ? WHERE id = 'task-5'",
+                    (core._dump(body),))
+        added = core.normalize_card(card(6, "new-6", "done", doneAt="2026-11-26T00:00:00Z", outcome="canceled",
+                                         cancelReason="stale-writer", changedRev=9))
+        con.execute("INSERT INTO cards VALUES (?, ?, ?, ?, ?, ?, ?, ?)", core._row(added, 9, core._dump(added)))
+        con.execute("DELETE FROM cards WHERE id = 'canc-4'")  # Orphaned card_meta row stays behind.
+        con.close()
+        rev2, items2 = core.load_inbox(path, "Main")
+        self.assertEqual(rev2, rev)
+        self.assertEqual([(item["kind"], item["num"]) for item in items2], [("claim", 1), ("claim", 5)])
+        digest = core.load_digest(path, "Main", include_stats=True)
+        full = core.load(path)
+        self.assertEqual(digest["stats"], core.board_stats(full))
+        digest_text = core.load_digest(path, "Main", include_stats=False)
+        self.assertEqual([c["num"] for c in digest_text["canceled"]], [6])
+        self.assertEqual([c["num"] for c in digest_text["shipped"]], [3])
+
     def test_wip_limit_holds_on_card_scoped_loads_and_racing_writers(self):
         columns = [dict(c) for c in core.DEFAULT_COLUMNS]
         next(c for c in columns if c["id"] == "inprogress")["wipLimit"] = 2

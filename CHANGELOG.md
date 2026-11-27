@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `WORKBOARD_BOARD` environment variable (taking precedence over `WORKBOARD_DEFAULT_BOARD`, below `--board`), matching `WORKBOARD_ACTOR`, `WORKBOARD_PORT` and `WORKBOARD_HOME`, so subagents and scripts running from temp directories can pin their board once. The `no board` error and bundled skill now name `WORKBOARD_BOARD=NAME` alongside `--board` and `"board"`.
+- More silent `call` and field aliases from 15 days of usage telemetry, while `help` and refusals keep teaching one canonical name: `fly`/`move` accept `to` and `lane` as `column` (and `resume` accepts `column`/`lane` as `to`); `add` and `query` accept `labels` as `tags` and `lane` as `column`; `add` combines `origin` and `body` when both are sent; `add` and `update` join a list of string `notes` with newlines; `done`, `block`, `cancel`, `takeover`, `reopen` and `resume` accept `body` as (or appended to) `text`; `note.add`, `attach` and `subtask.remove` run as `note`, `attachment.add` and `subtask.rm`; `assign`, `take` and `edit` are refused with guided suggestions and fixes; `fields` accepts `labels`, `depends`, `blocked`, `until`, `blockedUntil` and `blocked_until`.
+
+### Changed
+
+- `board.db` adds a compact `card_meta` table and a `cards_cover` covering index (`PRAGMA user_version` 7, upgraded once on open; 0.4.0–0.4.2 writers remain compatible via `changed_rev` stale fallback). `GET /api/inbox`, `workboard inbox`, `digest` (text and `--json`) and `store_stats` now scan `cards_cover` + `card_meta` instead of full card bodies, projecting only the handful of cards actually displayed. On a 4,000-card (87 MB) synthetic benchmark board, in-process median `inbox` dropped from 31.4 ms to 2.0 ms (16× faster), `digest --json` from 140.0 ms to 18.3 ms (7.6× faster), and text `digest` from 116.9 ms to 14.7 ms (8× faster).
+
 ## [0.4.2] - 2026-11-27
 
 ### Fixed

@@ -110,13 +110,19 @@ class CentralStore(unittest.TestCase):
         self.assertEqual(which("--board", "beta")["name"], "beta")
         self.assertEqual(which("--board", str(docs))["name"], "beta")
         self.assertEqual(which(env={**self.env, "WORKBOARD_DEFAULT_BOARD": "beta"})["name"], "beta")
+        self.assertEqual(which(env={**self.env, "WORKBOARD_BOARD": "beta"})["name"], "beta")
+        self.assertEqual(which(env={**self.env, "WORKBOARD_BOARD": "beta",
+                                    "WORKBOARD_DEFAULT_BOARD": "alpha"})["name"], "beta")
+        self.assertEqual(which("--board", "alpha", env={**self.env, "WORKBOARD_BOARD": "beta"})["name"], "alpha")
         for value in ("nope", str(core.board_file("beta"))):
             error = which("--board", value)
             self.assertEqual((error["status"], error["code"]), (404, "not_found"), value)
             self.assertIn(f"no board named or linked to {value!r}", error["error"])
         loose = which(cwd=self.folder("loose"))
         self.assertEqual((loose["status"], loose["code"]), (404, "not_found"))
+        self.assertIn("WORKBOARD_BOARD=NAME", loose["error"])
         self.assertIn("workboard init", loose["error"])
+        self.assertEqual(which(cwd=self.folder("loose"), env={**self.env, "WORKBOARD_BOARD": "beta"})["name"], "beta")
 
     def test_link_after_moving_a_project(self):
         old = self.folder("before")

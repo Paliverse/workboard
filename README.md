@@ -114,7 +114,7 @@ Environment variables:
 | `WORKBOARD_HOME` | `~/.workboard` | Boards, registry, settings, server state, logs and the Windows service runtime |
 | `WORKBOARD_PORT` | `7891` | Server port on `127.0.0.1` |
 | `WORKBOARD_ACTOR` | unset | Actor label recorded on CLI writes. The browser records `user`. |
-| `WORKBOARD_DEFAULT_BOARD` | unset | Board name or project folder to use when `--board` is not given, instead of looking up from the current directory |
+| `WORKBOARD_BOARD` | unset | Board name or project folder to use when `--board` is not given, instead of looking up from the current directory (`WORKBOARD_DEFAULT_BOARD` is also accepted as a fallback) |
 | `WORKBOARD_USAGE_LOG` | unset | `0` turns off the local usage log (`~/.workboard/logs/usage-*.jsonl`); see [Usage log](docs/architecture.md#usage-log) |
 
 Settings that should persist go in the optional `~/.workboard/config.json`. Both keys are optional:

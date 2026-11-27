@@ -269,7 +269,7 @@ class CallAndWait(unittest.TestCase):
         one, two = [item["id"] for item in added["items"]]
         before = added["rev"]
         cases = [
-            ({"op": "update", "card": 1, "notes": ["a", "b"]}, "notes"),
+            ({"op": "update", "card": 1, "title": ["a", "b"]}, "title"),
             ({"op": "note", "card": 1, "summary": "s", "subtask": [one, two]}, "subtask"),
             ({"op": "show", "card": [1, 2]}, "card"),
             ({"op": "subtask.configure", "card": 1, "subtask": one, "scope": []}, "clearScope"),
@@ -866,6 +866,70 @@ class CallAndWait(unittest.TestCase):
         copied = self.calls({"op": "add", "from": 2, "text": "Seen again in the log"})[0]
         card = self.calls({"op": "query", "card": copied["num"], "fields": "title,origin"})[0]["cards"][0]
         self.assertEqual(card, {"title": "Crash on start", "origin": "Seen again in the log"})
+
+    def test_requests_0_4_1_refused_now_run(self):
+        """Shapes 0.4.1 telemetry showed agents sending repeatedly: now accepted silently or guided cleanly."""
+        added = self.calls({
+            "op": "add", "title": "Combined", "lane": "task", "labels": ["bug", "ui"],
+            "origin": "User report", "body": "Repro steps", "notes": ["- check A", "- check B"],
+        })[0]
+        num = added["num"]
+        self.calls(
+            {"op": "update", "card": num, "notes": ["- updated A", "- updated B"]},
+            {"op": "fly", "card": num, "to": "backlog"},
+            {"op": "move", "card": num, "to": "inprogress"},
+            {"op": "note.add", "card": num, "text": "Noted via note.add"},
+            {"op": "block", "card": num, "text": "API down", "body": "503 since 02:00", "until": "API 200"},
+        )
+        # Field aliases in query and context: labels, depends, blocked, until, blockedUntil, blocked_until.
+        self.calls({"op": "depends", "card": num, "on": [1]})
+        queried = self.calls({
+            "op": "query", "labels": ["bug"],
+            "fields": "num,labels,depends,blocked,until,blockedUntil,blocked_until",
+        })[0]["cards"]
+        self.assertEqual(queried, [{
+            "num": num, "tags": ["bug", "ui"], "deps": [1],
+            "blockedReason": "API down\n\n503 since 02:00", "unblockWhen": "API 200",
+        }])
+        ctx = self.calls({"op": "context", "card": num, "fields": "origin,notes,labels,blocked,until"})[0]["card"]
+        self.assertEqual(ctx, {
+            "origin": "User report\n\nRepro steps", "notes": "- updated A\n- updated B",
+            "tags": ["bug", "ui"], "blockedReason": "API down\n\n503 since 02:00", "unblockWhen": "API 200",
+        })
+        # resume with column/lane + body alone; done with text+body; attach + subtask.remove aliases.
+        self.calls({"op": "depends", "card": num, "clear": True})
+        file = self.base / "shot.txt"
+        file.write_text("ok", encoding="utf-8")
+        sub = self.calls(
+            {"op": "resume", "card": num, "body": "API recovered", "column": "inprogress"},
+            {"op": "attach", "card": num, "file": str(file)},
+            {"op": "subtask.add", "card": num, "text": "Drop me"},
+        )[2]["item"]["id"]
+        self.calls(
+            {"op": "subtask.remove", "card": num, "subtask": sub},
+            {"op": "done", "card": num, "text": "Shipped", "body": "Checks: green"},
+        )
+        done_card = self.calls({"op": "context", "card": num})[0]["card"]
+        self.assertEqual((done_card["column"], done_card["writeup"]), ("done", "Shipped\n\nChecks: green"))
+        self.assertEqual(done_card["subtasks"], [])
+        self.assertEqual(len(done_card["attachments"]), 1)
+        # Invalid shapes for notes list and body still refuse cleanly; OP_GUESSES guide assign/take/edit.
+        bad_empty, bad_type, bad_body, assign_help, assign_sub, take_ref, edit_note = self.calls(
+            {"op": "add", "title": "Empty notes", "notes": []},
+            {"op": "add", "title": "Bad notes", "notes": [1, 2]},
+            {"op": "done", "card": 1, "body": ["not", "text"]},
+            {"op": "help", "for": "assign"},
+            {"op": "assign", "card": 1, "subtask": "s-1", "worker": "Ada"},
+            {"op": "take", "card": 1},
+            {"op": "edit", "card": 1, "id": "abcd1234", "text": "Updated"},
+            ok=False,
+        )
+        for bad in (bad_empty, bad_type, bad_body):
+            self.assertEqual((bad["status"], bad["code"]), (422, "invalid"))
+        self.assertIn('did you mean "start" (or "handoff")?', assign_help["error"])
+        self.assertEqual(assign_sub["fix"], {"op": "handoff", "card": 1, "subtask": "s-1", "worker": "Ada"})
+        self.assertEqual(take_ref["fix"], {"op": "start", "card": 1})
+        self.assertEqual(edit_note["fix"], {"op": "note.edit", "card": 1, "id": "abcd1234", "text": "Updated"})
 
 
 # Requests agents really sent from 2026-10-28 to 11-13 that call refused (build/friction/calls.jsonl).

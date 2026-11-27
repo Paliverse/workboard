@@ -24,7 +24,7 @@ Options must be spelled in full: abbreviations such as `--act` are rejected.
 
 ### Board resolution
 
-Boards live in `~/.workboard/boards/`, each linked to one project folder. Board commands take `--board`, else `WORKBOARD_DEFAULT_BOARD`, else the current directory:
+Boards live in `~/.workboard/boards/`, each linked to one project folder. Board commands take `--board`, else `WORKBOARD_BOARD` (or `WORKBOARD_DEFAULT_BOARD`), else the current directory:
 
 - A registered board name selects that board: exactly, else ignoring case, else by its folder name under `~/.workboard/boards/` (so `--board ompbridge` finds `ompBridge`); a name that matches several boards fails. Otherwise, if the value is an existing directory, the board is found from that directory as below. Anything else fails with `not_found`, listing the registered boards.
 - From a directory, WorkBoard checks the directory and its parents, nearest first. The first one that is a board's linked project wins, so subfolders use their project's board and the nearest linked project wins when projects are nested.
@@ -41,7 +41,7 @@ Defaults come from environment variables and the optional `~/.workboard/config.j
 |---|---|
 | Actor | `--actor`, `WORKBOARD_ACTOR`, `actor`; with none, writes fail with `invalid` and reads use `agent` |
 | Port (`serve`, `open`, the URLs from `boards`) | `serve --port`, `WORKBOARD_PORT`, `port`, then `7891` |
-| Board | `--board`, `WORKBOARD_DEFAULT_BOARD`, then the current directory |
+| Board | `--board`, `WORKBOARD_BOARD`, `WORKBOARD_DEFAULT_BOARD`, then the current directory |
 
 `WORKBOARD_HOME` moves the whole store (default `~/.workboard`). An unknown key or invalid value in `config.json` fails with `invalid`. See the [README](../README.md#configuration).
 
@@ -151,12 +151,15 @@ The parser also accepts the names agents commonly send, and refusals and `help` 
 | `move` | `fly` |
 | `close` | `done` |
 | `unblock` | `resume` |
-| `comment`, `comment.add`, `card.note` | `note` (a long comment text moves into the body, as any summary does) |
+| `comment`, `comment.add`, `card.note`, `note.add` | `note` (a long comment text moves into the body, as any summary does) |
+| `attach` | `attachment.add` |
+| `subtask.remove` | `subtask.rm` |
 | `bug`, `improve`, `rework` | `reopen` with `as` `bug`, `improve` or `task` |
 | `summary`, `writeup`, `reason`, `result`, `note`, `texts` | `text` (two of them in one request are refused) |
 | `ref`, `num` (and `cards`, on `query`) | `card` |
 | `terms`, `q`, `query`, `search` on `query` | `text` |
-| `tag` | `tags` |
+| `tag`, `labels` | `tags` |
+| `lane` (and `to` on `fly`; `column` or `lane` on `resume`) | `column` (or `to` on `resume`) |
 | `path` | `file` |
 | `subtasks`, and `item` on `subtask.*` ops | `subtask` |
 | `label` | `actor` (refused when both are given and differ) |
@@ -164,12 +167,14 @@ The parser also accepts the names agents commonly send, and refusals and `help` 
 | `topic` on `help` | `for` |
 | `history` on `context` | `full` |
 | `unblockWhen` | `until` |
-| `body` on `add` | `origin` |
+| `body` on `add` | `origin` (combined with `origin` when both are sent) |
+| `body` on `done`, `block`, `cancel`, `takeover`, `reopen`, `resume` | `text` (combined with `text` when both are sent) |
+| `notes` as a list of strings on `add` or `update` | joined with newlines |
 | `text` on `add` | `title`, or `origin` when a `title` is given |
 | `priority` `high`, `urgent` or `highest`; `medium` or `normal`; `lowest` | `critical`; `mid`; `low` |
-| `created`, `updated` or `changed`, `state` or `status`, `holder` or `assignee` in `fields` (also the command line's `--fields`) | `createdAt`, `updatedAt`, `column`, `owner` |
+| `created`, `updated` or `changed`, `state` or `status`, `holder` or `assignee`, `labels`, `depends`, `blocked`, `until`/`blockedUntil`/`blocked_until` in `fields` (also `--fields`) | `createdAt`, `updatedAt`, `column`, `owner`, `tags`, `deps`, `blockedReason`, `unblockWhen` |
 
-`bug` or `improve` with a `title` and no card means a new card: it is refused with a `fix` that runs `add` with the tag `bug` or `improve`. `complete` and `finish` are refused, naming `done` and `cancel`; `claim` names `start`, or `subtask.claim` when the request has a `subtask`.
+`bug` or `improve` with a `title` and no card means a new card: it is refused with a `fix` that runs `add` with the tag `bug` or `improve`. `complete` and `finish` are refused, naming `done` and `cancel`; `claim` names `start`, or `subtask.claim` when the request has a `subtask`; `assign` names `start` and `handoff`, `take` names `start` and `takeover`, and `edit` names `update` and `note.edit`.
 
 A refusal is `{"ok": false, "status": 422, "code": "invalid", "error": …, "rev": null}` plus, when the correction is clear, `fix`: the corrected request, which passes the same validation, and `usage`: the op's `help` entry. A key the op doesn't take is reported before a missing one, with the closest key; a card-shaped value under an unknown key is offered as `card`; `context` with `query`'s filters, such as `text` or `column`, gets the matching `query`. An unknown op names the closest op and points at `{"op":"help"}`. A request that ends without a JSON result is `invalid` too (`OP ended without a JSON result (exit code N)`), and later requests still run. Other errors keep the ordinary command's envelope, including its current `rev`. Operator commands (`init`, `link`, `serve`, `open`, `setup`, `skills`, `service`, `upgrade`, `version`, `doctor`, `recover`, `columns-core`) and `call` itself run only on the command line.
 

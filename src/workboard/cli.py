@@ -316,9 +316,9 @@ def cmd_context(args):
 
 
 def cmd_inbox(args):
-    doc = wb.load(wb.find_board(args.board), (args.ref,) if args.ref else (), "open")
-    result = {"ok": True, "rev": doc["rev"], "actor": wb.actor(),
-              "items": wb.inbox(doc, wb.actor(), ref=args.ref)}
+    by = wb.actor()
+    rev, items = wb.load_inbox(wb.find_board(args.board), by, ref=args.ref)
+    result = {"ok": True, "rev": rev, "actor": by, "items": items}
     print(json.dumps(result, ensure_ascii=False, indent=None if args.json else 2))
 
 
@@ -505,26 +505,32 @@ _SAMPLES = {"card": 12, "text": "…", "id": "8f3a…", "subtask": "s-1", "colum
 # Names agents send for an op that has one meaning: run as that op.
 OP_ALIASES = {**dict.fromkeys(("show", "get", "card.get", "read", "card"), "context"),
               **dict.fromkeys(("search", "list"), "query"), **dict.fromkeys(("create", "new"), "add"),
-              **dict.fromkeys(("comment", "comment.add", "card.note"), "note"),
+              **dict.fromkeys(("comment", "comment.add", "card.note", "note.add"), "note"),
               **dict.fromkeys(("bug", "improve", "rework"), "reopen"), "move": "fly", "close": "done",
-              "unblock": "resume"}
+              "unblock": "resume", "attach": "attachment.add", "subtask.remove": "subtask.rm"}
 # Guesses with two meanings: refused, naming both.
 OP_GUESSES = {**dict.fromkeys(("complete", "finish"), ("done", "cancel")),
-              "claim": ("start", "subtask.claim")}
+              "claim": ("start", "subtask.claim"), "assign": ("start", "handoff"),
+              "take": ("start", "takeover"), "edit": ("update", "note.edit")}
 CLI_ONLY = frozenset({"init", "link", "serve", "open", "setup", "skills", "service", "upgrade", "version",
                       "doctor", "recover", "columns-core", "call"})
 # Unambiguous names agents send for a key, accepted silently on the ops that take the key.
-SYNONYMS = {"card": ("ref", "num"), "subtask": ("subtasks",), "tags": ("tag",), "file": ("path",),
-            "text": ("summary", "writeup", "reason", "result", "note", "texts"), "until": ("unblockWhen",)}
+SYNONYMS = {"card": ("ref", "num"), "subtask": ("subtasks",), "tags": ("tag", "labels"), "file": ("path",),
+            "column": ("lane",), "text": ("summary", "writeup", "reason", "result", "note", "texts"),
+            "until": ("unblockWhen",)}
 OP_SYNONYMS = {"query": {"card": ("ref", "num", "cards"), "text": ("terms", "q", "query", "search")},
                "help": {"for": ("topic",)}, "context": {"full": ("history",)}, "add": {"origin": ("body",)},
+               "fly": {"column": ("to", "lane")}, "resume": {"to": ("column", "lane")},
                **{op: {"subtask": ("subtasks", "item")} for op in OPS if op.startswith("subtask.")},
                "subtask.add": {"text": (*SYNONYMS["text"], "title")}}
+_BODY_TO_TEXT = frozenset({"done", "block", "cancel", "takeover", "reopen", "resume"})
 PRIORITY_ALIASES = {**dict.fromkeys(("high", "urgent", "highest"), "critical"),
                     **dict.fromkeys(("medium", "normal"), "mid"), "lowest": "low"}
 # Names agents send for a query or context field.
 FIELD_ALIASES = {"created": "createdAt", "updated": "updatedAt", "changed": "updatedAt", "state": "column",
-                 "status": "column", "holder": "owner", "assignee": "owner"}
+                 "status": "column", "holder": "owner", "assignee": "owner", "labels": "tags",
+                 "depends": "deps", "blocked": "blockedReason", "until": "unblockWhen",
+                 "blockedUntil": "unblockWhen", "blocked_until": "unblockWhen"}
 # Ops agents send for another op's job: (that op, why), offered as the fix when the request fits it.
 WRONG_OPS = {"context": ("query", "context reads one card; to find cards use query")}
 HEREDOC = "workboard call <<'EOF', one JSON request per line, then EOF"
@@ -608,7 +614,10 @@ def _unknown_op(op, values, board, fixing) -> CallRefused:
         return CallRefused(f"op {op} runs only on the command line (workboard {op} …); "
                            '{"op":"help"} lists every call op')
     if op in OP_GUESSES:
-        target = OP_GUESSES[op][1] if op == "claim" and "subtask" in values else OP_GUESSES[op][0]
+        second = ((op == "claim" and "subtask" in values)
+                  or (op == "assign" and bool({"worker", "subtask"} & values.keys()))
+                  or (op == "edit" and "id" in values))
+        target = OP_GUESSES[op][1] if second else OP_GUESSES[op][0]
         guess = f'"{target}"' + "".join(f' (or "{other}")' for other in OP_GUESSES[op] if other != target)
     else:
         import difflib
@@ -691,6 +700,11 @@ def _call_argv(request, board=None, *, fixing=False):
         label = values.pop("label")
         if values.setdefault("actor", label) != label:
             raise CallRefused('"label" and "actor" differ; send only "actor"', op)
+    if op == "add" and "origin" in values and "body" in values:  # Combine when agents send both origin and body.
+        origin, body = values["origin"], values.pop("body")
+        if not (isinstance(origin, str) and isinstance(body, str)):
+            raise CallRefused("origin and body must be text", op)
+        values["origin"] = f"{origin.rstrip()}\n\n{body.lstrip()}" if origin.strip() and body.strip() else (origin or body)
     for key, synonyms in _synonyms(op).items():
         present = [name for name in (key, *synonyms) if name in values]
         if key not in spec["keys"] or not present:
@@ -699,6 +713,24 @@ def _call_argv(request, board=None, *, fixing=False):
             raise CallRefused(f"{op} takes {key} once: " + " or ".join(f'"{name}"' for name in present)
                               + ", not both", op)
         values[key] = values.pop(present[0])
+    if op in _BODY_TO_TEXT and "body" in values:  # Ops without a separate body fold it into their main text.
+        body = values.pop("body")
+        if not isinstance(body, str):
+            raise CallRefused("body must be text", op)
+        if "text" in values:
+            if not isinstance(values["text"], str):
+                raise CallRefused("text must be text", op)
+            values["text"] = (f"{values['text'].rstrip()}\n\n{body.lstrip()}"
+                              if values["text"].strip() and body.strip() else (values["text"] or body))
+        else:
+            values["text"] = body
+    if op in ("add", "update") and isinstance(values.get("notes"), list):  # Pinned notes sent as bullet lines.
+        notes = values["notes"]
+        if not notes:
+            raise CallRefused("notes is an empty list; omit it", op)
+        if not all(isinstance(item, str) for item in notes):
+            raise CallRefused("notes must contain strings", op)
+        values["notes"] = "\n".join(notes)
     if op == "add" and "text" in values:  # The card's text: its title, or with a title (given or copied) its origin.
         target = "origin" if "title" in values or "from" in values else "title"
         if target not in values:
@@ -1152,40 +1184,32 @@ def _short(text: str, limit: int = 80) -> str:
 def cmd_digest(args):
     p = wb.find_board(args.board)
     by = wb.actor()
-    with wb.snapshot(p) as con:  # One revision; Done cards are read only where a line shows them.
-        counts = wb.column_counts(con)
-        # The open cards, plus Done cards whose claimed delegated work still counts as a contribution.
-        doc = wb.load(p, scope="open", ids=wb.claimed_done(con), con=con)
-        if args.json:
-            stats = wb.store_stats(con)
-        else:
-            done_cols = {c["id"] for c in doc["columns"] if c["kind"] == "done"} | {"done"}
-            shipped, canceled = wb.done_lines(con, done_cols, 3)
-    ready = wb.ready_cards(doc)
+    data = wb.load_digest(p, by, include_stats=args.json)
+    counts, ready, cards = data["counts"], data["ready"], data["cards"]
     contributions = [{"num": c["num"], "cardId": c["id"], "subtaskId": st["id"],
                       "text": st["text"], "column": c["column"], **st["delegation"]}
-                     for c in doc["cards"] for st, _ in wb.iter_subtasks(c["subtasks"])
+                     for c in cards for st, _ in wb.iter_subtasks(c.get("subtasks") or [])
                      if (st.get("delegation") or {}).get("owner") == by
                      and (c["column"] != "done" or st["delegation"]["state"] == "claimed")]
-    mine = [card for card in doc["cards"] if wb.card_holder(card) == by]
+    mine = [card for card in cards if card.get("holder") == by]
     if args.json:
         print(json.dumps({
-            "ok": True, "board": str(p), "name": doc["name"], "schemaVersion": doc["schemaVersion"],
-            "rev": doc["rev"], "savedAt": doc["savedAt"], "stats": stats,
-            "columns": [{**column, "count": counts.get(column["id"], 0)} for column in doc["columns"]],
+            "ok": True, "board": str(p), "name": data["name"], "schemaVersion": data["schemaVersion"],
+            "rev": data["rev"], "savedAt": data["savedAt"], "stats": data["stats"],
+            "columns": [{**column, "count": counts.get(column["id"], 0)} for column in data["columns"]],
             "mine": [{"num": card["num"], "title": card["title"], "column": card["column"]}
                      for card in mine],
             "attention": [{"id": card["id"], "num": card["num"], "title": card["title"],
-                           "owner": card.get("activeOwner"), "attention": attention} for card in doc["cards"]
+                           "owner": card.get("activeOwner"), "attention": attention} for card in cards
                           if (attention := _stage_attention(card))],
             "ready": [card["num"] for card in ready[:5]],
             "contributions": contributions,
         }, ensure_ascii=False))
         return
     col_line = " · ".join(f"{c['name']}: {counts.get(c['id'], 0)}"
-                          for c in doc["columns"] if counts.get(c["id"]))
-    print(f"WorkBoard: {doc['name']} — rev {doc['rev']} · {sum(counts.values())} cards"
-          + (f" · saved {doc['savedAt']}" if doc.get("savedAt") else ""))
+                          for c in data["columns"] if counts.get(c["id"]))
+    print(f"WorkBoard: {data['name']} — rev {data['rev']} · {data['total']} cards"
+          + (f" · saved {data['savedAt']}" if data.get("savedAt") else ""))
     if mine:
         print(f"  MINE @{by}:")
         for card in mine[:DIGEST_ROWS]:
@@ -1199,9 +1223,9 @@ def cmd_digest(args):
         _more(contributions, "context REF --mine", "    ")
     if col_line:
         print(f"  {col_line}")
-    ip = [c for c in doc["cards"] if c["column"] == "inprogress"]
+    ip = [c for c in cards if c["column"] == "inprogress"]
     for c in ip[:DIGEST_ROWS]:
-        subs = [s for s, _ in wb.iter_subtasks(c["subtasks"])]
+        subs = [s for s, _ in wb.iter_subtasks(c.get("subtasks") or [])]
         prog = f" ☑{sum(1 for s in subs if s['done'])}/{len(subs)}" if subs else ""
         attention = _stage_attention(c)
         marker = f" ⚠{attention}" if attention else ""
@@ -1209,21 +1233,20 @@ def cmd_digest(args):
         print(f"  IN PROGRESS: {wb.fmt_ref(c)}{owner} {c['title'][:60]}{prog}"
               f" ({_age(c['updatedAt'])}){marker}")
     _more(ip, "query --column inprogress")
-    for c in shipped:
+    for c in data["shipped"]:
         print(f"  SHIPPED: {wb.fmt_ref(c)} {c['title'][:58]} ({_age(c['doneAt'])} ago)")
-    blocked = [c for c in doc["cards"] if c["column"] == "blocked"]
+    blocked = [c for c in cards if c["column"] == "blocked"]
     for c in blocked[:DIGEST_ROWS]:
         reason = _short((c.get("blockedReason") or "reason missing").strip())
         until = _short((c.get("unblockWhen") or "condition missing").strip())
-        owner = f" @{wb.card_holder(c)}" if wb.card_holder(c) else ""
+        owner = f" @{c['holder']}" if c.get("holder") else ""
         print(f"  BLOCKED: {wb.fmt_ref(c)}{owner} {c['title'][:48]} — {reason}; until {until}")
     _more(blocked, "query --column blocked")
-    for c in canceled:
+    for c in data["canceled"]:
         print(f"  CANCELED: {wb.fmt_ref(c)} {c['title'][:48]} — {_short((c.get('cancelReason') or '').strip())}")
     refs = " — " + " ".join(wb.fmt_ref(card) for card in ready[:5]) if ready else ""
-    print(f"  READY: {len(ready)}{refs} · REWORK: "
-          f"{sum(bool(c.get('reworkReason')) for c in doc['cards'] if c['column'] != 'done')}")
-    if not ip and not shipped:
+    print(f"  READY: {len(ready)}{refs} · REWORK: {data['rework']}")
+    if not ip and not data["shipped"]:
         print("  (quiet board)")
 
 
